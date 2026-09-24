@@ -529,3 +529,7 @@ When the user requests a durable behavior change, record it here or in the relev
 - `KyPost/Presentation/AGENTS.md` — SwiftUI views, view models, and
   components: theming and font contracts, MainActor isolation rules, compose
   recipient tokens and contact search, and the macOS/iOS input deviations.
+
+## Product icon
+
+App/launcher assets use the Busnes.app-site Systems stamp family. Regenerate platform sizes from the matching master in `../Busnes.app-site`; preserve resource names and adaptive foreground safe margins. This asset update does not change native theme defaults.
