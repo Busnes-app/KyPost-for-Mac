@@ -112,7 +112,8 @@ jobs:
       - uses: actions/setup-go@v5
         if: steps.state.outputs.publish == 'true'
         with:
-          go-version: "^1.22"
+          go-version: stable
+          check-latest: true
           cache: false
 
       - name: Build with upstream's script
