@@ -47,7 +47,7 @@ jobs:
     runs-on: macos-26
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Select Xcode
         # This project needs Xcode 26 — README pins the deployment target at
