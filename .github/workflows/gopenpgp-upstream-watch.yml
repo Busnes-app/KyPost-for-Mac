@@ -25,7 +25,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Compare pinned against upstream
         id: check
@@ -58,7 +58,7 @@ jobs:
 
       - name: Open a pull request
         if: steps.check.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: chore/gopenpgp-${{ steps.check.outputs.latest }}
           title: "chore: gopenpgp ${{ steps.check.outputs.pinned }} → ${{ steps.check.outputs.latest }}"

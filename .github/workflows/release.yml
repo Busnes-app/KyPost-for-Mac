@@ -48,7 +48,7 @@ jobs:
       EXPECTED_TEAM_ID: TATYN4X57D
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Fail on a missing secret before spending ten minutes on an archive
       # that cannot be signed, and name the one that is missing rather than

@@ -52,7 +52,7 @@ jobs:
     runs-on: macos-15
     steps:
       - name: Checkout this repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           path: kypost
 
@@ -96,7 +96,7 @@ jobs:
 
       - name: Checkout gopenpgp
         if: steps.state.outputs.publish == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           repository: ProtonMail/gopenpgp
           ref: ${{ steps.pin.outputs.version }}
@@ -109,7 +109,7 @@ jobs:
       # gomobile binds against whatever SDK the default toolchain provides, and
       # an older SDK with a newer deployment target is the ordinary direction.
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         if: steps.state.outputs.publish == 'true'
         with:
           go-version: stable
