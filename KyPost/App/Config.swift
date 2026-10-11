@@ -10,7 +10,7 @@ import Foundation
 
 enum Config {
     // Binding contract: deep-link scheme is exactly kypost://native-pair.
-    static let deepLinkScheme = "kypost"
+    nonisolated static let deepLinkScheme = "kypost"
     static let pairingHost = "native-pair"
 
     // Desktop pairing (Desktop Pairing guide): kypost://desktop-pair?code=…&srv=…

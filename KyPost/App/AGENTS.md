@@ -26,6 +26,13 @@ graph at runtime (`AppEnvironment.rebuild`), so:
   app no longer shows — or, worse, keeps relay connections open through the
   Hostile Location Protection swap that was meant to close them.
 
+`KyIdentitySignOnCoordinator` (iOS) is App-level `@State` beside the router
+for the same reason: a sign-on spans a trip to KyAuth, during which the lock
+tears the pairing sheet down. It holds no graph child and re-reads `.shared`
+per use. `onOpenURL` offers `kypost://kyidentity-signon` to it before the
+router (the return presents nothing, so the lock does not defer it), and
+`scenePhase == .active` makes it check for KyAuth's response.
+
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.
 It is installed once, from the platform delegate

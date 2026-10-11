@@ -4,7 +4,8 @@
 //
 //  Pairing flow (spec §1). Auto-pairs when opened from a deep link. On iOS
 //  the default entry point is camera QR scanning, with a paste-the-link
-//  fallback; macOS pairs via deep link or paste.
+//  fallback and "Sign in with KyIdentity" (KyAuth handoff); macOS pairs via
+//  deep link or paste.
 //
 
 import SwiftUI
@@ -24,6 +25,10 @@ struct PushPairingView: View {
 #if os(iOS)
     /// nil until the camera permission request resolves.
     @State private var cameraAccessGranted: Bool?
+    /// Optional so a presentation that forgot to inject it hides the entry
+    /// rather than trapping.
+    @Environment(KyIdentitySignOnCoordinator.self) private var signOn: KyIdentitySignOnCoordinator?
+    @State private var showSignOn = false
 #endif
 
     var body: some View {
@@ -82,6 +87,11 @@ struct PushPairingView: View {
                     Button("Close") { dismiss() }
                 }
             }
+#if os(iOS)
+            .navigationDestination(isPresented: $showSignOn) {
+                KyIdentitySignOnView()
+            }
+#endif
         }
         .tint(theme.accent)
         .task {
@@ -89,6 +99,18 @@ struct PushPairingView: View {
                 viewModel.present(params: initialParams)
             }
         }
+#if os(iOS)
+        .modifier(SignOnHandoffReceiver(signOn: signOn, showSignOn: $showSignOn) { params in
+            viewModel.present(params: params)
+        })
+        // Nothing presents while locked. This sheet is also presented from
+        // Settings, outside the router, and switching to KyAuth backgrounds
+        // the app and engages the lock; a sign-on that finishes meanwhile is
+        // delivered through the router, which defers it until unlock.
+        .onChange(of: SingletonGraph.shared.appLockManager.isLocked) { _, locked in
+            if locked { dismiss() }
+        }
+#endif
     }
 
     /// Shown before any network call fires — names the destination host and
@@ -157,6 +179,13 @@ struct PushPairingView: View {
             }
             .buttonStyle(PrimaryButtonStyle())
             .disabled(viewModel.pastedLink.isEmpty)
+
+#if os(iOS)
+            if signOn != nil {
+                Button("Sign in with KyIdentity") { showSignOn = true }
+                    .buttonStyle(SecondaryButtonStyle())
+            }
+#endif
         }
         .frame(maxHeight: .infinity)
     }
@@ -203,3 +232,28 @@ struct PushPairingView: View {
     }
 #endif
 }
+
+#if os(iOS)
+/// Takes a finished sign-on into this pairing screen's confirmation step. Registers the screen as live so the
+/// coordinator knows whether to hand over here or through the router.
+private struct SignOnHandoffReceiver: ViewModifier {
+    let signOn: KyIdentitySignOnCoordinator?
+    @Binding var showSignOn: Bool
+    let present: (PairingParams) -> Void
+
+    func body(content: Content) -> some View {
+        if let signOn {
+            content
+                .onAppear { signOn.pairingScreenAppeared() }
+                .onDisappear { signOn.pairingScreenDisappeared() }
+                .onChange(of: signOn.completed, initial: true) { _, _ in
+                    guard let params = signOn.takeCompleted() else { return }
+                    showSignOn = false
+                    present(params)
+                }
+        } else {
+            content
+        }
+    }
+}
+#endif
