@@ -161,7 +161,7 @@ nonisolated enum InboxRules {
     /// load, so a folder switch never announces anything.
     static func newRowsAbove(old: [Email], new: [Email]) -> Int {
         guard !old.isEmpty else { return 0 }
-        let oldIds = Set(old.map(\.serverId))
-        return new.prefix { !oldIds.contains($0.serverId) }.count
+        let oldIds = Set(old.map(\.id))
+        return new.prefix { !oldIds.contains($0.id) }.count
     }
 }

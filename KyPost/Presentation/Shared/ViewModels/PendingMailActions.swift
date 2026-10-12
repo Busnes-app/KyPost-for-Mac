@@ -9,14 +9,6 @@
 
 import Foundation
 
-/// A row is identified by (folder, id), never by id alone: IMAP UIDs repeat
-/// across folders, so an id-only key could hide a same-id row in the folder
-/// now on screen.
-nonisolated struct MailRowKey: Hashable, Sendable {
-    var folder: String
-    var serverId: String
-}
-
 /// One list action waiting out the undo window. The source folder is pinned
 /// when the action is taken, so a window that closes after a folder switch
 /// still acts on the right mailbox.

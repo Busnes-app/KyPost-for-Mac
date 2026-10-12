@@ -18,8 +18,8 @@ struct InboxView: View {
     /// A `mailto:` compose taken from the router (iOS).
     @State private var mailtoDraft: ComposeDraft?
     @State private var presentedEmail: Email?
-    /// Selected rows by server id; only meaningful while editing.
-    @State private var selection: Set<String> = []
+    /// Selected rows by (folder, id); only meaningful while editing.
+    @State private var selection: Set<MailRowKey> = []
 #if os(iOS)
     @State private var editMode: EditMode = .inactive
 #endif
@@ -172,7 +172,7 @@ struct InboxView: View {
         .onChange(of: viewModel.filteredEmails) {
             // Rows that left the list (held for Undo, moved by a refresh)
             // leave the selection with them.
-            let visible = Set(viewModel.filteredEmails.map(\.serverId))
+            let visible = Set(viewModel.filteredEmails.map(\.id))
             selection.formIntersection(visible)
         }
         .onChange(of: router.pendingMessageId) {
@@ -244,7 +244,7 @@ struct InboxView: View {
     }
 
     /// The selection, refusing to grow past the relay's per-request cap.
-    private var cappedSelection: Binding<Set<String>> {
+    private var cappedSelection: Binding<Set<MailRowKey>> {
         Binding(
             get: { selection },
             set: { newValue in
@@ -309,7 +309,7 @@ struct InboxView: View {
 
     private func runOnSelection(_ action: ([String]) -> Void) {
         // Rows in on-screen order, so the relay sees what the user saw.
-        let ids = viewModel.filteredEmails.map(\.serverId).filter(selection.contains)
+        let ids = viewModel.filteredEmails.filter { selection.contains($0.id) }.map(\.serverId)
         guard !ids.isEmpty else { return }
         action(ids)
         endSelection()

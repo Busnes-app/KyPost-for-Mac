@@ -48,7 +48,8 @@ struct Email: Identifiable, Hashable, Sendable {
     var pgpSignerFingerprint: String = ""
     var pgpDecryptError: String = ""
 
-    var id: String { serverId }
+    /// (folder, id), never the id alone — see `MailRowKey`.
+    var id: MailRowKey { MailRowKey(folder: folder, serverId: serverId) }
 
     /// Stands in for a missing or unparseable `atUtc`. A sentinel rather than
     /// an optional so the cached schema and its newest-first sort stay as they
@@ -59,6 +60,18 @@ struct Email: Identifiable, Hashable, Sendable {
     nonisolated static func isKnownDate(_ date: Date) -> Bool {
         date > unknownDate
     }
+}
+
+/// Which message a row is. The relay's `messageId` is a bare IMAP UID on IMAP
+/// accounts (KyPost-Server `MessageReference`), unique only within one
+/// mailbox, so INBOX and Sent can both hold `42`. Every lookup, write, action,
+/// and held or opened row is keyed by (folder, id), never by the id alone.
+///
+/// Not UIDVALIDITY-aware: the relay does not expose it. After a reset, window
+/// rows heal at the daily full resync; nothing else can.
+nonisolated struct MailRowKey: Hashable, Codable, Sendable {
+    var folder: String
+    var serverId: String
 }
 
 /// A folder/mailbox on the relay.

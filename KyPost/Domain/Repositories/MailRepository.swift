@@ -103,7 +103,12 @@ final class MailRepository {
             throw MailSourceError.notPaired
         }
         let pairingId = pairing.sub
-        let wantsFullWindow = forceFullResync
+        // A cursor describes rows this device holds. With none held — a fresh
+        // or discarded store, a schema change, a Hostile Location Protection
+        // switch — a delta would only list what changed since, and the folder
+        // would stay empty until the daily resync.
+        let holdsRows = try await emailDAO.hasRows(folder: folder)
+        let wantsFullWindow = forceFullResync || !holdsRows
             || cursorStore?.shouldForceFullResync(pairingId: pairingId, folder: folder) ?? true
         let since = wantsFullWindow
             ? ""
@@ -229,7 +234,7 @@ final class MailRepository {
     func markRead(messageIds: [String], from mailbox: String) async throws {
         try await makeSource().markRead(messageIds: messageIds, mailbox: mailbox)
         for messageId in messageIds {
-            try await emailDAO.updateEmail(serverId: messageId, read: true)
+            try await emailDAO.updateEmail(folder: mailbox, serverId: messageId, read: true)
         }
     }
 
@@ -243,12 +248,12 @@ final class MailRepository {
         try await makeSource().downloadAttachment(folder: folder, messageId: messageId, index: index)
     }
 
-    /// Updates the local read flag and (when marking read from a known
-    /// mailbox) syncs it to the relay so other devices see it — the relay has
-    /// a "read" action but no "unread" counterpart.
-    func markRead(serverId: String, folder: String? = nil, read: Bool = true) async throws {
-        try await emailDAO.updateEmail(serverId: serverId, read: read)
-        if read, let folder {
+    /// Updates the local read flag of the row in `folder` and, when marking
+    /// read, syncs it to the relay so other devices see it — the relay has a
+    /// "read" action but no "unread" counterpart.
+    func markRead(serverId: String, folder: String, read: Bool = true) async throws {
+        try await emailDAO.updateEmail(folder: folder, serverId: serverId, read: read)
+        if read {
             try await makeSource().markRead(messageIds: [serverId], mailbox: folder)
         }
     }

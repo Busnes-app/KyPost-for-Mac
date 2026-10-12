@@ -10,8 +10,14 @@ import SwiftData
 
 @Model
 final class EmailEntity {
-    /// Relay message id.
-    @Attribute(.unique) var serverId: String
+    /// Unique per (folder, id), not per id: the relay's id is an IMAP UID,
+    /// unique only within one mailbox (see `MailRowKey`). Keyed on the id
+    /// alone, caching Sent overwrote the Inbox row with the same UID. Changed
+    /// in AppSchemaV7.
+    #Unique<EmailEntity>([\.folder, \.serverId])
+
+    /// Relay message id — meaningful only together with `folder`.
+    var serverId: String
     var folder: String
     var senderName: String
     var senderEmail: String

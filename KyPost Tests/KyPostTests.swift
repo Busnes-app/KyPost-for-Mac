@@ -162,11 +162,11 @@ private func makeEmail(
         let dao = EmailDAO(modelContainer: db.container)
         try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [makeEmail(serverId: "42")])
 
-        try await dao.updateEmail(serverId: "42", read: true, starred: true)
-        let email = try #require(try await dao.getEmail(serverId: "42"))
+        try await dao.updateEmail(folder: "INBOX", serverId: "42", read: true, starred: true)
+        let email = try #require(try await dao.getEmail(folder: "INBOX", serverId: "42"))
         #expect(email.read)
         #expect(email.starred)
-        #expect(try await dao.getEmail(serverId: "missing") == nil)
+        #expect(try await dao.getEmail(folder: "INBOX", serverId: "missing") == nil)
     }
 
     @Test func searchMatchesSubjectCaseInsensitively() async throws {
@@ -186,7 +186,7 @@ private func makeEmail(
         try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [
             makeEmail(serverId: "1", keywords: ["Important", "Work"]),
         ])
-        let email = try #require(try await dao.getEmail(serverId: "1"))
+        let email = try #require(try await dao.getEmail(folder: "INBOX", serverId: "1"))
         #expect(email.keywords == ["Important", "Work"])
     }
 }

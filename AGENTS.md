@@ -606,6 +606,20 @@ old sentence edited out.
 
 ### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
 
+- **A message is (folder, messageId), never the id alone** (`MailRowKey`,
+  `Email.id`). The relay's id is a bare IMAP UID on IMAP accounts, unique only
+  within one mailbox, so INBOX and Sent can both hold `42`. `EmailEntity` is
+  `#Unique` on the pair (AppSchemaV7); every DAO lookup, merge, removal, read
+  flag, action, held row, attachment staging path and pop-out window uses the
+  pair. A delta's `removed` ids delete only from the fetched folder. A push
+  (and a notification-history tap, which replays one) names its message by id
+  alone and always means INBOX, via `prepareForPushTap`. Readers built from a
+  row (`EncryptedReadViewModel`, the invite card's attachment fetch, Forward's
+  attachment collection) take the row's own folder, never an assumed one.
+- **A folder with no cached row ignores its cursor** and fetches the whole
+  window. A cursor describes rows this device holds; after the store is
+  discarded or re-keyed, a delta would leave the folder empty until the daily
+  resync. This is what keeps the local store disposable.
 - **`isFullWindow` is derived from what we asked for, never from the wire's
   `delta` flag.** A relay predating the matching server fix labels a `since=0`
   response `delta: true` all the same, and only a full window can say what is

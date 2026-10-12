@@ -24,8 +24,9 @@ actor EmailDAO {
     }
 
     /// Applies one delta response: upserts `emails`, dropping any that the
-    /// server marked "updated" and we have no row for; deletes `removedIds`;
-    /// and prunes the folder against `emails` only when told to.
+    /// server marked "updated" and we have no row for; deletes `removedIds`
+    /// from `folder` (an id names a message only within its folder); and
+    /// prunes the folder against `emails` only when told to.
     ///
     /// An "updated" entry never carries a body. With an existing row we merge
     /// and keep the body already held. With **no** existing row there is
@@ -43,7 +44,7 @@ actor EmailDAO {
         pruneAgainstEmails: Bool
     ) throws {
         for email in emails {
-            let existing = try fetchEntity(serverId: email.serverId)
+            let existing = try fetchEntity(folder: folder, serverId: email.serverId)
             if updatedIds.contains(email.serverId) || email.bodyOmitted {
                 guard let existing else { continue }
                 apply(email, to: existing, preservingBodyOf: existing)
@@ -56,7 +57,7 @@ actor EmailDAO {
         for id in removedIds {
             try modelContext.delete(
                 model: EmailEntity.self,
-                where: #Predicate { $0.serverId == id }
+                where: #Predicate { $0.serverId == id && $0.folder == folder }
             )
         }
         if pruneAgainstEmails {
@@ -100,9 +101,9 @@ actor EmailDAO {
         }
     }
 
-    private func fetchEntity(serverId: String) throws -> EmailEntity? {
+    private func fetchEntity(folder: String, serverId: String) throws -> EmailEntity? {
         var descriptor = FetchDescriptor<EmailEntity>(
-            predicate: #Predicate { $0.serverId == serverId }
+            predicate: #Predicate { $0.serverId == serverId && $0.folder == folder }
         )
         descriptor.fetchLimit = 1
         return try modelContext.fetch(descriptor).first
@@ -119,20 +120,21 @@ actor EmailDAO {
         return try modelContext.fetch(descriptor).map(\.toDomain)
     }
 
-    func getEmail(serverId: String) throws -> Email? {
+    /// Whether the folder holds any cached row at all.
+    func hasRows(folder: String) throws -> Bool {
         var descriptor = FetchDescriptor<EmailEntity>(
-            predicate: #Predicate { $0.serverId == serverId }
+            predicate: #Predicate { $0.folder == folder }
         )
         descriptor.fetchLimit = 1
-        return try modelContext.fetch(descriptor).first?.toDomain
+        return try modelContext.fetchCount(descriptor) > 0
     }
 
-    func updateEmail(serverId: String, read: Bool? = nil, starred: Bool? = nil) throws {
-        var descriptor = FetchDescriptor<EmailEntity>(
-            predicate: #Predicate { $0.serverId == serverId }
-        )
-        descriptor.fetchLimit = 1
-        guard let entity = try modelContext.fetch(descriptor).first else { return }
+    func getEmail(folder: String, serverId: String) throws -> Email? {
+        try fetchEntity(folder: folder, serverId: serverId)?.toDomain
+    }
+
+    func updateEmail(folder: String, serverId: String, read: Bool? = nil, starred: Bool? = nil) throws {
+        guard let entity = try fetchEntity(folder: folder, serverId: serverId) else { return }
         if let read { entity.read = read }
         if let starred { entity.starred = starred }
         try modelContext.save()

@@ -7,6 +7,7 @@
 //  Undo, and the freshness / empty-folder / new-mail signals.
 //
 
+import CryptoKit
 import Foundation
 import Observation
 
@@ -120,7 +121,7 @@ final class InboxViewModel {
     var visibleEmails: [Email] {
         let hidden = pending.heldKeys.union(inFlightKeys)
         guard !hidden.isEmpty else { return emails }
-        return emails.filter { !hidden.contains(MailRowKey(folder: $0.folder, serverId: $0.serverId)) }
+        return emails.filter { !hidden.contains($0.id) }
     }
 
     var filteredEmails: [Email] {
@@ -427,11 +428,13 @@ final class InboxViewModel {
     /// server. (The relay has no "unread" action, so this is one-way.)
     func markRead(serverIds: [String]) async {
         guard !serverIds.isEmpty else { return }
-        for index in emails.indices where serverIds.contains(emails[index].serverId) {
+        let requested = folder
+        for index in emails.indices
+        where emails[index].folder == requested && serverIds.contains(emails[index].serverId) {
             emails[index].read = true
         }
         do {
-            try await mailRepository.markRead(messageIds: serverIds, from: folder)
+            try await mailRepository.markRead(messageIds: serverIds, from: requested)
         } catch {
             errorMessage = "Could not mark as read: \(error.localizedDescription)"
             await refresh()
@@ -584,14 +587,14 @@ final class InboxViewModel {
 
     func markRead(_ email: Email) async {
         try? await mailRepository.markRead(serverId: email.serverId, folder: email.folder)
-        if let index = emails.firstIndex(where: { $0.serverId == email.serverId }) {
+        if let index = emails.firstIndex(where: { $0.id == email.id }) {
             emails[index].read = true
         }
     }
 
-    /// Resolves a notification tap's messageId to a cached email.
-    func email(withServerId serverId: String) -> Email? {
-        emails.first { $0.serverId == serverId }
+    /// The row on screen for `key`, or nil.
+    func email(for key: MailRowKey) -> Email? {
+        emails.first { $0.id == key }
     }
 
     /// Prepares the list for a notification tap and returns its target.
@@ -621,7 +624,9 @@ final class InboxViewModel {
             showNotice(String(localized: "Unable to connect to the mail server."))
             return nil
         }
-        return email(withServerId: messageId)
+        // A push names an Inbox message by id alone; the same id in another
+        // folder is a different message.
+        return email(for: MailRowKey(folder: StandardFolder.inbox, serverId: messageId))
     }
 
     // MARK: - New mail
@@ -682,7 +687,7 @@ final class InboxViewModel {
     /// Downloads one attachment to a temporary file and returns its URL
     /// (for Quick Look / opening externally), or nil on failure.
     func downloadAttachment(_ attachment: EmailAttachment, of email: Email) async -> URL? {
-        guard let cacheKey = Self.sanitizedCacheComponent(email.serverId) else {
+        guard let cacheKey = Self.attachmentCacheComponent(for: email) else {
             errorMessage = "Could not download attachment: invalid message id"
             return nil
         }
@@ -728,6 +733,18 @@ final class InboxViewModel {
     static func deleteAttachmentTempFiles() throws {
         guard FileManager.default.fileExists(atPath: attachmentTempRoot.path) else { return }
         try FileManager.default.removeItem(at: attachmentTempRoot)
+    }
+
+    /// One staging directory per (folder, id): the same id in two folders is
+    /// two messages, and one must not overwrite the other's attachments. The
+    /// folder is hashed, so its name never becomes a path component.
+    static func attachmentCacheComponent(for email: Email) -> String? {
+        guard let id = sanitizedCacheComponent(email.serverId) else { return nil }
+        let folder = SHA256.hash(data: Data(email.folder.utf8))
+            .prefix(8)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "\(folder)-\(id)"
     }
 
     /// The relay-supplied `serverId` must never be trusted as a path

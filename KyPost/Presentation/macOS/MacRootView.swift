@@ -172,10 +172,10 @@ struct MacRootView: View {
             // Hashable by value, so a read-flag change would otherwise
             // silently deselect) and drop emails that left the list.
             let byId = Dictionary(
-                inboxViewModel.filteredEmails.map { ($0.serverId, $0) },
+                inboxViewModel.filteredEmails.map { ($0.id, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
-            selectedEmails = Set(selectedEmails.compactMap { byId[$0.serverId] })
+            selectedEmails = Set(selectedEmails.compactMap { byId[$0.id] })
         }
     }
 
@@ -555,11 +555,11 @@ struct MacRootView: View {
         case .inbox, .folder, .special:
             if let email = singleSelectedEmail {
                 EmailDetailView(email: email, inboxViewModel: inboxViewModel)
-                    .id(email.serverId) // re-run markRead when the selection changes
+                    .id(email.id) // re-run markRead when the selection changes
                     .toolbar {
                         ToolbarItem {
                             Button {
-                                openWindow(id: "email", value: email.serverId)
+                                openWindow(id: "email", value: email.id)
                             } label: {
                                 Label("Open in New Window", systemImage: "macwindow.badge.plus")
                             }
@@ -618,8 +618,8 @@ struct MacRootView: View {
     ) {
         guard !emails.isEmpty else { return }
         selectedEmails.subtract(emails)
-        let ids = Set(emails.map(\.serverId))
-        operation(inboxViewModel.filteredEmails.map(\.serverId).filter(ids.contains))
+        let keys = Set(emails.map(\.id))
+        operation(inboxViewModel.filteredEmails.filter { keys.contains($0.id) }.map(\.serverId))
     }
 
     /// The selection, refusing to grow past the relay's per-request cap.
@@ -651,7 +651,7 @@ struct MacRootView: View {
 
     private func openInNewWindows(_ emails: Set<Email>) {
         for email in emails {
-            openWindow(id: "email", value: email.serverId)
+            openWindow(id: "email", value: email.id)
         }
     }
 
@@ -711,15 +711,16 @@ private extension View {
 }
 
 /// Content of a popped-out email window (KyPostApp "email" WindowGroup).
+/// Keyed by (folder, id): the id alone names a message only within a folder.
 struct EmailWindowView: View {
     @Environment(\.theme) private var theme
 
-    let serverId: String
+    let key: MailRowKey?
 
     private var inboxViewModel: InboxViewModel { SingletonGraph.shared.inboxViewModel }
 
     var body: some View {
-        if let email = inboxViewModel.email(withServerId: serverId) {
+        if let key, let email = inboxViewModel.email(for: key) {
             EmailDetailView(email: email, inboxViewModel: inboxViewModel)
         } else {
             EmptyStateView(
