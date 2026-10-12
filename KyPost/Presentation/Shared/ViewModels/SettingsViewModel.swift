@@ -65,7 +65,8 @@ final class SettingsViewModel {
     /// Inbox row is the folder itself).
     private(set) var allTabVisible = true
     /// Runs after the pairing is cleared, for account-scoped state outside
-    /// this view model — the inbox's held list actions.
+    /// this view model — the inbox's held list actions, rows on screen, and
+    /// in-flight refreshes (`InboxViewModel.forgetAccount`).
     private let onUnpaired: (() -> Void)?
 
     init(
@@ -165,8 +166,18 @@ final class SettingsViewModel {
         recipientPinStore?.clear()
         // The signature belongs to the account being unpaired, not the next.
         mailSignatureStore?.clear()
+        // The account's mail — every cached row and body, in or out of the
+        // window, and the cursors. Mail older than the window is never pruned
+        // by a refresh, so left here it would be listed under the next
+        // account paired.
+        do {
+            try await mailRepository.forgetAccount()
+        } catch {
+            Log.mail.error("Could not clear cached mail on unpair: \(error)")
+        }
         // A list action still in its undo window belongs to the account just
-        // removed; it is dropped rather than sent.
+        // removed; it is dropped rather than sent. The rows on screen and any
+        // refresh or page still in flight go with it.
         onUnpaired?()
         statusMessage = "Pairing removed"
     }

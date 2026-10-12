@@ -11,8 +11,35 @@ import SwiftData
 
 @ModelActor
 actor EmailDAO {
+    /// Thrown by a write that carries an epoch older than `accountEpoch`.
+    struct AccountForgotten: Error {}
+
+    /// Bumped by `forgetAccount`. A refresh, page or body fetch captures it
+    /// before going to the network and hands it back with its write; one that
+    /// started under an account since forgotten is refused rather than
+    /// stored. In memory only: a fresh DAO starts with nothing in flight.
+    private(set) var accountEpoch = 0
+
+    /// Erases every cached row, window and older mail, bodies included, for
+    /// an unpair or a pairing to another account. Bumps the epoch first, so
+    /// a write already in flight cannot land after the erase.
+    func forgetAccount() throws {
+        accountEpoch += 1
+        try saving {
+            for entity in try modelContext.fetch(FetchDescriptor<EmailEntity>()) {
+                modelContext.delete(entity)
+            }
+        }
+    }
+
+    /// Nil skips the check (tests and callers with no network step).
+    private func requireEpoch(_ epoch: Int?) throws {
+        if let epoch, epoch != accountEpoch { throw AccountForgotten() }
+    }
+
     /// Applies a non-delta answer — the relay's whole window. See `snapshot`.
-    func replaceFolderSnapshot(folder: String, emails: [Email]) throws {
+    func replaceFolderSnapshot(folder: String, emails: [Email], epoch: Int? = nil) throws {
+        try requireEpoch(epoch)
         try saving { try snapshot(folder: folder, emails: emails) }
     }
 
@@ -37,7 +64,8 @@ actor EmailDAO {
     /// One refresh, all or nothing: the window answer and the pages of a
     /// delta overflow walk land in one save. A row stored from a partial walk
     /// would count as held, and the retry would stop at it and skip the gap.
-    func reconcile(folder: String, result: MailFetchResult, overflow: [Email]) throws {
+    func reconcile(folder: String, result: MailFetchResult, overflow: [Email], epoch: Int? = nil) throws {
+        try requireEpoch(epoch)
         try saving {
             if result.isDelta {
                 try delta(
@@ -53,7 +81,8 @@ actor EmailDAO {
     }
 
     /// Stores one page of mail older than the window. See `older`.
-    func storeOlderMail(folder: String, emails: [Email]) throws {
+    func storeOlderMail(folder: String, emails: [Email], epoch: Int? = nil) throws {
+        try requireEpoch(epoch)
         try saving { try older(folder: folder, emails: emails) }
     }
 
@@ -248,7 +277,8 @@ actor EmailDAO {
 
     /// Fills in a body fetched on open. Scoped to the columns the fetch
     /// answers for; the caller decides whether the row may cache one at all.
-    func updateBody(folder: String, serverId: String, body: String, bodyMode: String) throws {
+    func updateBody(folder: String, serverId: String, body: String, bodyMode: String, epoch: Int? = nil) throws {
+        try requireEpoch(epoch)
         guard let entity = try fetchEntity(folder: folder, serverId: serverId) else { return }
         entity.body = body
         if !bodyMode.isEmpty { entity.bodyMode = bodyMode }

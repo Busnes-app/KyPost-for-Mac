@@ -24,6 +24,8 @@ nonisolated final class ScriptedRelay: @unchecked Sendable {
     let queries = Box<[[String: String]]>([])
     let inbox = Box<Answer>({ _ in (200, #"{"byTab":{}}"#) })
     let body = Box<Answer>({ _ in (200, #"{"body":"","bodyMode":""}"#) })
+    /// Awaited before answering, so a test can hold a request in flight.
+    let beforeAnswer = Box<(@Sendable ([String: String]) async -> Void)?>(nil)
 
     var client: HTTPClient {
         HTTPClient { [self] request in
@@ -33,6 +35,7 @@ nonisolated final class ScriptedRelay: @unchecked Sendable {
                 query[item.name] = item.value ?? ""
             }
             queries.mutate { $0.append(query) }
+            await beforeAnswer.value?(query)
             let (status, json): (Int, String) = switch url.path {
             case "/api/inbox": inbox.value(query)
             case "/api/mail/body": body.value(query)
@@ -376,9 +379,154 @@ private struct Harness {
         #expect(!viewModel.showsLoadOlder)
         #expect(viewModel.notice == "This server can't load older mail. Update KyPost Server to use this.")
 
-        // Leaving the account forgets it all.
+        // Leaving the account forgets it all: the rows, and the Junk folder's
+        // "cannot page" verdict with them.
         viewModel.forgetAccount()
+        #expect(viewModel.emails.isEmpty)
+        await viewModel.selectFolder("Junk")
         #expect(viewModel.showsLoadOlder)
+    }
+}
+
+// MARK: - Leaving the account
+
+/// Holds the first request it is handed until `open()`; later ones pass.
+private actor HeldRequest {
+    private var entered = false
+    private var opened = false
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func hold() async {
+        guard !entered else { return }
+        entered = true
+        enteredWaiter?.resume()
+        enteredWaiter = nil
+        guard !opened else { return }
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilHolding() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiter = $0 }
+    }
+
+    func open() {
+        opened = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+
+@MainActor
+private func makeViewModel(_ h: Harness) -> InboxViewModel {
+    InboxViewModel(
+        mailRepository: h.repository,
+        keywordRepository: KeywordRepository(
+            settingsStore: KeywordSettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        )
+    )
+}
+
+@MainActor
+@Suite struct ForgetAccountTests {
+    /// Unpair, then pair the next account: mail aged out of the old window
+    /// is never pruned by a refresh, so only the erase removes it.
+    @Test func theNextAccountNeverSeesThePreviousAccountsAgedOutMail() async throws {
+        let h = try Harness()
+        try await h.seed([row("new", minutesAgo: 1), row("aging", minutesAgo: 5, body: "previous account's text")])
+        h.relay.inbox.value = { _ in
+            (200, inboxJSON([], extra: #""delta":true,"cursor":"11","agedOut":["aging"]"#))
+        }
+        let viewModel = makeViewModel(h)
+        await viewModel.load()
+        #expect(try await h.stored("aging")?.inWindow == false)
+        #expect(viewModel.emails.map(\.serverId).contains("aging"))
+
+        try await h.repository.forgetAccount()
+        viewModel.forgetAccount()
+        #expect(viewModel.emails.isEmpty)
+        #expect(h.cursor == "")
+
+        // The next account's whole window, dated after the aged-out row.
+        h.relay.inbox.value = { _ in (200, inboxJSON([wire("theirs", minutesAgo: 2)])) }
+        await viewModel.load()
+
+        #expect(try await h.stored("aging") == nil)
+        #expect(try await h.stored("new") == nil)
+        #expect(try await h.repository.cachedFolder("INBOX").map(\.serverId) == ["theirs"])
+        #expect(viewModel.emails.map(\.serverId) == ["theirs"])
+    }
+
+    @Test func aRefreshInFlightWhenTheAccountIsForgottenStoresAndPaintsNothing() async throws {
+        let h = try Harness()
+        let held = HeldRequest()
+        h.relay.beforeAnswer.value = { _ in await held.hold() }
+        h.relay.inbox.value = { _ in (200, inboxJSON([wire("old", minutesAgo: 1)], extra: #""cursor":"9""#)) }
+        let viewModel = makeViewModel(h)
+
+        let refresh = Task { await viewModel.refresh() }
+        await held.waitUntilHolding()
+        try await h.repository.forgetAccount()
+        viewModel.forgetAccount()
+        #expect(!viewModel.isRefreshing)
+        await held.open()
+        await refresh.value
+
+        #expect(try await h.stored("old") == nil)
+        #expect(h.cursor == "")
+        #expect(viewModel.emails.isEmpty)
+        #expect(viewModel.connectionNotice == nil)
+    }
+
+    /// Code review: a page answered after `forgetAccount` must not hide the
+    /// footer or leave its spinner running.
+    @Test func aPageInFlightWhenTheAccountIsForgottenNeitherHidesTheFooterNorSpins() async throws {
+        let h = try Harness()
+        let held = HeldRequest()
+        h.relay.beforeAnswer.value = { query in
+            if query["before"] != nil { await held.hold() }
+        }
+        h.relay.inbox.value = { query in
+            // An old server: the page is its newest window, without hasMore.
+            (200, inboxJSON([wire(query["before"] == nil ? "w1" : "x", minutesAgo: 1)]))
+        }
+        let viewModel = makeViewModel(h)
+        await viewModel.load()
+
+        let page = Task { await viewModel.loadOlderMail() }
+        await held.waitUntilHolding()
+        #expect(viewModel.isLoadingOlder)
+        viewModel.forgetAccount()
+        #expect(!viewModel.isLoadingOlder)
+        await viewModel.load()
+        await held.open()
+        await page.value
+
+        #expect(viewModel.showsLoadOlder)
+        #expect(!viewModel.isLoadingOlder)
+        #expect(viewModel.notice == nil)
+    }
+
+    @Test func aBodyFetchedAfterTheAccountIsForgottenIsNotCached() async throws {
+        let h = try Harness()
+        try await h.seed([row("w1", minutesAgo: 1, body: "")])
+        let held = HeldRequest()
+        h.relay.beforeAnswer.value = { query in
+            if query["path"] == "/api/mail/body" { await held.hold() }
+        }
+        h.relay.body.value = { _ in (200, #"{"body":"previous account's text","bodyMode":"plain"}"#) }
+        let stored = try #require(try await h.stored("w1"))
+
+        let fetch = Task { try await h.repository.loadBody(for: stored) }
+        await held.waitUntilHolding()
+        try await h.repository.forgetAccount()
+        // The next account holds a message under the same id.
+        try await h.seed([row("w1", minutesAgo: 1, body: "")])
+        await held.open()
+        _ = try await fetch.value
+
+        #expect(try await h.stored("w1")?.body == "")
     }
 }
 
@@ -414,6 +562,24 @@ private struct Harness {
 
         #expect(try await h.stored("w1")?.body == "filled")
         #expect(try await h.stored("w1")?.bodyMode == "plain")
+    }
+
+    /// Code review: Reply/Forward wait for the body a paged row fetches on
+    /// open, then quote it.
+    @Test func replyAndForwardWaitForTheFetchedBodyThenQuoteIt() {
+        let paged = row("p1", minutesAgo: 60, body: "")
+        #expect(draftBodyReadiness(for: paged, fetchedBody: nil, fetchFailed: false) == .loading)
+        #expect(draftBodyReadiness(for: paged, fetchedBody: nil, fetchFailed: true) == .failed)
+
+        let fetched = MailMessageBody(body: "the fetched text", bodyMode: "plain")
+        #expect(draftBodyReadiness(for: paged, fetchedBody: fetched, fetchFailed: false) == .ready)
+        let shown = emailWithFetchedBody(paged, fetched)
+        #expect(ComposeDraft.reply(to: shown).body.contains("the fetched text"))
+        #expect(ComposeDraft.replyAll(to: shown, ownAddress: nil).body.contains("the fetched text"))
+        #expect(ComposeDraft.forward(shown).body.contains("the fetched text"))
+
+        // A row that arrived with its body never waits.
+        #expect(draftBodyReadiness(for: row("w", minutesAgo: 1), fetchedBody: nil, fetchFailed: false) == .ready)
     }
 
     /// A blank body on an encrypted row is the client-protected shape; it has

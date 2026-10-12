@@ -62,6 +62,8 @@ struct EmailDetailView: View {
     /// Why the body could not be fetched. Distinct from "the message has no
     /// body": an empty screen must not pass for a short message.
     @State private var bodyFetchFailure: String?
+    /// Why Reply/Forward did not open a draft yet; non-nil shows an alert.
+    @State private var draftBlocked: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -214,6 +216,17 @@ struct EmailDetailView: View {
                 Log.mail.error("Attachment save failed: \(error.localizedDescription)")
             }
         }
+        .alert(
+            "Can't quote this message yet",
+            isPresented: Binding(
+                get: { draftBlocked != nil },
+                set: { if !$0 { draftBlocked = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { draftBlocked = nil }
+        } message: {
+            Text(draftBlocked ?? "")
+        }
         .alert("Not available for encrypted mail", isPresented: $showsReplyUnavailable) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -285,7 +298,7 @@ struct EmailDetailView: View {
             .disabled(preparingForward)
             .help(replyAvailable ? "Forward this email" : replyUnavailableHelp)
         }
-        .opacity(replyAvailable ? 1 : 0.4)
+        .opacity(replyAvailable && draftReadiness == .ready ? 1 : 0.4)
         Button {
             act(.archive)
         } label: {
@@ -403,12 +416,25 @@ struct EmailDetailView: View {
         String(localized: "Replying to encrypted mail isn't available in the app yet.")
     }
 
+    private var draftReadiness: DraftBodyReadiness {
+        draftBodyReadiness(for: email, fetchedBody: fetchedBody, fetchFailed: bodyFetchFailure != nil)
+    }
+
     private func replyOrExplain(_ action: () -> Void) {
         guard replyAvailable else {
             showsReplyUnavailable = true
             return
         }
-        action()
+        // A draft built before the body arrives quotes nothing, and a draft
+        // is not rebuilt when the body lands.
+        switch draftReadiness {
+        case .ready:
+            action()
+        case .loading:
+            draftBlocked = String(localized: "This message is still loading. Reply and Forward are available once it has.")
+        case .failed:
+            draftBlocked = String(localized: "This message's text couldn't be loaded, so it can't be quoted. Use Try again, then reply or forward.")
+        }
     }
 
     /// Forward carries the original's attachments. They travel beside the
@@ -471,13 +497,7 @@ struct EmailDetailView: View {
 
     /// The row with the fetched body in place of a missing one: what the
     /// screen renders and what Reply/Forward quote.
-    private var shown: Email {
-        guard let fetchedBody else { return email }
-        var shown = email
-        shown.body = fetchedBody.body
-        if !fetchedBody.bodyMode.isEmpty { shown.bodyMode = fetchedBody.bodyMode }
-        return shown
-    }
+    private var shown: Email { emailWithFetchedBody(email, fetchedBody) }
 
     /// Fetches the body of a row that arrived without one (older mail). A
     /// failure says so instead of rendering an empty message.
@@ -1070,4 +1090,34 @@ struct EmailBodyWebView: View {
             }
         }
     }
+}
+
+/// `email` as the reader shows it and Reply/Forward quote it: with the body
+/// fetched on open in place of the missing one.
+nonisolated func emailWithFetchedBody(_ email: Email, _ fetched: MailMessageBody?) -> Email {
+    guard let fetched else { return email }
+    var shown = email
+    shown.body = fetched.body
+    if !fetched.bodyMode.isEmpty { shown.bodyMode = fetched.bodyMode }
+    return shown
+}
+
+/// Whether Reply, Reply All and Forward may build a draft from `email` yet.
+enum DraftBodyReadiness: Equatable {
+    case ready
+    /// The body the draft must quote is still being fetched.
+    case loading
+    /// The fetch failed; the draft would quote nothing.
+    case failed
+}
+
+/// A row that needs its body fetched (`MailRepository.needsBodyFetch`) is
+/// ready only once the fetch answered; any other row is ready at once.
+nonisolated func draftBodyReadiness(
+    for email: Email,
+    fetchedBody: MailMessageBody?,
+    fetchFailed: Bool
+) -> DraftBodyReadiness {
+    guard MailRepository.needsBodyFetch(email), fetchedBody == nil else { return .ready }
+    return fetchFailed ? .failed : .loading
 }

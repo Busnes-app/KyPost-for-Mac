@@ -105,11 +105,14 @@ final class MailRepository {
     func refreshFolder(_ folder: String, forceFullResync: Bool = false) async throws -> [Email] {
         // The override has no pairing and no cursor to advance; snapshot it
         // straight into the cache and let the rest of the app read normally.
+        // Before any network step: a request that outlives `forgetAccount`
+        // must not write the forgotten account's mail back.
+        let epoch = await emailDAO.accountEpoch
         if let overrideSource {
             let result = try await overrideSource.fetchEmails(
                 folder: folder, from: 0, to: Self.windowLimit, since: ""
             )
-            try await emailDAO.replaceFolderSnapshot(folder: folder, emails: result.emails)
+            try await emailDAO.replaceFolderSnapshot(folder: folder, emails: result.emails, epoch: epoch)
             return try await emailDAO.getFolder(folder: folder)
         }
         guard let pairing = try securePairingStore.loadPairing() else {
@@ -136,7 +139,9 @@ final class MailRepository {
         let overflow = result.isDelta && !result.isFullWindow && result.hasMore
             ? try await fetchOverflow(folder: folder, from: result.nextBefore, source: source)
             : []
-        try await emailDAO.reconcile(folder: folder, result: result, overflow: overflow)
+        try await emailDAO.reconcile(folder: folder, result: result, overflow: overflow, epoch: epoch)
+        // Nor its cursor.
+        guard await emailDAO.accountEpoch == epoch else { throw EmailDAO.AccountForgotten() }
 
         // Only after the rows are committed: a crash between the two costs a
         // refetch, where advancing first would lose the messages for good.
@@ -175,6 +180,15 @@ final class MailRepository {
         return pages
     }
 
+    /// Erases the account's mail from this device: every cached row (window,
+    /// older mail, fetched bodies) and every cursor. For an unpair and for a
+    /// pairing that replaces the account. A refresh, page or body fetch still
+    /// in flight is refused when it comes back (`EmailDAO.accountEpoch`).
+    func forgetAccount() async throws {
+        defer { cursorStore?.clear() }
+        try await emailDAO.forgetAccount()
+    }
+
     /// Cached rows of a folder, newest first — every row unless `limit` caps
     /// it — for offline/instant display.
     func cachedFolder(_ folder: String, limit: Int? = nil) async throws -> [Email] {
@@ -205,6 +219,7 @@ final class MailRepository {
     /// with no frontier yet, than the oldest row the folder holds. The page
     /// lands out of the window, so no snapshot ever prunes it.
     func loadOlder(folder: String, frontier: String?) async -> OlderMailOutcome {
+        let epoch = await emailDAO.accountEpoch
         let notSaved = String(localized: "Couldn't save older mail on this device. Free up storage and try again.")
         let anchor: String
         if let frontier, !frontier.isEmpty {
@@ -239,7 +254,7 @@ final class MailRepository {
             )
         }
         do {
-            try await emailDAO.storeOlderMail(folder: folder, emails: page.emails)
+            try await emailDAO.storeOlderMail(folder: folder, emails: page.emails, epoch: epoch)
         } catch {
             return .failed(notSaved, staleAnchor: false)
         }
@@ -262,12 +277,13 @@ final class MailRepository {
     /// uncached messages fetch again on every open.
     func loadBody(for email: Email) async throws -> MailMessageBody? {
         guard Self.needsBodyFetch(email) else { return nil }
+        let epoch = await emailDAO.accountEpoch
         let fetched = try await makeSource().fetchBody(folder: email.folder, messageId: email.serverId)
         if let row = try? await emailDAO.getEmail(folder: email.folder, serverId: email.serverId),
            row.inWindow {
             try? await emailDAO.updateBody(
                 folder: email.folder, serverId: email.serverId,
-                body: fetched.body, bodyMode: fetched.bodyMode
+                body: fetched.body, bodyMode: fetched.bodyMode, epoch: epoch
             )
         }
         return fetched

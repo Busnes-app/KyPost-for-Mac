@@ -467,6 +467,29 @@ private final class PinArmingRecorder: @unchecked Sendable {
         #expect(env.settings.pullEndpoint == "\(server)/api/notifications/native/pull")
     }
 
+    /// Pairing another account over this one, with no unpair in between,
+    /// erases the previous account's state first; re-pairing the same one
+    /// does not.
+    @Test func pairingAnotherAccountRunsTheReplacementHookFirst() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true)
+        let subsSeen = Box<[String?]>([])
+        env.service.onAccountReplaced = { [pairingStore = env.pairingStore] in
+            // Still the previous pairing: the hook runs before the save.
+            subsSeen.mutate { $0.append(try? pairingStore.loadPairing()?.sub) }
+        }
+
+        _ = await env.service.pair(params: params, deviceToken: "t1")
+        #expect(subsSeen.value.isEmpty)
+
+        _ = await env.service.pair(params: PairingParams(sub: "u2", srv: server, pt: "pt-2"), deviceToken: "t1")
+        #expect(subsSeen.value == ["u1"])
+        #expect(try env.pairingStore.loadPairing()?.sub == "u2")
+
+        _ = await env.service.pair(params: PairingParams(sub: "u2", srv: "https://other.example", pt: "pt-3"), deviceToken: "t1")
+        #expect(subsSeen.value == ["u1", "u2"])
+    }
+
     @Test func failedPairingSavesNothing() async throws {
         let env = try makeEnvironment(client: stubClient(status: 403))
         let outcome = await env.service.pair(params: params, deviceToken: "t")

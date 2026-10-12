@@ -346,6 +346,17 @@ final class SingletonGraph {
         service.reconcileExistingPairingPushes = { [weak self] in
             await self?.pullPollingScheduler.reconcileDeliveredPushesForExistingPairing()
         }
+        // Pairing another account over this one erases the previous
+        // account's mail, as an unpair does. Weak: the graph owns the service.
+        service.onAccountReplaced = { [weak self] in
+            guard let self else { return }
+            self.inboxViewModel.forgetAccount()
+            do {
+                try await self.mailRepository.forgetAccount()
+            } catch {
+                Log.mail.error("Could not clear cached mail on re-pairing: \(error)")
+            }
+        }
         return service
     }()
     lazy var desktopPairingService = DesktopPairingService(

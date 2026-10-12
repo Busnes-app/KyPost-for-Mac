@@ -108,4 +108,42 @@ import Testing
         #expect(graph.mailSignatureStore.signature.isEmpty)
         #expect(other.mailSignatureStore.signature == "Grace")
     }
+
+    /// The account's mail: window rows, mail paged in from before the window
+    /// (which no refresh prunes), cached bodies, and the cursors.
+    @Test func unpairingErasesCachedMailAndCursors() async throws {
+        let graph = try makeGraph()
+        try await seedMail(graph)
+
+        await makeViewModel(graph).unpair()
+
+        #expect(try await graph.emailDAO.getFolder(folder: "INBOX").isEmpty)
+        #expect(graph.mailCursorStore.cursor(pairingId: "u1", folder: "INBOX") == "")
+    }
+
+    /// Pairing another account without an unpair erases the same.
+    @Test func pairingAnotherAccountErasesCachedMail() async throws {
+        let graph = try makeGraph()
+        try await seedMail(graph)
+
+        await graph.deviceRegistrationService.onAccountReplaced?()
+
+        #expect(try await graph.emailDAO.getFolder(folder: "INBOX").isEmpty)
+        #expect(graph.mailCursorStore.cursor(pairingId: "u1", folder: "INBOX") == "")
+    }
+
+    private func seedMail(_ graph: SingletonGraph) async throws {
+        func email(_ id: String, _ body: String) -> Email {
+            Email(
+                serverId: id, folder: "INBOX", senderName: "A", senderEmail: "a@x",
+                subject: id, body: body, keywords: [], receivedAt: Date(),
+                read: false, starred: false
+            )
+        }
+        try await graph.emailDAO.replaceFolderSnapshot(folder: "INBOX", emails: [email("w1", "window text")])
+        try await graph.emailDAO.storeOlderMail(folder: "INBOX", emails: [email("p1", "")])
+        try await graph.emailDAO.updateBody(folder: "INBOX", serverId: "w1", body: "cached", bodyMode: "plain")
+        graph.mailCursorStore.saveCursor(pairingId: "u1", folder: "INBOX", cursor: "12")
+        #expect(try await graph.emailDAO.getFolder(folder: "INBOX").count == 2)
+    }
 }

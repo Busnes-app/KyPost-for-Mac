@@ -656,6 +656,14 @@ old sentence edited out.
   fetched body is cached only on a window row; a page carries no PGP flags, so
   an out-of-window row fetches again on every open. 404 and 413 are their own
   sentences, never "couldn't reach the server".
+- **Leaving an account erases its mail** (`MailRepository.forgetAccount`):
+  every row in or out of the window, cached bodies, and every cursor. Unpair
+  runs it, and so does a registration that stores a pairing for another `sub`
+  or server over the current one (`DeviceRegistrationService.onAccountReplaced`)
+  — out-of-window rows are never pruned, so nothing else would remove them.
+  `EmailDAO.accountEpoch` is captured before a refresh, page or body fetch goes
+  to the network and checked by its write; one that started under a forgotten
+  account stores nothing, cursor included.
 - Known gaps, all needing server help: out-of-window rows never learn of a
   deletion (opening one says it is gone) and are not healed after a
   UIDVALIDITY reset; encrypted mail stored from a page has no PGP flags, so it

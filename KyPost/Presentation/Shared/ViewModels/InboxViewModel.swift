@@ -88,6 +88,11 @@ final class InboxViewModel {
     private var olderExhausted: Set<String> = []
     private var loadingOlder: Set<String> = []
 
+    /// Bumped by `forgetAccount`. A refresh or page captures it when it
+    /// starts and neither paints nor updates any state if it comes back to a
+    /// different one — its rows and answers belong to the account forgotten.
+    private var accountGeneration = 0
+
     private var refreshTask: Task<Void, Never>?
     private var delayedRefreshErrorTask: Task<Void, Never>?
     private var initialRefreshRetryTask: Task<Void, Never>?
@@ -208,14 +213,19 @@ final class InboxViewModel {
 
     /// Best-effort fetch of the folder lists: Inbox and Archive children
     /// (paths come back full, e.g. "INBOX/Receipts"), and the top level.
+    /// A listing that answers after the account was forgotten is dropped.
     func loadSubfolders() async {
-        if let folders = try? await mailRepository.listFolders(parent: StandardFolder.inbox) {
+        let generation = accountGeneration
+        if let folders = try? await mailRepository.listFolders(parent: StandardFolder.inbox),
+           generation == accountGeneration {
             inboxSubfolders = folders
         }
-        if let folders = try? await mailRepository.listFolders(parent: StandardFolder.archive) {
+        if let folders = try? await mailRepository.listFolders(parent: StandardFolder.archive),
+           generation == accountGeneration {
             archiveSubfolders = folders
         }
-        if let folders = try? await mailRepository.listFolders(parent: nil) {
+        if let folders = try? await mailRepository.listFolders(parent: nil),
+           generation == accountGeneration {
             topLevelFolders = folders
         }
     }
@@ -229,6 +239,7 @@ final class InboxViewModel {
     func openSpecialFolder(_ kind: SpecialFolder) async -> Bool {
         selectionGeneration += 1
         let generation = selectionGeneration
+        let account = accountGeneration
         let folders: [MailFolder]
         do {
             folders = try await mailRepository.listFolders(parent: nil)
@@ -238,6 +249,8 @@ final class InboxViewModel {
                 ?? String(localized: "Unable to connect to the mail server."))
             return false
         }
+        // A listing of a forgotten account is not this account's folders.
+        guard account == accountGeneration else { return false }
         topLevelFolders = folders
         guard generation == selectionGeneration else { return false }
         guard let path = InboxRules.resolveSpecialFolder(kind, in: folders.map(\.name)) else {
@@ -411,10 +424,28 @@ final class InboxViewModel {
     /// wipe, an unpair, or a graph rebuild: held actions are dropped (see
     /// `discardHeldActions`) and the older-mail paging state is forgotten — its
     /// frontiers are message ids of an account this device no longer shows.
+    ///
+    /// The rows on screen and the folder lists go too, and every refresh or
+    /// page still in flight is voided (`accountGeneration`): their answers
+    /// are the forgotten account's mail.
     func forgetAccount() {
         discardHeldActions()
+        accountGeneration += 1
+        selectionGeneration += 1
         olderFrontier = [:]
         olderExhausted = []
+        loadingOlder = []
+        refreshingFolders = []
+        refreshedAt = [:]
+        delayedRefreshErrorTask?.cancel()
+        delayedRefreshErrorTask = nil
+        initialRefreshRetryTask?.cancel()
+        initialRefreshRetryTask = nil
+        inboxSubfolders = []
+        archiveSubfolders = []
+        topLevelFolders = []
+        hasLoaded = false
+        resetForFolder(Config.defaultFolder, tab: nil)
     }
 
     private func finish(_ entry: HeldMailAction, with result: MailActionResult) {
@@ -437,10 +468,14 @@ final class InboxViewModel {
     /// cannot page; a page that lands after a folder switch is not painted.
     func loadOlderMail() async {
         let requested = folder
+        let generation = accountGeneration
         guard !loadingOlder.contains(requested) else { return }
         loadingOlder.insert(requested)
-        defer { loadingOlder.remove(requested) }
+        // A forgotten account's page clears nothing: the set was emptied by
+        // `forgetAccount`, and a new page for the same folder may be in it.
+        defer { if generation == accountGeneration { loadingOlder.remove(requested) } }
         let outcome = await mailRepository.loadOlder(folder: requested, frontier: olderFrontier[requested])
+        guard generation == accountGeneration else { return }
         var message: String?
         switch outcome {
         case .loaded(let next):
@@ -464,7 +499,7 @@ final class InboxViewModel {
         guard requested == folder else { return }
         if case .loaded = outcome,
            let rows = try? await mailRepository.cachedFolder(requested),
-           requested == folder {
+           generation == accountGeneration, requested == folder {
             apply(emails: rows)
         }
         if let message { showNotice(message) }
@@ -518,8 +553,9 @@ final class InboxViewModel {
     /// Instant display from the local cache, then a server refresh.
     func load() async {
         let requested = folder
+        let generation = accountGeneration
         if let cached = try? await mailRepository.cachedFolder(requested), !cached.isEmpty,
-           requested == folder {
+           generation == accountGeneration, requested == folder {
             apply(emails: cached)
         }
         await refresh(delaysTransientError: true)
@@ -550,23 +586,29 @@ final class InboxViewModel {
         delayedRefreshErrorTask = nil
         initialRefreshRetryTask?.cancel()
         initialRefreshRetryTask = nil
+        let generation = accountGeneration
         refreshingFolders.insert(requested)
-        defer { refreshingFolders.remove(requested) }
+        defer { if generation == accountGeneration { refreshingFolders.remove(requested) } }
         do {
             let rows = try await mailRepository.refreshFolder(
                 requested,
                 forceFullResync: forceFullResync
             )
             // A refresh that completes after a folder switch must not paint
-            // one mailbox's mail under another's title and actions.
+            // one mailbox's mail under another's title and actions, nor one
+            // that completes after the account was forgotten paint it at all.
+            // The latter did not run for the account now shown.
+            guard generation == accountGeneration else { return false }
             guard requested == folder else { return true }
             markRefreshed(rows)
         } catch MailSourceError.notPaired {
+            guard generation == accountGeneration else { return false }
             guard requested == folder else { return true }
             loadedFolder = nil
             connectionNotice = nil
             errorMessage = "Pair this device (Settings → Connection) to load mail."
         } catch {
+            guard generation == accountGeneration else { return false }
             guard requested == folder else { return true }
             // A failed fetch un-confirms the folder: its emptiness is unknown.
             loadedFolder = nil
@@ -607,17 +649,18 @@ final class InboxViewModel {
     private func retryInitialRefresh() async {
         initialRefreshRetryTask = nil
         let requested = folder
+        let generation = accountGeneration
         guard !refreshingFolders.contains(requested) else { return }
         refreshingFolders.insert(requested)
-        defer { refreshingFolders.remove(requested) }
+        defer { if generation == accountGeneration { refreshingFolders.remove(requested) } }
         do {
             let rows = try await mailRepository.refreshFolder(requested)
-            guard requested == folder else { return }
+            guard generation == accountGeneration, requested == folder else { return }
             delayedRefreshErrorTask?.cancel()
             delayedRefreshErrorTask = nil
             markRefreshed(rows)
         } catch MailSourceError.notPaired {
-            guard requested == folder else { return }
+            guard generation == accountGeneration, requested == folder else { return }
             delayedRefreshErrorTask?.cancel()
             delayedRefreshErrorTask = nil
             connectionNotice = nil
