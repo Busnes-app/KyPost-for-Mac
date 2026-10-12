@@ -171,6 +171,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         PushLifecycle.onLaunch()
         PushLifecycle.installRebuildHandler()
         PrivacySnapshotCover.install()
+        installLifecycleObservers()
         if PushLifecycle.registersForRemoteNotifications {
             application.registerForRemoteNotifications()
         }
@@ -178,20 +179,47 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
 
-    /// Resolved here as well as in `onForeground`, because this runs before
-    /// the first frame is drawn: an expired grace period must cover the app
-    /// before it is visible, not a moment after.
-    func applicationWillEnterForeground(_ application: UIApplication) {
-        SingletonGraph.shared.appLockManager.returnedWithinGrace()
-    }
-
-    func applicationDidBecomeActive(_ application: UIApplication) {
-        PushLifecycle.onForeground()
-    }
-
-    func applicationDidEnterBackground(_ application: UIApplication) {
-        PushLifecycle.onBackground()
-        scheduleBackgroundPull()
+    /// The app is scene-based (the SwiftUI lifecycle generates a scene
+    /// manifest), and UIKit does not call the app delegate's
+    /// `applicationDidEnterBackground` / `WillEnterForeground` /
+    /// `DidBecomeActive` in a scene-based app. The `UIApplication`
+    /// notifications are still posted, once per app-level transition however
+    /// many scenes are open, so the lifecycle hangs off those. Handled
+    /// synchronously on the main queue: the lock must engage before the
+    /// background snapshot, not on a later hop.
+    private func installLifecycleObservers() {
+        let center = NotificationCenter.default
+        center.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                PushLifecycle.onBackground()
+                self?.scheduleBackgroundPull()
+            }
+        }
+        // Resolved here as well as in `onForeground`, because this runs
+        // before the first frame is drawn: an expired grace period must cover
+        // the app before it is visible, not a moment after.
+        center.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                SingletonGraph.shared.appLockManager.returnedWithinGrace()
+            }
+        }
+        center.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                PushLifecycle.onForeground()
+            }
+        }
     }
 
     func application(

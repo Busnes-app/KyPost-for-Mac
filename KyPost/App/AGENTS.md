@@ -95,6 +95,20 @@ intact and the wipe landed a few hundred milliseconds later.
 reports a wipe that could not run, rather than rejecting the eleventh wrong PIN
 exactly like the third.
 
+## iOS lifecycle runs on notifications, not delegate callbacks
+
+The iOS app is scene-based (the SwiftUI lifecycle generates a scene manifest),
+and UIKit does not call `applicationDidEnterBackground`,
+`applicationWillEnterForeground` or `applicationDidBecomeActive` on the app
+delegate in a scene-based app. `AppDelegate.installLifecycleObservers` drives
+`PushLifecycle.onBackground` (+ `scheduleBackgroundPull`),
+`returnedWithinGrace` and `onForeground` from the matching `UIApplication`
+notifications instead. Those fire once per app-level transition however many
+scenes are open, and are handled synchronously on the main queue so the lock
+engages before the background snapshot. Do not add those delegate methods
+back; they are dead code here. `PrivacySnapshotCover` uses the per-scene
+`UIScene` notifications because it covers each scene's own window.
+
 ## Lock ordering at launch
 
 `PushLifecycle.onLaunch` wires `credentialGateService.wireAtLaunch()`
