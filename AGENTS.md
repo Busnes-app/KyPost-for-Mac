@@ -105,45 +105,32 @@ Default section order:
   Note `parallelizable` belongs on each entry in `testTargets`, not in
   `defaultOptions`, where it is silently ignored.
 
-- **A Go runtime crash that used to kill roughly one run in three**, unrelated
-  to any test. Not reproducing as of 2026-08-27 — see the measurement below
-  before acting on this:
+- **`KyPost.xctestplan` sets `GODEBUG=asyncpreemptoff=1`.** Without it a Go
+  runtime crash, unrelated to any test, kills the run (exit 65):
 
   ```
   signal 16 received on thread with no signal stack
   fatal error: non-Go code disabled sigaltstack
   ```
 
-  Signal 16 is `SIGURG`, which Go uses for goroutine preemption; it arrives on a
-  thread whose alternate signal stack something else has removed. It comes from
-  the GopenPGP XCFramework's embedded Go runtime, which is live for the whole
-  test process once any test touches PGP, and it fails the run with exit 65.
+  Signal 16 is `SIGURG`, which Go uses for async goroutine preemption; it
+  arrives on a thread whose alternate signal stack something else has removed.
+  It comes from the GopenPGP XCFramework's embedded Go runtime, live for the
+  whole test process once any test touches PGP. It arrived with the
+  XCFramework in Phase 8, stopped reproducing for a while (0 in 21 runs on
+  2026-08-27) and came back.
 
-  **Measured against `8152c1b`, before the app-lock PIN work, at the same rate**
-  (1 of 3 there, 1 of 3 after) — so it arrived with the XCFramework in Phase 8,
-  not with anything since.
+  **Measured 2026-10-12** (`test-without-building`, full `KyPost Tests`,
+  Xcode 26.6, macOS 26.5.2, GopenPGP v3.4.1, alternating runs on a loaded
+  machine): **4 crashes in 8 runs without the setting, 0 in 8 with it.** At
+  the observed rate a clean 8 by luck is about 1 in 256.
 
-  **Re-measured 2026-08-27 and it did not reproduce: 0 crashes in 15
-  consecutive runs** (`test-without-building`, signed, `KyPost Tests` only,
-  Xcode 26.6 / macOS SDK 26.5, GopenPGP v3.4.1), plus six more full
-  `xcodebuild test` runs the same day. At 1-in-3 the chance of a clean run of
-  15 is about 1 in 437, and of 21 about 1 in 5000, so whatever caused it is no
-  longer firing on this toolchain and this machine.
-
-  **Nothing was changed to achieve that**, which is the part to be careful
-  about. `GODEBUG=asyncpreemptoff=1` — signal 16 is `SIGURG`, which is exactly
-  what Go's async preemption uses — is the obvious lever and has deliberately
-  NOT been pulled: adding a workaround for a fault that does not currently
-  reproduce buys nothing measurable and quietly changes Go's scheduling for
-  everyone afterwards. It is the first thing to try if this comes back.
-
-  A local machine is not a CI runner, and this crash was always timing
-  sensitive, so **it is not safe to conclude it cannot happen on CI**. If a
-  CI run dies on this line, re-run it, then set `GODEBUG=asyncpreemptoff=1`
-  in `KyPost.xctestplan`'s `environmentVariableEntries` and measure again
-  before reaching for a retry loop — a bounded retry keyed on this exact
-  signature is the fallback, never a blanket job retry, which would also
-  paper over real failures.
+  The setting only turns off Go's async preemption inside the test process;
+  goroutines still yield at function calls. Do not remove it without
+  re-measuring the same way. If the crash ever returns with it set, a bounded
+  retry keyed on this exact signature is the fallback, never a blanket job
+  retry, which would also paper over real failures. The shipping app does not
+  set it; nothing so far shows the app process crashing this way.
 
 ## Local Contracts
 

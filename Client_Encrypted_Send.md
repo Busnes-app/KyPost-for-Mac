@@ -264,7 +264,6 @@ Already implemented, do not redo:
   `KyPost/Presentation/Components/EmailListRow.swift`. Tests in
   `KyPost Tests/PgpMessageStateTests.swift`. Design notes in
   `docs/superpowers/specs/2026-07-25-pgp-message-state-design.md`.
-- The "Open in webmail" affordance for reading a message, in `EmailDetailView.swift`.
 - The `clientSideNeeded` 409 — `RelayConflictDto` at `KyPost/Data/Mail/RelayMailSource.swift:162`,
   thrown as `MailSourceError.clientSideNeeded` around `:367-383`.
 

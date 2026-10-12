@@ -545,12 +545,6 @@ final class RelayMailSource: MailSource {
         return results.map { $0.toDomain(folder: folder, tab: $0.label ?? "") }
     }
 
-    func setKeywords(folder: String, messageId: String, keywords: [String]) async throws {
-        // Relay tabs are server-assigned; there is no relay endpoint for
-        // client-side keyword edits.
-        throw MailSourceError.unsupported
-    }
-
     @discardableResult
     func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport {
         try await performAction("move", messageIds: messageIds, mailbox: mailbox, targetMailbox: targetMailbox)

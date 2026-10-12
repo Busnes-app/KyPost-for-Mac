@@ -409,11 +409,6 @@ final class ContactSyncRepository {
         return (try? await groupDAO.names(forIDs: contact.groupIDs)) ?? []
     }
 
-    func allGroups() async -> [ContactGroup] {
-        guard let groupDAO else { return [] }
-        return (try? await groupDAO.listAll()) ?? []
-    }
-
     // MARK: - Private
 
     /// Full refresh: `GET /api/groups` carries no cursor, so anything absent
