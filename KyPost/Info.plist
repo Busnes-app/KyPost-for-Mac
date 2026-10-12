@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>ATSApplicationFontsPath</key>
+	<string>.</string>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>org.kysecurity.mail.pull</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -13,9 +19,6 @@
 			</array>
 		</dict>
 	</array>
-	<!-- Bundled fonts (STYLE_GUIDE §2). Copy Bundle Resources flattens the
-	     Resources/Fonts group, so iOS names the files directly and macOS
-	     points at the Resources directory itself. -->
 	<key>UIAppFonts</key>
 	<array>
 		<string>SpaceGrotesk-Regular.ttf</string>
@@ -26,23 +29,6 @@
 		<string>IBMPlexMono-Medium.ttf</string>
 		<string>IBMPlexMono-SemiBold.ttf</string>
 		<string>IBMPlexMono-Bold.ttf</string>
-	</array>
-	<key>ATSApplicationFontsPath</key>
-	<string>.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>KyPost uses the camera to scan pairing QR codes.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>KyPost exports your synced contacts to Apple Contacts when enabled in Preferences.</string>
-	<!-- Required by LAContext.deviceOwnerAuthentication (AppLockManager).
-	     Without it, evaluating the policy on a Face ID device terminates the
-	     app; the app lock persists its flag first, so the user is left locked
-	     out of their mail with the setting that would undo it behind the same
-	     lock. UnlockView's reset is the second half of that fix. -->
-	<key>NSFaceIDUsageDescription</key>
-	<string>KyPost uses Face ID to unlock the app and to release your pairing credential.</string>
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<string>org.kysecurity.mail.pull</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

@@ -18,7 +18,7 @@ struct KyPostApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 #endif
 
-    @State private var themeManager = ThemeManager()
+    @State private var themeManager = ThemeManager(defaults: SingletonGraph.launchUserDefaults)
     // The router deliberately outlives graph rebuilds (it holds navigation
     // state, not graph state); DeepLinkHandler is a stateless parser.
     @State private var router = NavigationRouter()
@@ -157,6 +157,13 @@ struct KyPostApp: App {
 #endif
                 .task {
                     await graph.runStartupMigrationsIfNeeded()
+#if DEBUG
+                    // MFA approval normally arrives by push; the screenshot
+                    // runner has no server to send one.
+                    if graph.isDemo, DemoContent.requestedScreen == "mfa" {
+                        router.handle(.openMfaApproval(DemoContent.mfaChallenge))
+                    }
+#endif
                 }
                 .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
                 .protectedFromCapture()

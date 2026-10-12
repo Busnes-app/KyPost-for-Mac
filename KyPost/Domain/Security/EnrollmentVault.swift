@@ -46,7 +46,9 @@ final class EnrollmentVault: @unchecked Sendable {
 
     /// Separate from the pairing store's service so a device unpair does not
     /// silently take the enrollment with it, and vice versa.
-    init(keychain: KeychainStorage, keyTag: String = "org.kysecurity.mail.enrollment.deviceKey") {
+    static let defaultKeyTag = "org.kysecurity.mail.enrollment.deviceKey"
+
+    init(keychain: KeychainStorage, keyTag: String = EnrollmentVault.defaultKeyTag) {
         self.keychain = keychain
         self.keyTag = Data(keyTag.utf8)
     }

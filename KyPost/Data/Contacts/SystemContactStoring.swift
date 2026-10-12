@@ -203,3 +203,21 @@ final class LiveSystemContactStore: SystemContactStoring {
         }
     }
 }
+
+/// A Contacts database that is never authorized and never changes. The demo
+/// graph uses it so nothing it does can reach the real address book.
+final class NoopSystemContactStore: SystemContactStoring {
+    var authorizationStatus: CNAuthorizationStatus { .denied }
+    func requestAccess() async throws -> Bool { false }
+    func fetch(identifier: String) async throws -> CNContact? { nil }
+    func listAll() async throws -> [CNContact] { [] }
+    func add(_ contact: CNMutableContact) async throws {}
+    func update(_ contact: CNMutableContact) async throws {}
+    func delete(identifier: String) async throws {}
+    func listGroups() async throws -> [CNGroup] { [] }
+    func addGroup(_ group: CNMutableGroup) async throws {}
+    func renameGroup(identifier: String, to name: String) async throws {}
+    func memberIdentifiers(ofGroup identifier: String) async throws -> [String] { [] }
+    func addMember(contactIdentifier: String, toGroup groupIdentifier: String) async throws {}
+    func removeMember(contactIdentifier: String, fromGroup groupIdentifier: String) async throws {}
+}

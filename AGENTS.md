@@ -84,6 +84,12 @@ Default section order:
 - `KyPost.xctestplan` is the shared test plan, referenced from the
   shared scheme. Both test targets set `parallelizable: false`, and that must
   stay off.
+- `KyPost UITests/ScreenshotTests` is a **capture run, not a check**, and
+  skips itself unless `KYPOST_SCREENSHOTS=1` is in the environment. Keep that
+  skip: it drives the app for minutes, and on macOS it needs UI automation
+  (`sudo DevToolsSecurity -enable`) that an ordinary machine will not have.
+  Run it through `scripts/capture-screenshots.sh` — see the demo-build
+  contract in `KyPost/App/AGENTS.md`.
 
   Swift Testing parallelizes test functions in-process by default. With it on,
   roughly one full-suite run in six aborts with SIGABRT: an uncaught

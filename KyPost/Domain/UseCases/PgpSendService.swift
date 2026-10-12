@@ -57,6 +57,17 @@ final class PgpSendService {
         )
     }
 
+    /// Installs a bootstrap answer without a network call, and marks the
+    /// session loaded so `loadIfNeeded` leaves it alone. Only the DEBUG
+    /// screenshot build uses this (SingletonGraph, DemoContent.isEnabled) —
+    /// nothing in a shipping build may decide custody locally.
+    func preload(hasIdentity: Bool, protection: String, accountAddress: String) {
+        self.hasIdentity = hasIdentity
+        self.protection = protection
+        self.accountAddress = accountAddress
+        custody = pgpKeyCustody(hasIdentity: hasIdentity, protection: protection)
+    }
+
     /// Loads key custody once per session. Cheap to call from every compose
     /// window's `.task`.
     func loadIfNeeded() async {

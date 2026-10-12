@@ -15,21 +15,28 @@ final class MailRepository {
     /// Nil in tests that only exercise full snapshots; the delta path then
     /// behaves exactly as the pre-cursor code did.
     private let cursorStore: (any MailCursorProviding)?
+    /// Serves every call in place of the relay, and stands in for the pairing
+    /// the relay path requires. Nil everywhere except the DEBUG screenshot
+    /// build (SingletonGraph, DemoContent.isEnabled).
+    private let overrideSource: (any MailSource)?
 
     init(
         securePairingStore: SecurePairingStore,
         emailDAO: EmailDAO,
         httpClient: HTTPClient,
-        cursorStore: (any MailCursorProviding)? = nil
+        cursorStore: (any MailCursorProviding)? = nil,
+        overrideSource: (any MailSource)? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.emailDAO = emailDAO
         self.httpClient = httpClient
         self.cursorStore = cursorStore
+        self.overrideSource = overrideSource
     }
 
     /// The relay source; requires a stored pairing.
     func makeSource() throws -> any MailSource {
+        if let overrideSource { return overrideSource }
         guard let pairing = try securePairingStore.loadPairing() else {
             throw MailSourceError.notPaired
         }
@@ -83,6 +90,15 @@ final class MailRepository {
         to: Int = 50,
         forceFullResync: Bool = false
     ) async throws -> [Email] {
+        // The override has no pairing and no cursor to advance; snapshot it
+        // straight into the cache and let the rest of the app read normally.
+        if let overrideSource {
+            let result = try await overrideSource.fetchEmails(
+                folder: folder, from: from, to: to, since: ""
+            )
+            try await emailDAO.replaceFolderSnapshot(folder: folder, emails: result.emails)
+            return try await emailDAO.getFolder(folder: folder, limit: max(to, 1))
+        }
         guard let pairing = try securePairingStore.loadPairing() else {
             throw MailSourceError.notPaired
         }

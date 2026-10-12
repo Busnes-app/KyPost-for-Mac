@@ -112,7 +112,7 @@ final class SingletonGraph {
 
     // MARK: - Repositories & Use Cases
 
-    lazy var enrollmentVault = EnrollmentVault(keychain: keychain)
+    lazy var enrollmentVault = EnrollmentVault(keychain: keychain, keyTag: enrollmentKeyTag)
 
     /// The OpenPGP implementation. One instance, because it is stateless and
     /// every call site must reach the library through this seam.
@@ -190,8 +190,46 @@ final class SingletonGraph {
         securePairingStore: securePairingStore,
         emailDAO: emailDAO,
         httpClient: httpClient,
-        cursorStore: mailCursorStore
+        cursorStore: mailCursorStore,
+        overrideSource: demoMailSource
     )
+
+    /// The screenshot build's stand-in relay; nil in every other build.
+    private var demoMailSource: (any MailSource)? {
+#if DEBUG
+        isDemo ? DemoMailSource() : nil
+#else
+        nil
+#endif
+    }
+
+    /// True only when the DEBUG process was launched with `-KyPostDemo`.
+    /// The launch default for `init(isDemo:)`; read `isDemo` on a graph.
+    nonisolated static var launchIsDemo: Bool {
+#if DEBUG
+        DemoContent.isEnabled
+#else
+        false
+#endif
+    }
+
+    /// The defaults domain app-level state outside the graph (the theme)
+    /// reads, so a demo launch leaves the real one untouched too.
+    static var launchUserDefaults: UserDefaults {
+#if DEBUG
+        launchIsDemo ? DemoContent.isolatedDefaults : .standard
+#else
+        .standard
+#endif
+    }
+
+    /// True only for the DEBUG screenshot build's graph. One switch read by
+    /// the stores, the database, the mail source, the Contacts adapter, the
+    /// push wiring and the startup seed. Never true in a Release build.
+    let isDemo: Bool
+    private let enrollmentKeyTag: String
+    private let gatedCredentialStore: any GatedCredentialStoring
+    private let systemContactStoreOverride: (any SystemContactStoring)?
     lazy var keywordRepository = KeywordRepository(settingsStore: keywordSettingsStore)
     lazy var sendEmailUseCase = SendEmailUseCase(repository: mailRepository)
     lazy var pgpSendService = PgpSendService(
@@ -201,7 +239,12 @@ final class SingletonGraph {
     let contactPhotoCache: ContactPhotoCache
     lazy var systemContactGroupLinkStore = SystemContactGroupLinkStore(defaults: userDefaults)
     lazy var systemContactsExporter: SystemContactsExporter = {
-        let store = LiveSystemContactStore()
+        // The demo graph never reaches the real address book, whatever was
+        // injected: its contacts are fabricated and its links are not the
+        // app's.
+        let store: any SystemContactStoring = isDemo
+            ? NoopSystemContactStore()
+            : (systemContactStoreOverride ?? LiveSystemContactStore())
         return SystemContactsExporter(
             store: store,
             linkStore: systemContactsLinkStore,
@@ -308,7 +351,7 @@ final class SingletonGraph {
     lazy var credentialGateService = CredentialGateService(
         appLockStore: appLockStore,
         securePairingStore: securePairingStore,
-        gatedStore: GatedCredentialStore(),
+        gatedStore: gatedCredentialStore,
         lockManager: appLockManager
     )
 
@@ -344,6 +387,21 @@ final class SingletonGraph {
     /// email/phone → arrays copy, and the cleanup of rows duplicated by the
     /// old order-based reconciler). Safe to call every launch.
     func runStartupMigrationsIfNeeded() async {
+#if DEBUG
+        if isDemo {
+            await DemoContent.seedContacts(into: contactDAO)
+            // Compose asks the relay who holds the account's key before it
+            // offers Encrypt/Sign. The demo account is server-custody.
+            pgpSendService.preload(
+                hasIdentity: true,
+                protection: pgpProtectionServer,
+                accountAddress: DemoContent.accountAddress
+            )
+            // The repairs below are for real stores; marking them done
+            // against demo data would skip them on the real database.
+            return
+        }
+#endif
         if !userDefaults.bool(forKey: Self.legacyContactFieldsMigratedKey) {
             do {
                 try await contactDAO.migrateLegacyFields()
@@ -379,18 +437,47 @@ final class SingletonGraph {
         }
     }
 
+    /// `isDemo` replaces `userDefaults`, `keychain`, the gated credential,
+    /// the device key and the Contacts adapter with isolated stand-ins
+    /// (DemoContent), ignoring what was passed: the demo build must never
+    /// read or modify the real pairing, settings or credentials. Release
+    /// builds ignore `isDemo` entirely.
     init(
         userDefaults: UserDefaults = .standard,
         keychain: KeychainStorage = KeychainStorage(),
-        database: AppDatabase? = nil
+        database: AppDatabase? = nil,
+        isDemo: Bool = SingletonGraph.launchIsDemo,
+        systemContactStore: (any SystemContactStoring)? = nil
     ) throws {
+        var userDefaults = userDefaults
+        var keychain = keychain
+        var gatedStore: any GatedCredentialStoring = GatedCredentialStore()
+        var keyTag = EnrollmentVault.defaultKeyTag
+#if DEBUG
+        self.isDemo = isDemo
+        if isDemo {
+            userDefaults = DemoContent.isolatedDefaults
+            keychain = DemoContent.isolatedKeychain
+            gatedStore = DemoContent.isolatedGatedStore
+            keyTag = DemoContent.isolatedVaultKeyTag
+        }
+#else
+        self.isDemo = false
+#endif
+        gatedCredentialStore = gatedStore
+        enrollmentKeyTag = keyTag
+        systemContactStoreOverride = systemContactStore
+
         self.userDefaults = userDefaults
         hostileLocationProtectionStore = HostileLocationProtectionStore(defaults: userDefaults)
         let hostileLocation = hostileLocationProtectionStore.enabled
 
-        // Hostile Location Protection keeps the whole cache in memory.
-        self.database = try database ?? AppDatabase(inMemory: hostileLocation)
-        contactPhotoCache = ContactPhotoCache(inMemory: hostileLocation)
+        // Hostile Location Protection keeps the whole cache in memory; the
+        // screenshot build does too, so a demo mailbox never lands on disk
+        // beside — or on top of — real mail.
+        let inMemory = hostileLocation || self.isDemo
+        self.database = try database ?? AppDatabase(inMemory: inMemory)
+        contactPhotoCache = ContactPhotoCache(inMemory: inMemory)
         if !self.database.isInMemory {
             do {
                 try AppDatabase.excludeStoreFromBackup()
