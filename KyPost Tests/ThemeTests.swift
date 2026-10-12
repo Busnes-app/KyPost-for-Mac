@@ -2,9 +2,9 @@
 //  ThemeTests.swift
 //  KyPost Tests
 //
-//  Phase 6 tests: theme palette binding contract (the 13 web theme.ts themes
-//  plus the two Ky brand themes), readableOn behavior, ThemeManager
-//  persistence, inbox filtering.
+//  Phase 6 tests: theme palette binding contract (the 17 web theme.ts themes,
+//  led by Busnes Light/Dark), readableOn behavior, ThemeManager persistence,
+//  inbox filtering.
 //
 
 import Foundation
@@ -15,24 +15,43 @@ import Testing
 // MARK: - Palette contract
 
 @Suite struct ThemePaletteTests {
-    @Test func themesMatchWebListPlusKyBrandThemes() {
-        // Exact list + order from web THEME_OPTIONS, followed by the two
-        // brand-refresh Ky themes.
+    @Test func themesMatchWebList() {
+        // Exact list + order from web THEME_OPTIONS (and Android THEME_OPTIONS).
         #expect(AppTheme.themeNames == [
+            "Busnes Light", "Busnes Dark",
             "Dark Matter", "Light Matter", "Tropics", "Tropic Night", "Ocean",
             "Coffee", "White Cliffs", "Cyber Punk", "Neon Purple", "Space",
             "Sky", "Forest", "Sun", "Patina Ky", "Polished Ky",
         ])
-        #expect(AppTheme.themeNames.count == 15)
-        for name in AppTheme.themeNames {
-            #expect(AppTheme.palettes[name] != nil, "Missing palette for \(name)")
-        }
+        #expect(AppTheme.themeNames.count == 17)
+        #expect(Set(AppTheme.palettes.keys) == Set(AppTheme.themeNames))
     }
 
-    @Test func defaultThemeIsPatinaKy() {
-        #expect(AppTheme.defaultThemeName == "Patina Ky")
+    @Test func defaultThemeIsBusnesLight() {
+        #expect(AppTheme.defaultThemeName == "Busnes Light")
         // Unknown names fall back to the default palette.
-        #expect(AppTheme.palette(named: "Nope") == AppTheme.palette(named: "Patina Ky"))
+        #expect(AppTheme.palette(named: "Nope") == AppTheme.palette(named: "Busnes Light"))
+    }
+
+    /// Values from web ky-ui palettes.ts and Android AppTheme.kt; `line` is
+    /// Android's opaque composite, since the web's is translucent.
+    @Test func busnesPalettesMatchWebAndAndroid() {
+        let light = AppTheme.palette(named: "Busnes Light")
+        #expect(light == ThemePalette(
+            bg: 0xF8F6F0, panel: 0xFFFFFF, ink: 0x566461, inkStrong: 0x182326,
+            accent: 0xBF3F18, accentSoft: 0xFBF0EC, line: 0xCCCFCF
+        ))
+        let dark = AppTheme.palette(named: "Busnes Dark")
+        #expect(dark == ThemePalette(
+            bg: 0x182326, panel: 0x1F2B2E, ink: 0xB3BCB8, inkStrong: 0xF2EFE8,
+            accent: 0xF5865F, accentSoft: 0x2B2622, line: 0x525A5B
+        ))
+    }
+
+    /// Web buttonText: white on Busnes Light's orange, charcoal on Dark's.
+    @Test func busnesAccentsGetTheWebsButtonTextContrast() {
+        #expect(AppTheme.palette(named: "Busnes Light").readableOnAccent == .white)
+        #expect(AppTheme.palette(named: "Busnes Dark").readableOnAccent != .white)
     }
 
     @Test func spotCheckHexValuesAgainstThemeTs() {
@@ -49,7 +68,7 @@ import Testing
         // Light themes must run the light system appearance so default text
         // (labels, titles, fields) is dark on their light backgrounds.
         let lightThemes = [
-            "Light Matter", "Tropics", "White Cliffs", "Sky", "Sun", "Polished Ky",
+            "Busnes Light", "Light Matter", "Tropics", "White Cliffs", "Sky", "Sun", "Polished Ky",
         ]
         for name in AppTheme.themeNames {
             let palette = AppTheme.palette(named: name)
@@ -79,7 +98,7 @@ import Testing
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
 
         let manager = ThemeManager(defaults: defaults)
-        #expect(manager.themeName == "Patina Ky")
+        #expect(manager.themeName == "Busnes Light")
 
         manager.setTheme(named: "Ocean")
         #expect(manager.themeName == "Ocean")
@@ -91,6 +110,21 @@ import Testing
         // A fresh manager restores the persisted choice.
         let restored = ThemeManager(defaults: defaults)
         #expect(restored.themeName == "Ocean")
+    }
+
+    /// An existing user's explicit choice — including the old default, once
+    /// picked — survives the new default.
+    @Test @MainActor func aSavedChoiceSurvivesTheNewDefault() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        defaults.set("Patina Ky", forKey: "theme.selectedName")
+        #expect(ThemeManager(defaults: defaults).themeName == "Patina Ky")
+    }
+
+    /// A saved name this build does not offer falls back to the default.
+    @Test @MainActor func anUnknownSavedNameFallsBackToTheDefault() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        defaults.set("Retired Theme", forKey: "theme.selectedName")
+        #expect(ThemeManager(defaults: defaults).themeName == "Busnes Light")
     }
 }
 

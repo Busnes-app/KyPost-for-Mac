@@ -15,6 +15,12 @@ Domain.
 
 ## Local Contracts
 
+- **`AppTheme.defaultThemeName` (`Busnes Light`) is the only fallback
+  name.** A fresh install, a saved name no longer offered, and a missing
+  palette all resolve through it; an explicit saved choice is always kept
+  (`ThemeManager` discards only unknown names). Palettes match web
+  `THEME_OPTIONS` and Android `AppTheme.kt` hex for hex and are opaque — the
+  Busnes `line` is Android's composite of the web's translucent value.
 - **Sheets do not inherit `\.theme`.** Every `.sheet` re-injects
   `.environment(\.theme, theme)`. A sheet that skips it renders unthemed.
 - **Nothing presents while the app is locked — the router enforces it, not
@@ -242,7 +248,8 @@ Recorded so they aren't re-litigated as bugs:
 ## Verification
 
 - Unit: `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
-  (Swift Testing; `ContactSearchTests`, `ComposeRecipientTests`).
+  (Swift Testing; `ContactSearchTests`, `ComposeRecipientTests`,
+  `ThemeTests`).
 - Pass `debounceInterval: .zero` to `ComposeViewModel` in tests, and poll for
   the result rather than sleeping a fixed span — the search lands a scheduling
   hop later even at zero, so a fixed sleep goes flaky under load.

@@ -37,7 +37,7 @@ final class ThemeManager {
 }
 
 extension EnvironmentValues {
-    /// The active palette; defaults to Dark Matter until the app injects one.
+    /// The active palette; the default theme until the app injects one.
     @Entry var theme: ThemePalette = AppTheme.palette(named: AppTheme.defaultThemeName)
 }
 

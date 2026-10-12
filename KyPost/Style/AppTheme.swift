@@ -2,11 +2,15 @@
 //  AppTheme.swift
 //  KyPost
 //
-//  Theme palettes (spec §6, STYLE_GUIDE.md §1). Binding contract: the 15
+//  Theme palettes (spec §6, STYLE_GUIDE.md §1). Binding contract: the 17
 //  theme names and hex values are numerically identical to web theme.ts and
 //  Android AppTheme.kt — if a hex changes on one side, port it the same day.
 //  Mobile uses bg/panel/ink/inkStrong/accent/line + accentSoft (the one extra
 //  field, needed for the avatar gradient per STYLE_GUIDE §3).
+//
+//  The two Busnes palettes come from the web's ky-ui palettes.ts. Their web
+//  `line` is translucent; `line` here is Android's opaque composite onto
+//  `panel`, because every palette color on both native clients is opaque.
 //
 
 import SwiftUI
@@ -53,15 +57,29 @@ struct ThemePalette: Equatable, Sendable {
 enum AppTheme {
     /// Theme names in display order — exact list from web THEME_OPTIONS.
     static let themeNames: [String] = [
+        "Busnes Light", "Busnes Dark",
         "Dark Matter", "Light Matter", "Tropics", "Tropic Night", "Ocean",
         "Coffee", "White Cliffs", "Cyber Punk", "Neon Purple", "Space",
         "Sky", "Forest", "Sun", "Patina Ky", "Polished Ky",
     ]
 
-    static let defaultThemeName = "Patina Ky"
+    /// The one place the fallback lives: a fresh install, a saved name this
+    /// build no longer offers, and a missing palette all resolve here.
+    /// Matches Android's `DEFAULT_THEME`. (The web instead picks Busnes Light
+    /// or Busnes Dark from the system appearance.) An explicit saved choice is
+    /// always kept — `ThemeManager` only discards names it does not know.
+    static let defaultThemeName = "Busnes Light"
 
     /// Values transcribed from frontend theme.ts — do not edit independently.
     static let palettes: [String: ThemePalette] = [
+        "Busnes Light": ThemePalette(
+            bg: 0xF8F6F0, panel: 0xFFFFFF, ink: 0x566461, inkStrong: 0x182326,
+            accent: 0xBF3F18, accentSoft: 0xFBF0EC, line: 0xCCCFCF
+        ),
+        "Busnes Dark": ThemePalette(
+            bg: 0x182326, panel: 0x1F2B2E, ink: 0xB3BCB8, inkStrong: 0xF2EFE8,
+            accent: 0xF5865F, accentSoft: 0x2B2622, line: 0x525A5B
+        ),
         "Dark Matter": ThemePalette(
             bg: 0x1A1A1E, panel: 0x252530, ink: 0xD4C5E2, inkStrong: 0xE8DDF5,
             accent: 0xC29A72, accentSoft: 0x5A3F31, line: 0x404050
