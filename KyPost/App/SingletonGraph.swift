@@ -405,6 +405,11 @@ final class SingletonGraph {
         // A pending grace-period lock owns a timer; a superseded graph's must
         // not fire into the replacement's session.
         appLockManager.shutdown()
+        // Dropped, not sent: the session below is about to be cancelled, and
+        // the rebuild is a Hostile Location Protection switch or a wipe — in
+        // neither should a superseded graph act on the account. The mail stays
+        // where it was, which is the safe direction.
+        inboxViewModel.discardHeldActions()
         // Drops in-flight requests, the connection pool, and the session's
         // strong reference to its delegate. Not `finishTasksAndInvalidate`:
         // a superseded graph's requests write to a database that is going

@@ -50,6 +50,10 @@ struct EmailDetailView: View {
     @State private var attachmentListing: Task<[EmailAttachment]?, Never>?
     /// The Forward in progress; cancelled when the screen goes away.
     @State private var forwardTask: Task<Void, Never>?
+    /// A moving action is in flight; its buttons wait for the answer.
+    @State private var isActing = false
+    /// Why the relay did not move this message; non-nil shows an alert.
+    @State private var actionFailure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -137,9 +141,9 @@ struct EmailDetailView: View {
         // the navigation bar wastes the scarce vertical space on iPhone.
         .navigationTitle("")
         .toolbar {
-            // Reply/Reply All/Forward + Archive/Junk/Delete, matching Android
-            // EmailDetailActivity's action row. On iOS they live in the
-            // bottom bar — the navigation bar can't fit six buttons.
+            // Reply/Reply All/Forward + Archive/Move/Junk/Delete, matching
+            // Android EmailDetailActivity's action row. On iOS they live in
+            // the bottom bar — the navigation bar can't fit seven buttons.
 #if os(iOS)
             ToolbarItemGroup(placement: .bottomBar) {
                 mailActionButtons
@@ -158,6 +162,17 @@ struct EmailDetailView: View {
             ComposeView(draft: draft).environment(\.theme, theme)
         }
 #endif
+        .alert(
+            "Message not changed",
+            isPresented: Binding(
+                get: { actionFailure != nil },
+                set: { if !$0 { actionFailure = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { actionFailure = nil }
+        } message: {
+            Text(actionFailure ?? "")
+        }
         .quickLookPreview($quickLookURL)
         .onChange(of: quickLookURL) { old, new in
             guard let old, old != new else { return }
@@ -220,8 +235,8 @@ struct EmailDetailView: View {
         }
     }
 
-    /// The six mail actions, in Android's order: reply, reply all, forward,
-    /// archive, junk, delete.
+    /// The seven mail actions, in Android's order: reply, reply all, forward,
+    /// archive, move, junk, delete.
     @ViewBuilder
     private var mailActionButtons: some View {
         // Not `.disabled`: a disabled button cannot say why it is disabled.
@@ -253,32 +268,54 @@ struct EmailDetailView: View {
         }
         .opacity(replyAvailable ? 1 : 0.4)
         Button {
-            Task {
-                await inboxViewModel.archive(serverIds: [email.serverId])
-                dismiss()
-            }
+            act(.archive)
         } label: {
             Label("Archive", systemImage: "archivebox")
         }
         .help("Move to Archive")
-        Button {
-            Task {
-                await inboxViewModel.markJunk(serverIds: [email.serverId])
-                dismiss()
+        .disabled(isActing)
+        Menu {
+            ForEach(inboxViewModel.moveTargets(from: email.folder), id: \.self) { target in
+                Button(InboxRules.moveTargetLabel(target)) {
+                    act(.move, to: target)
+                }
             }
+        } label: {
+            Label("Move to Folder", systemImage: "folder")
+        }
+        .help("Move to another folder")
+        .disabled(isActing)
+        Button {
+            act(.spam)
         } label: {
             Label("Junk", systemImage: "xmark.bin")
         }
         .help("Move to Junk")
+        .disabled(isActing)
         Button(role: .destructive) {
-            Task {
-                await inboxViewModel.delete(serverIds: [email.serverId])
-                dismiss()
-            }
+            act(.delete)
         } label: {
             Label("Delete", systemImage: "trash")
         }
         .help("Move to Trash")
+        .disabled(isActing)
+    }
+
+    /// Runs a moving action now — the reader's actions are not undoable —
+    /// and leaves the screen only once the relay confirmed this message. A
+    /// rejection keeps the reader open and says why.
+    private func act(_ action: MailMoveAction, to target: String? = nil) {
+        guard !isActing else { return }
+        isActing = true
+        Task {
+            let failure = await inboxViewModel.performNow(action, on: email, to: target)
+            isActing = false
+            if let failure {
+                actionFailure = failure
+            } else {
+                dismiss()
+            }
+        }
     }
 
     /// Attachment chips; tapping downloads to a temp file and Quick Looks it.
@@ -588,9 +625,11 @@ struct EmailDetailView: View {
                     recipientLines
                 }
                 Spacer()
-                Text(email.receivedAt, format: .dateTime.day().month().hour().minute())
-                    .font(AppFont.ui(12))
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                if Email.isKnownDate(email.receivedAt) {
+                    Text(email.receivedAt, format: .dateTime.day().month().hour().minute())
+                        .font(AppFont.ui(12))
+                        .foregroundStyle(theme.ink.opacity(0.7))
+                }
             }
 
             if !email.keywords.isEmpty {

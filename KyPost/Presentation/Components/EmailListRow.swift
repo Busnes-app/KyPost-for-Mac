@@ -5,6 +5,7 @@
 //  One inbox row: avatar, sender, subject, keyword chips, unread indicator.
 //
 
+import Combine
 import SwiftUI
 
 extension EnvironmentValues {
@@ -15,11 +16,38 @@ extension EnvironmentValues {
     /// prompt with no way through, while the reverse merely points them at
     /// webmail they could have used anyway.
     @Entry var deviceIsEnrolled: Bool = false
+
+    /// "Now" for row dates. Set by `relabelsAtMidnight()` so yesterday's
+    /// times turn into dates when the day changes, without a refresh.
+    @Entry var inboxToday: Date = .now
+}
+
+private struct RelabelsAtMidnight: ViewModifier {
+    @State private var today = Date.now
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.inboxToday, today)
+            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+                today = .now
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+                today = .now
+            }
+    }
+}
+
+extension View {
+    /// Re-renders row dates at midnight and on a time-zone change.
+    func relabelsAtMidnight() -> some View {
+        modifier(RelabelsAtMidnight())
+    }
 }
 
 struct EmailListRow: View {
     @Environment(\.theme) private var theme
     @Environment(\.deviceIsEnrolled) private var deviceIsEnrolled
+    @Environment(\.inboxToday) private var today
 
     let email: Email
 
@@ -64,7 +92,9 @@ struct EmailListRow: View {
                         .foregroundStyle(theme.inkStrong)
                         .lineLimit(1)
                     Spacer()
-                    Text(email.receivedAt, format: .relative(presentation: .named))
+                    // Time for today, a medium date otherwise, blank when the
+                    // relay sent none — in the device's zone.
+                    Text(InboxRules.rowDate(email.receivedAt, now: today))
                         .font(AppFont.ui(12))
                         .foregroundStyle(theme.ink.opacity(0.7))
                 }

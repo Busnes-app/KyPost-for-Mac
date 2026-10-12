@@ -37,8 +37,11 @@ enum FolderPrompt: Identifiable, Hashable {
 
 enum MacSection: Hashable {
     case inbox(keyword: String?)
-    /// A server mailbox other than Inbox (Drafts, Junk, Sent, Trash, Archive/…).
+    /// A server mailbox other than Inbox (Junk, Trash, Archive/…).
     case folder(name: String)
+    /// Sent or Drafts, opened by resolving the account's real path on each
+    /// selection — never by a hardcoded name.
+    case special(SpecialFolder)
     case contacts
 }
 
@@ -138,17 +141,31 @@ struct MacRootView: View {
                 openWindow(id: "compose", value: draft)
             }
         }
-        .onChange(of: section) {
-            switch section {
+        .onChange(of: section) { previous, current in
+            switch current {
             case .inbox(let keyword):
                 selectedEmails = []
                 Task { await inboxViewModel.selectFolder(StandardFolder.inbox, tab: keyword) }
             case .folder(let name):
                 selectedEmails = []
                 Task { await inboxViewModel.selectFolder(name) }
+            case .special(let kind):
+                selectedEmails = []
+                Task {
+                    // No such folder (or no answer): the toast says so, and
+                    // the sidebar goes back to what is actually on screen.
+                    if !(await inboxViewModel.openSpecialFolder(kind)), section == current {
+                        section = previous
+                    }
+                }
             case .contacts, nil:
                 break
             }
+        }
+        // A selection never outlives the folder it was made in, however the
+        // folder changed (sidebar, a deleted folder, a notification tap).
+        .onChange(of: inboxViewModel.folder) {
+            selectedEmails = []
         }
         .onChange(of: inboxViewModel.filteredEmails) {
             // Re-point the selection at the refreshed values (Email is
@@ -164,29 +181,12 @@ struct MacRootView: View {
 
     // MARK: - Sidebar
 
-    /// Mailboxes shown between the keywords and Archive, in display order.
-    private static let interiorFolders = [
-        StandardFolder.drafts,
-        StandardFolder.junk,
-        StandardFolder.sent,
-        StandardFolder.trash,
-    ]
-
-    private static func folderIcon(_ name: String) -> String {
-        switch name {
-        case StandardFolder.drafts: "doc.text"
-        case StandardFolder.junk: "xmark.bin"
-        case StandardFolder.sent: "paperplane"
-        case StandardFolder.trash: "trash"
-        default: "folder"
-        }
-    }
 
     private func sidebar(theme: ThemePalette) -> some View {
         List(selection: $section) {
             Section("Mail") {
                 Label("Inbox", systemImage: "tray")
-                    .moveDropTarget(StandardFolder.inbox, viewModel: inboxViewModel)
+                    .moveDropTarget(viewModel: inboxViewModel) { StandardFolder.inbox }
                     .tag(MacSection.inbox(keyword: nil))
                     .contextMenu {
                         // Inbox itself is never deletable or renamable, so it
@@ -211,9 +211,12 @@ struct MacRootView: View {
                         .padding(.leading, 12)
                         .tag(MacSection.inbox(keyword: tab.name))
                 }
-                ForEach(Self.interiorFolders, id: \.self) { name in
-                    folderRow(path: name, icon: Self.folderIcon(name), indented: true)
-                }
+                // Between the keywords and Archive, in display order. Sent and
+                // Drafts resolve to the account's real folders when picked.
+                specialFolderRow(.drafts)
+                folderRow(path: StandardFolder.junk, icon: "xmark.bin", indented: true)
+                specialFolderRow(.sent)
+                folderRow(path: StandardFolder.trash, icon: "trash", indented: true)
                 folderRow(path: StandardFolder.archive, icon: "archivebox", indented: false)
                 ForEach(inboxViewModel.archiveSubfolders, id: \.name) { sub in
                     folderRow(
@@ -232,6 +235,16 @@ struct MacRootView: View {
         .background(theme.bg)
     }
 
+    /// Sent or Drafts. Selecting it resolves the path from a fresh folder
+    /// listing; a drop goes to the path the last listing resolved, and is
+    /// refused when there is none.
+    private func specialFolderRow(_ kind: SpecialFolder) -> some View {
+        Label(kind.label, systemImage: kind.systemImage)
+            .padding(.leading, 12)
+            .moveDropTarget(viewModel: inboxViewModel) { inboxViewModel.specialFolderPath(kind) }
+            .tag(MacSection.special(kind))
+    }
+
     /// A selectable sidebar folder that also accepts dropped emails.
     private func folderRow(
         path: String,
@@ -241,7 +254,7 @@ struct MacRootView: View {
     ) -> some View {
         Label(StandardFolder.displayName(path), systemImage: icon)
             .padding(.leading, indented ? 12 : 0)
-            .moveDropTarget(path, viewModel: inboxViewModel)
+            .moveDropTarget(viewModel: inboxViewModel) { path }
             .tag(MacSection.folder(name: path))
             .contextMenu {
                 Button("New Subfolder…") { folderPrompt = .create(parent: path) }
@@ -297,7 +310,7 @@ struct MacRootView: View {
     @ViewBuilder
     private func contentColumn(theme: ThemePalette) -> some View {
         switch section ?? .inbox(keyword: nil) {
-        case .inbox, .folder:
+        case .inbox, .folder, .special:
             emailList(theme: theme)
         case .contacts:
             contactList(theme: theme)
@@ -305,82 +318,103 @@ struct MacRootView: View {
     }
 
     private func emailList(theme: ThemePalette) -> some View {
-        Group {
+        VStack(spacing: 0) {
+            FreshnessLine(lastRefreshed: inboxViewModel.lastRefreshed)
             if inboxViewModel.filteredEmails.isEmpty {
-                EmptyStateView(
-                    message: inboxViewModel.errorMessage
-                        ?? "No emails yet — refresh with ⌘R.",
-                    systemImage: "tray"
-                )
+                Group {
+                    // "No messages" only once this folder refreshed: a loading
+                    // or unreachable folder with an empty cache is unknown.
+                    if let message = inboxViewModel.errorMessage {
+                        EmptyStateView(message: message, systemImage: "exclamationmark.triangle")
+                    } else if inboxViewModel.showsEmptyFolderState {
+                        EmptyStateView(message: inboxViewModel.emptyFolderMessage, systemImage: "tray")
+                    } else if inboxViewModel.isRefreshing {
+                        ProgressView()
+                            .padding(.top, 40)
+                    }
+                }
                 .frame(maxHeight: .infinity, alignment: .top)
             } else {
-                List(inboxViewModel.filteredEmails, selection: $selectedEmails) { email in
-                    EmailListRow(email: email)
-                        .draggable(dragPayload(for: email))
-                        .tag(email)
-                        .listRowBackground(theme.bg)
-                        .listRowSeparatorTint(theme.line)
-                }
-                // Single click selects (fills the preview pane when shown);
-                // double click / primaryAction pops the email out.
-                .contextMenu(forSelectionType: Email.self) { selection in
-                    Button {
-                        openInNewWindows(selection)
-                    } label: {
-                        Label("Open in New Window", systemImage: "macwindow.badge.plus")
+                ScrollViewReader { proxy in
+                    List(inboxViewModel.filteredEmails, selection: cappedSelection) { email in
+                        EmailListRow(email: email)
+                            .draggable(dragPayload(for: email))
+                            .tag(email)
+                            .listRowBackground(theme.bg)
+                            .listRowSeparatorTint(theme.line)
                     }
-                    Divider()
-                    Button {
-                        Task { await inboxViewModel.markRead(serverIds: selection.map(\.serverId)) }
-                    } label: {
-                        Label("Mark as Read", systemImage: "envelope.open")
-                    }
-                    .disabled(selection.allSatisfy(\.read))
-                    Button {
-                        runMailAction(on: selection) { await inboxViewModel.archive(serverIds: $0) }
-                    } label: {
-                        Label("Archive", systemImage: "archivebox")
-                    }
-                    Menu {
-                        ForEach(inboxViewModel.moveDestinations, id: \.self) { destination in
-                            Button(StandardFolder.displayName(destination)) {
-                                runMailAction(on: selection) {
-                                    await inboxViewModel.move(serverIds: $0, to: destination)
+                    // Single click selects (fills the preview pane when shown);
+                    // double click / primaryAction pops the email out.
+                    .contextMenu(forSelectionType: Email.self) { selection in
+                        Button {
+                            openInNewWindows(selection)
+                        } label: {
+                            Label("Open in New Window", systemImage: "macwindow.badge.plus")
+                        }
+                        Divider()
+                        Button {
+                            Task { await inboxViewModel.markRead(serverIds: selection.map(\.serverId)) }
+                        } label: {
+                            Label("Mark as Read", systemImage: "envelope.open")
+                        }
+                        .disabled(selection.allSatisfy(\.read))
+                        Button {
+                            runMailAction(on: selection) { inboxViewModel.archive(serverIds: $0) }
+                        } label: {
+                            Label("Archive", systemImage: "archivebox")
+                        }
+                        Menu {
+                            ForEach(inboxViewModel.moveDestinations, id: \.self) { destination in
+                                Button(InboxRules.moveTargetLabel(destination)) {
+                                    runMailAction(on: selection) {
+                                        inboxViewModel.move(serverIds: $0, to: destination)
+                                    }
                                 }
                             }
+                        } label: {
+                            Label("Move To", systemImage: "folder")
                         }
-                    } label: {
-                        Label("Move To", systemImage: "folder")
+                        Button {
+                            runMailAction(on: selection) { inboxViewModel.markJunk(serverIds: $0) }
+                        } label: {
+                            Label("Move to Junk", systemImage: "xmark.bin")
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            deleteEmails(selection)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    } primaryAction: { selection in
+                        openInNewWindows(selection)
                     }
-                    Button {
-                        runMailAction(on: selection) { await inboxViewModel.markJunk(serverIds: $0) }
-                    } label: {
-                        Label("Move to Junk", systemImage: "xmark.bin")
+                    .onDeleteCommand {
+                        deleteEmails(selectedEmails)
                     }
-                    Divider()
-                    Button(role: .destructive) {
-                        deleteEmails(selection)
-                    } label: {
-                        Label("Delete", systemImage: "trash")
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .reportsScrollTop(to: inboxViewModel)
+                    .newMailPill(inboxViewModel)
+                    .onChange(of: inboxViewModel.scrollToTopRequest) {
+                        guard let first = inboxViewModel.filteredEmails.first else { return }
+                        withAnimation { proxy.scrollTo(first, anchor: .top) }
                     }
-                } primaryAction: { selection in
-                    openInNewWindows(selection)
                 }
-                .onDeleteCommand {
-                    deleteEmails(selectedEmails)
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
             }
         }
         .background(theme.bg)
+        .undoBar(inboxViewModel)
+        .relabelsAtMidnight()
+        // Switching to Contacts or closing the window leaves the list, which
+        // confirms whatever is held for Undo.
+        .onDisappear { inboxViewModel.commitHeldActions() }
         .navigationTitle(currentInboxTitle)
         .toolbar {
             // Selection-based mail actions, so archive/read/delete never
             // require opening the email (the context menu's counterparts).
             ToolbarItem {
                 Button {
-                    runMailAction(on: selectedEmails) { await inboxViewModel.archive(serverIds: $0) }
+                    runMailAction(on: selectedEmails) { inboxViewModel.archive(serverIds: $0) }
                 } label: {
                     Label("Archive", systemImage: "archivebox")
                 }
@@ -432,7 +466,7 @@ struct MacRootView: View {
                 }
             }
         }
-        .toast(message: inboxViewModel.connectionNotice)
+        .toast(message: inboxViewModel.notice ?? inboxViewModel.connectionNotice)
     }
 
     private func contactList(theme: ThemePalette) -> some View {
@@ -518,7 +552,7 @@ struct MacRootView: View {
     @ViewBuilder
     private func detailPane(theme: ThemePalette) -> some View {
         switch section ?? .inbox(keyword: nil) {
-        case .inbox, .folder:
+        case .inbox, .folder, .special:
             if let email = singleSelectedEmail {
                 EmailDetailView(email: email, inboxViewModel: inboxViewModel)
                     .id(email.serverId) // re-run markRead when the selection changes
@@ -573,17 +607,33 @@ struct MacRootView: View {
     }
 
     private func deleteEmails(_ emails: Set<Email>) {
-        runMailAction(on: emails) { await inboxViewModel.delete(serverIds: $0) }
+        runMailAction(on: emails) { inboxViewModel.delete(serverIds: $0) }
     }
 
-    /// Deselects the affected rows, then runs a bulk mail operation.
+    /// Deselects the affected rows, then holds a bulk mail action for Undo.
+    /// Ids go in on-screen order, so the relay sees what the user saw.
     private func runMailAction(
         on emails: Set<Email>,
-        _ operation: @escaping ([String]) async -> Void
+        _ operation: ([String]) -> Void
     ) {
         guard !emails.isEmpty else { return }
         selectedEmails.subtract(emails)
-        Task { await operation(emails.map(\.serverId)) }
+        let ids = Set(emails.map(\.serverId))
+        operation(inboxViewModel.filteredEmails.map(\.serverId).filter(ids.contains))
+    }
+
+    /// The selection, refusing to grow past the relay's per-request cap.
+    private var cappedSelection: Binding<Set<Email>> {
+        Binding(
+            get: { selectedEmails },
+            set: { newValue in
+                if newValue.count > MailRepository.maxActionIds, newValue.count > selectedEmails.count {
+                    inboxViewModel.reportSelectionLimit()
+                } else {
+                    selectedEmails = newValue
+                }
+            }
+        )
     }
 
     private var currentInboxTitle: String {
@@ -592,6 +642,8 @@ struct MacRootView: View {
             keyword
         case .folder(let name):
             StandardFolder.displayName(name)
+        case .special(let kind):
+            kind.label
         default:
             "Inbox"
         }
@@ -603,25 +655,31 @@ struct MacRootView: View {
         }
     }
 
+    /// Opens the email a notification tap pointed at. The target is consumed
+    /// here, once, whether or not it is found: a later folder switch or
+    /// window must not hunt for it again.
     private func openPendingMessageIfNeeded() {
         guard let messageId = router.pendingMessageId else { return }
+        router.pendingMessageId = nil
         Task {
-            // Resync before opening: the cached row may carry a stale bodyMode
-            // or stale PGP state, and the detail screen renders from it.
-            await inboxViewModel.refreshForPushTap()
-            guard let email = inboxViewModel.email(withServerId: messageId) else { return }
+            // Switches to Inbox and resyncs before opening: the cached row may
+            // carry a stale bodyMode or stale PGP state, and the detail screen
+            // renders from it.
+            guard let email = await inboxViewModel.prepareForPushTap(messageId: messageId) else {
+                return
+            }
             section = .inbox(keyword: nil)
             selectedEmails = [email]
-            router.pendingMessageId = nil
         }
     }
 }
 
 /// Accepts dragged email server ids (newline-joined, see `dragPayload`) and
-/// moves them to `folder`, highlighting the row while a drag hovers over it.
+/// moves them to the folder `folder` resolves to at drop time, highlighting
+/// the row while a drag hovers over it. A nil folder refuses the drop.
 private struct MoveDropTarget: ViewModifier {
-    let folder: String
     let viewModel: InboxViewModel
+    let folder: () -> String?
 
     @Environment(\.theme) private var theme
     @State private var isTargeted = false
@@ -636,8 +694,8 @@ private struct MoveDropTarget: ViewModifier {
                 let serverIds = payloads.flatMap {
                     $0.split(separator: "\n").map(String.init)
                 }
-                guard !serverIds.isEmpty else { return false }
-                Task { await viewModel.move(serverIds: serverIds, to: folder) }
+                guard !serverIds.isEmpty, let target = folder() else { return false }
+                viewModel.move(serverIds: serverIds, to: target)
                 return true
             } isTargeted: { targeted in
                 isTargeted = targeted
@@ -646,8 +704,8 @@ private struct MoveDropTarget: ViewModifier {
 }
 
 private extension View {
-    func moveDropTarget(_ folder: String, viewModel: InboxViewModel) -> some View {
-        modifier(MoveDropTarget(folder: folder, viewModel: viewModel))
+    func moveDropTarget(viewModel: InboxViewModel, folder: @escaping () -> String?) -> some View {
+        modifier(MoveDropTarget(viewModel: viewModel, folder: folder))
     }
 }
 

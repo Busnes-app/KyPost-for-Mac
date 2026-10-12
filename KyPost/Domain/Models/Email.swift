@@ -49,6 +49,16 @@ struct Email: Identifiable, Hashable, Sendable {
     var pgpDecryptError: String = ""
 
     var id: String { serverId }
+
+    /// Stands in for a missing or unparseable `atUtc`. A sentinel rather than
+    /// an optional so the cached schema and its newest-first sort stay as they
+    /// are; it sorts last, and every renderer shows it as blank. It used to be
+    /// `Date()`, which dressed an undated message up as just-arrived.
+    nonisolated static let unknownDate = Date.distantPast
+
+    nonisolated static func isKnownDate(_ date: Date) -> Bool {
+        date > unknownDate
+    }
 }
 
 /// A folder/mailbox on the relay.
