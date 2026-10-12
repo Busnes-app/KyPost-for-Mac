@@ -35,12 +35,15 @@ private struct FakeCrypto: PgpDecrypting {
     /// Captures what `verifyDetached` was handed, so a signed-only test can
     /// assert the verdict is computed over the canonical octets and not `body`.
     let detachedInput = Box<(bytes: Data, signature: String)?>(nil)
+    /// The private keys `decrypt` was handed.
+    let decryptKeys = Box<[Data]>([])
 
     func decrypt(
         armoredCiphertext: String,
-        privateKey: Data,
+        privateKeys: [Data],
         signerKeys: [String]
     ) throws -> DecryptedMessage {
+        decryptKeys.value = privateKeys
         if let error { throw error }
         return DecryptedMessage(body: body, signature: signature)
     }
@@ -384,6 +387,57 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
 }
 
 // MARK: - Session
+
+/// Device-envelope v3: a vault holding a keyring decrypts with every member.
+@Suite(.serialized) struct EncryptedMessageReaderKeyringTests {
+    /// Mail encrypted to a retired key must still open: the reader offers the
+    /// whole ring, not just the active key.
+    @Test func anOpenedKeyringOffersEveryMemberToDecrypt() async throws {
+        let ring = try #require(parsePgpKeyring(
+            V3Fixtures.ringBytes,
+            expectedActiveFingerprint: V3Fixtures.active,
+            inspector: GopenPGPCrypto()
+        ))
+        let crypto = FakeCrypto(body: mimeBody)
+        let session = freshSession()
+        let reader = makeReader(opener: .opened(.keyring(ring)), crypto: crypto, session: session)
+        let outcome = await reader.read(
+            mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
+        )
+        guard case .decrypted = outcome else {
+            Issue.record("expected decrypted, got \(outcome)"); return
+        }
+        #expect(crypto.decryptKeys.value == ring.members.map(\.armor))
+        #expect(session.materialGeneration == 2)
+    }
+
+    /// End to end with the real library: the fixture's historical ciphertext,
+    /// encrypted to the retired member, opens through the reader.
+    @Test func aRetiredKeyStillDecryptsOldMailThroughTheReader() async throws {
+        let ring = try #require(parsePgpKeyring(
+            V3Fixtures.ringBytes,
+            expectedActiveFingerprint: V3Fixtures.active,
+            inspector: GopenPGPCrypto()
+        ))
+        let ciphertext = try #require(V3Fixtures.keyringFile["ciphertext"] as? String)
+        let session = freshSession()
+        session.put(keyring: ring)
+        let reader = EncryptedMessageReader(
+            opener: FakeOpener(outcome: .notEnrolled),
+            payloads: FakePayloads(result: .success(PgpPayload(encryptedPayload: ciphertext)), thrown: nil),
+            crypto: GopenPGPCrypto(),
+            session: session,
+            mime: { DecryptedBody(html: nil, plain: String(decoding: $0, as: UTF8.self), protectedSubject: nil) }
+        )
+        let outcome = await reader.read(
+            mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: false
+        )
+        guard case .decrypted(let body, _, _) = outcome else {
+            Issue.record("expected decrypted, got \(outcome)"); return
+        }
+        #expect(body.plain == V3Fixtures.keyringFile["plaintext"] as? String)
+    }
+}
 
 @Suite(.serialized) struct EnrollmentSessionTests {
     @Test func aHeldKeyIsLentRatherThanReturned() {

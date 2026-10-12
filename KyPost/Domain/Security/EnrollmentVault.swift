@@ -12,7 +12,104 @@ import Foundation
 import LocalAuthentication
 import os
 
-enum EnrollmentVaultError: Error, Equatable {
+/// The Keychain operations the vault needs, so a test can inject a store that
+/// fails on write and prove the previous record survives.
+nonisolated protocol SecureItemStoring: Sendable {
+    func setData(_ data: Data, forKey key: String) throws
+    func data(forKey key: String) throws -> Data?
+    func remove(_ key: String) throws
+}
+
+extension KeychainStorage: SecureItemStoring {}
+
+/// What a sealed record's plaintext is. Carried in the record itself, so
+/// nothing ever inspects plaintext to decide how to read it.
+nonisolated enum VaultRecordKind: UInt8, Equatable, Sendable {
+    /// One armored key, or a current-first collection of current and retired keys.
+    case legacyArmor = 1
+    /// The original `kypost-pgp-keyring-v1` bytes, validated before sealing.
+    case keyring = 2
+}
+
+/// The keyring acknowledgement values, stored beside the material because the
+/// launch-time report needs them without the key. Public data: the server
+/// lists both on the owner's device page.
+nonisolated struct KeyringAcknowledgement: Equatable, Sendable {
+    var materialGeneration: UInt64
+    var fingerprint: String
+}
+
+/// One sealed record, written as **one** Keychain item.
+///
+/// One item is what makes replacement atomic: `SecItemUpdate` on a single
+/// item either lands or leaves the old bytes, so a failed write can never
+/// leave new material beside an old fingerprint, or a keyring under a legacy
+/// kind. The earlier layout stored the key and its fingerprint as two items
+/// written one after the other.
+nonisolated struct VaultRecord: Equatable, Sendable, CustomStringConvertible {
+    var kind: VaultRecordKind
+    var material: Data
+    var identityFingerprint: String
+    /// The keyring's generation; nil for legacy armor.
+    var materialGeneration: UInt64?
+
+    var description: String { "VaultRecord(\(kind), redacted)" }
+
+    var acknowledgement: KeyringAcknowledgement? {
+        guard kind == .keyring, let materialGeneration else { return nil }
+        return KeyringAcknowledgement(
+            materialGeneration: materialGeneration,
+            fingerprint: identityFingerprint
+        )
+    }
+
+    private static let magic = Data("KPVR".utf8)
+    private static let format: UInt8 = 1
+
+    /// `magic || format || kind || uint64BE(generation) || uint16BE(len fp) || fp || material`
+    func encoded() -> Data {
+        var data = Self.magic
+        data.append(Self.format)
+        data.append(kind.rawValue)
+        let generation = materialGeneration ?? 0
+        for shift in stride(from: 56, through: 0, by: -8) {
+            data.append(UInt8(truncatingIfNeeded: generation >> UInt64(shift)))
+        }
+        let fingerprint = Data(identityFingerprint.utf8)
+        data.append(bigEndianUInt16(fingerprint.count))
+        data.append(fingerprint)
+        data.append(material)
+        return data
+    }
+
+    static func decode(_ data: Data) -> VaultRecord? {
+        let bytes = [UInt8](data)
+        let header = magic.count + 2 + 8 + 2
+        guard bytes.count > header,
+              Data(bytes[0..<magic.count]) == magic,
+              bytes[magic.count] == format,
+              let kind = VaultRecordKind(rawValue: bytes[magic.count + 1])
+        else { return nil }
+        var index = magic.count + 2
+        let generation = bytes[index..<(index + 8)].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        index += 8
+        let length = Int(bytes[index]) << 8 | Int(bytes[index + 1])
+        index += 2
+        guard index + length < bytes.count,
+              let fingerprint = String(bytes: bytes[index..<(index + length)], encoding: .utf8)
+        else { return nil }
+        index += length
+        if kind == .keyring, generation == 0 { return nil }
+        return VaultRecord(
+            kind: kind,
+            material: Data(bytes[index...]),
+            identityFingerprint: fingerprint,
+            materialGeneration: kind == .keyring ? generation : nil
+        )
+    }
+}
+
+nonisolated enum EnrollmentVaultError: Error, Equatable {
     /// No passcode, Touch ID or Face ID is set. The envelope's protection *is*
     /// the lock screen, so a device without one cannot hold a meaningful one.
     /// The honest outcome, not a degradation.
@@ -24,6 +121,8 @@ enum EnrollmentVaultError: Error, Equatable {
     /// The user dismissed the authentication prompt. Not an error — the caller
     /// goes back to offering the action.
     case cancelled
+    /// A record exists and does not decode. Never overwritten blind.
+    case unreadableRecord
 }
 
 /// Holds the device keypair and the re-sealed envelope.
@@ -39,23 +138,32 @@ enum EnrollmentVaultError: Error, Equatable {
 ///
 /// The strict posture is not a switch here. It is Hostile Location Protection,
 /// under which there is no envelope at all.
-final class EnrollmentVault: @unchecked Sendable {
+nonisolated final class EnrollmentVault: @unchecked Sendable {
     private let keyTag: Data
-    private let keychain: KeychainStorage
+    private let keychain: any SecureItemStoring
     private let lock = NSLock()
 
     /// Separate from the pairing store's service so a device unpair does not
     /// silently take the enrollment with it, and vice versa.
     static let defaultKeyTag = "org.kysecurity.mail.enrollment.deviceKey"
 
-    init(keychain: KeychainStorage, keyTag: String = EnrollmentVault.defaultKeyTag) {
+    init(keychain: any SecureItemStoring, keyTag: String = EnrollmentVault.defaultKeyTag) {
         self.keychain = keychain
         self.keyTag = Data(keyTag.utf8)
     }
 
     private enum Key {
+        /// The current layout: one `VaultRecord`.
+        static let record = "enrollment.vaultRecord"
+        /// The earlier two-item layout, still read so an existing enrollment
+        /// survives the upgrade; retired once a record replaces it.
         static let envelope = "enrollment.sealedEnvelope"
         static let fingerprint = "enrollment.identityFingerprint"
+        /// Left by a deliberate teardown while still paired; the one signal
+        /// that lets the launch-time report tell the server "not enrolled".
+        static let teardownReport = "enrollment.teardownReportPending"
+        /// A direct acknowledgement that failed transiently; the attempt count.
+        static let reportPending = "enrollment.reportPendingAttempts"
     }
 
     // MARK: - Device key
@@ -162,25 +270,112 @@ final class EnrollmentVault: @unchecked Sendable {
 
     /// True when this device holds an envelope it could open.
     var isEnrolled: Bool {
-        ((try? keychain.data(forKey: Key.envelope)) ?? nil) != nil
+        ((try? keychain.data(forKey: Key.record)) ?? nil) != nil
+            || ((try? keychain.data(forKey: Key.envelope)) ?? nil) != nil
     }
 
-    /// Stores the opened private key material, re-sealed under the device key
-    /// by the Keychain's own protection.
+    /// Replaces the record, durably and atomically, or throws and leaves the
+    /// previous one exactly as it was.
+    ///
+    /// A successful store is a new delivery: a pending teardown no longer
+    /// describes the device, so this is the one event that supersedes the
+    /// teardown marker (key regeneration and `destroy` leave it alone).
+    func store(_ record: VaultRecord) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        var encoded = record.encoded()
+        defer { encoded.resetBytes(in: 0..<encoded.count) }
+        try keychain.setData(encoded, forKey: Key.record)
+        // The new record wins on every read, so a failed removal of the old
+        // layout costs nothing but a stale item that `destroy` still removes.
+        try? keychain.remove(Key.envelope)
+        try? keychain.remove(Key.fingerprint)
+        try? keychain.remove(Key.teardownReport)
+    }
+
+    /// Legacy armor under the identity it was sealed to.
     func store(privateKey: Data, identityFingerprint: String) throws {
-        try keychain.setData(privateKey, forKey: Key.envelope)
-        try keychain.set(identityFingerprint, forKey: Key.fingerprint)
+        try store(VaultRecord(
+            kind: .legacyArmor,
+            material: privateKey,
+            identityFingerprint: identityFingerprint
+        ))
+    }
+
+    /// The record on disk, or nil when there is none. **Throws** when the
+    /// Keychain will not answer or the record does not decode, so a caller
+    /// never seals over a record it could not classify.
+    func storedRecord() throws -> VaultRecord? {
+        if let data = try keychain.data(forKey: Key.record) {
+            guard let record = VaultRecord.decode(data) else {
+                throw EnrollmentVaultError.unreadableRecord
+            }
+            return record
+        }
+        guard let legacy = try keychain.data(forKey: Key.envelope) else { return nil }
+        let fingerprint = try keychain.data(forKey: Key.fingerprint)
+            .map { String(decoding: $0, as: UTF8.self) } ?? ""
+        return VaultRecord(kind: .legacyArmor, material: legacy, identityFingerprint: fingerprint)
     }
 
     func storedPrivateKey() throws -> Data {
-        guard let data = try keychain.data(forKey: Key.envelope) else {
-            throw EnrollmentVaultError.notEnrolled
-        }
-        return data
+        guard let record = try storedRecord() else { throw EnrollmentVaultError.notEnrolled }
+        return record.material
     }
 
     var identityFingerprint: String? {
-        (try? keychain.string(forKey: Key.fingerprint)) ?? nil
+        ((try? storedRecord()) ?? nil)?.identityFingerprint
+    }
+
+    /// What a keyring record acknowledges, or nil for legacy armor or none.
+    func keyringAcknowledgement() -> KeyringAcknowledgement? {
+        ((try? storedRecord()) ?? nil)?.acknowledgement
+    }
+
+    // MARK: - Report markers
+
+    /// Set after a deliberate teardown while the device is still paired.
+    @discardableResult
+    func markTeardownReport() -> Bool {
+        (try? keychain.setData(Data([1]), forKey: Key.teardownReport)) != nil
+    }
+
+    var teardownReportPending: Bool {
+        ((try? keychain.data(forKey: Key.teardownReport)) ?? nil) != nil
+    }
+
+    @discardableResult
+    func clearTeardownReport() -> Bool {
+        (try? keychain.remove(Key.teardownReport)) != nil
+    }
+
+    /// Records that the ceremony's own acknowledgement did not land, so the
+    /// next launch or foreground restates it. `attempts` counts tries so far.
+    @discardableResult
+    func markReportPending(attempts: Int = 0) -> Bool {
+        (try? keychain.setData(Data(String(attempts).utf8), forKey: Key.reportPending)) != nil
+    }
+
+    /// Attempts made so far, or nil when no report is pending.
+    var pendingReportAttempts: Int? {
+        guard let data = (try? keychain.data(forKey: Key.reportPending)) ?? nil else { return nil }
+        return Int(String(decoding: data, as: UTF8.self)) ?? 0
+    }
+
+    @discardableResult
+    func clearReportPending() -> Bool {
+        (try? keychain.remove(Key.reportPending)) != nil
+    }
+
+    /// Both markers. For dropping the pairing: with no device row left there
+    /// is nothing to correct, and a marker must not speak for the next
+    /// pairing's device.
+    @discardableResult
+    func forgetPendingReports() -> [String] {
+        var failures: [String] = []
+        if !clearTeardownReport() { failures.append("deleteTeardownMarker") }
+        if !clearReportPending() { failures.append("deleteReportMarker") }
+        return failures
     }
 
     /// Destroys everything. Called when Hostile Location Protection is turned
@@ -202,8 +397,13 @@ final class EnrollmentVault: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         var failures: [String] = []
+        do { try keychain.remove(Key.record) } catch { failures.append("deleteRecord") }
         do { try keychain.remove(Key.envelope) } catch { failures.append("deleteEnvelope") }
         do { try keychain.remove(Key.fingerprint) } catch { failures.append("deleteFingerprint") }
+        // A pending acknowledgement describes the record just removed. The
+        // teardown marker is deliberately left alone: the caller sets it
+        // after this, and only `store` or dropping the pairing clears it.
+        try? keychain.remove(Key.reportPending)
         let query: [String: Any] = [
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: keyTag,
@@ -212,7 +412,8 @@ final class EnrollmentVault: @unchecked Sendable {
         if status != errSecSuccess && status != errSecItemNotFound {
             failures.append("deleteDeviceKey")
         }
-        if ((try? keychain.data(forKey: Key.envelope)) ?? nil) != nil {
+        if ((try? keychain.data(forKey: Key.envelope)) ?? nil) != nil
+            || ((try? keychain.data(forKey: Key.record)) ?? nil) != nil {
             failures.append("envelopeSurvived")
         }
         return failures

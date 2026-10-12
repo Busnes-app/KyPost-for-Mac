@@ -244,14 +244,17 @@ private final class FakeTransport: EnrollmentTransport, @unchecked Sendable {
     var publishResult: EnrollmentPublishResult = .ok
     /// Consumed in order; the last value repeats once exhausted.
     var envelopeResults: [EnrollmentEnvelopeResult] = [.notSealed]
+    var reportResult: EnrollmentReportResult = .ok
     private(set) var publishCount = 0
-    private(set) var reported: Bool?
+    private(set) var published: Data?
+    private(set) var reported: EnrollmentReport?
     private var envelopeIndex = 0
 
     func identityFingerprint() async -> String? { fingerprint }
 
     func publish(publicKey: Data) async -> EnrollmentPublishResult {
         publishCount += 1
+        published = publicKey
         return publishResult
     }
 
@@ -260,23 +263,32 @@ private final class FakeTransport: EnrollmentTransport, @unchecked Sendable {
         return envelopeResults[envelopeIndex]
     }
 
-    func reportEnrolled(_ enrolled: Bool) async { reported = enrolled }
+    func report(_ report: EnrollmentReport) async -> EnrollmentReportResult {
+        reported = report
+        return reportResult
+    }
 }
 
 private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
     var publicKey = Data([0x04] + Array(repeating: UInt8(9), count: 64))
     var publicKeyError: Error?
     var storeError: Error?
-    private(set) var stored: (json: String, fingerprint: String)?
+    var report: EnrollmentReport = .legacy
+    private(set) var stored: (json: String, fingerprint: String, delivery: DeliveryMetadata?)?
 
     func deviceRawPublicKey() throws -> Data {
         if let publicKeyError { throw publicKeyError }
         return publicKey
     }
 
-    func openAndStore(envelopeJSON: String, identityFingerprint: String) async throws {
+    func openAndStore(
+        envelopeJSON: String,
+        identityFingerprint: String,
+        delivery: DeliveryMetadata?
+    ) async throws -> EnrollmentReport {
         if let storeError { throw storeError }
-        stored = (envelopeJSON, identityFingerprint)
+        stored = (envelopeJSON, identityFingerprint, delivery)
+        return report
     }
 }
 
@@ -287,7 +299,9 @@ private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
         hostileLocation: Bool = false,
         hasCredential: Bool = true,
         clock: Box<Date> = Box(Date(timeIntervalSince1970: 0)),
-        transcript: Box<[EnrollmentState]> = Box([])
+        transcript: Box<[EnrollmentState]> = Box([]),
+        deferred: Box<Int> = Box(0),
+        landed: Box<Int> = Box(0)
     ) -> EnrollmentCeremony {
         EnrollmentCeremony(
             transport: transport,
@@ -299,8 +313,66 @@ private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
             // Advancing the clock in place of sleeping keeps the poll window
             // deterministic and the test instant.
             sleep: { seconds in clock.value = clock.value.addingTimeInterval(seconds) },
+            deferReport: { deferred.mutate { $0 += 1 } },
+            reportLanded: { landed.mutate { $0 += 1 } },
             onState: { state in transcript.mutate { $0.append(state) } }
         )
+    }
+
+    // MARK: Device-envelope v3
+
+    private let delivery = DeliveryMetadata(
+        version: 3, fingerprint: "ABCD1234", materialGeneration: 2,
+        primaryFingerprints: ["ABCD1234"], keyFingerprints: ["ABCD1234"]
+    )
+
+    /// The server's delivery record reaches the sealer, which validates the
+    /// ring against it, and what the sealer stored is what gets acknowledged.
+    @Test func aKeyringDeliveryIsImportedAndAcknowledged() async {
+        let transport = FakeTransport()
+        transport.envelopeResults = [.sealed("{}", delivery: delivery)]
+        let sealer = FakeSealer()
+        sealer.report = .keyring(materialGeneration: 2, fingerprint: "ABCD1234")
+        let landed = Box(0)
+        let outcome = await ceremony(transport: transport, sealer: sealer, landed: landed).run()
+        #expect(outcome == .enrolled)
+        #expect(sealer.stored?.delivery == delivery)
+        #expect(transport.reported == .keyring(materialGeneration: 2, fingerprint: "ABCD1234"))
+        #expect(landed.value == 1)
+    }
+
+    @Test func aRejectedRingIsItsOwnTerminalStateAndIsNeverAcknowledged() async {
+        let transport = FakeTransport()
+        transport.envelopeResults = [.sealed("{}", delivery: delivery)]
+        let sealer = FakeSealer()
+        sealer.storeError = EnrollmentSealerError.keyringRejected
+        #expect(await ceremony(transport: transport, sealer: sealer).run() == .keyringRejected)
+        #expect(transport.reported == nil)
+    }
+
+    /// 409 is final: the same claim cannot become true by repeating it.
+    @Test func aRefusedAcknowledgementIsATerminalFailureWithoutRetry() async {
+        let transport = FakeTransport()
+        transport.envelopeResults = [.sealed("{}", delivery: delivery)]
+        transport.reportResult = .conflict
+        let deferred = Box(0)
+        let outcome = await ceremony(transport: transport, deferred: deferred).run()
+        #expect(outcome == .acknowledgementRefused)
+        #expect(deferred.value == 0)
+    }
+
+    /// A dropped acknowledgement is not a failed enrollment: the record is
+    /// sealed, and the next launch or foreground restates it.
+    @Test func aDroppedAcknowledgementIsRetriedLater() async {
+        let transport = FakeTransport()
+        transport.envelopeResults = [.sealed("{}")]
+        transport.reportResult = .failed("offline")
+        let deferred = Box(0)
+        let landed = Box(0)
+        let outcome = await ceremony(transport: transport, deferred: deferred, landed: landed).run()
+        #expect(outcome == .enrolled)
+        #expect(deferred.value == 1)
+        #expect(landed.value == 0)
     }
 
     /// The gate, and it is checked before anything is published: enrollment is
@@ -371,7 +443,7 @@ private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
         let outcome = await ceremony(transport: transport, sealer: sealer).run()
         #expect(outcome == .enrolled)
         #expect(sealer.stored?.fingerprint == "ABCD1234")
-        #expect(transport.reported == true)
+        #expect(transport.reported == .legacy)
     }
 
     /// Hostile or stale, never a retry.

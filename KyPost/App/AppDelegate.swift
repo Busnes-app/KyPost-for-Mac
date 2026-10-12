@@ -113,6 +113,14 @@ private enum PushLifecycle {
         Task {
             await graph.systemContactsChangeMonitor.reconcileNow()
         }
+        // An enrollment acknowledgement that did not land, or a teardown the
+        // server has not heard about. A no-op unless a marker is set. Never
+        // after an abandoned wipe: telling the server what key material this
+        // device holds is not a claim to make from a device it failed to erase.
+        if !graph.securityWipe.blockedByAbandonedWipe,
+           let reporter = graph.makeEnrollmentStateReporter() {
+            Task { await reporter.runIfNeeded() }
+        }
     }
 
     static func onBackground() {

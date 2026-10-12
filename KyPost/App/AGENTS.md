@@ -116,6 +116,13 @@ transient `errSecInteractionNotAllowed` at launch used to trigger it
 permanently. Any new caller that acts destructively on this flag uses
 `lockState` and fails closed on `.unreadable`.
 
+`onForeground` also runs `SingletonGraph.makeEnrollmentStateReporter()` — the
+restatement of an enrollment acknowledgement that did not land, or of a
+Hostile Location Protection teardown. It is a no-op without a marker, nil when
+unpaired, and skipped while `securityWipe.blockedByAbandonedWipe`: telling the
+server what key material this device holds is not a claim to make from a device
+the app failed to erase. Being inside `onForeground` puts it behind the lock.
+
 Background pull is gated on `appLockManager.isLocked` in the `BGTaskScheduler`
 handler as well as in `onForeground`, and `presentLocally` withholds sender and
 subject while locked. "Require Unlock to Open" reads as "nobody sees my mail

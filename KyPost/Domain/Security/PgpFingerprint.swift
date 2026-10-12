@@ -25,17 +25,24 @@
 import CryptoKit
 import Foundation
 
-enum PgpFingerprint {
+nonisolated enum PgpFingerprint {
     /// Uppercase hex fingerprint of the first public-key packet in an
     /// armored key, or nil when the armor or packet stream is malformed or
     /// the key version is one this app cannot fingerprint.
     static func compute(fromArmored armored: String) -> String? {
         guard
             let data = dearmor(armored),
-            let body = firstPublicKeyPacketBody(in: data),
-            let version = body.first
+            let body = firstPublicKeyPacketBody(in: data)
         else { return nil }
+        return fingerprint(ofKeyPacketBody: body)
+    }
 
+    /// The fingerprint of one public-key or public-subkey packet body (tag 6
+    /// or 14), uppercase hex. Also the fingerprint of the public prefix of a
+    /// secret-key packet, which is how a private key's members are named from
+    /// their own packets rather than from anything beside them.
+    static func fingerprint(ofKeyPacketBody body: Data) -> String? {
+        guard let version = body.first else { return nil }
         switch version {
         case 4:
             guard body.count <= Int(UInt16.max) else { return nil }
@@ -89,6 +96,57 @@ enum PgpFingerprint {
         }
         guard !base64.isEmpty else { return nil }
         return Data(base64Encoded: base64)
+    }
+
+    /// Strictly one armor block of `blockType` (e.g. "PGP PRIVATE KEY BLOCK"),
+    /// with nothing but whitespace around it, decoded to its binary packets.
+    ///
+    /// Stricter than `dearmor`, which tolerates surrounding text: a member of
+    /// a keyring must be exactly one key, and a second block or trailing junk
+    /// is exactly the ambiguity that let a decoy key be fingerprinted while a
+    /// different one was used.
+    static func dearmorSingleBlock(_ armored: String, blockType: String) -> Data? {
+        let begin = "-----BEGIN \(blockType)-----"
+        let end = "-----END \(blockType)-----"
+        let lines = armored
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        let content = lines.drop(while: \.isEmpty)
+        guard content.first == begin,
+              let endIndex = content.firstIndex(of: end),
+              content[content.index(after: endIndex)...].allSatisfy(\.isEmpty),
+              lines.filter({ $0.hasPrefix("-----") }).count == 2
+        else { return nil }
+
+        var base64 = ""
+        var inHeaders = true
+        for line in content[content.index(after: content.startIndex)..<endIndex] {
+            if inHeaders {
+                if line.isEmpty { inHeaders = false; continue }
+                if line.contains(":") { continue }
+                inHeaders = false
+            }
+            if line.isEmpty || line.hasPrefix("=") { continue }
+            base64 += line
+        }
+        guard !base64.isEmpty, let data = Data(base64Encoded: base64), !data.isEmpty else {
+            return nil
+        }
+        return data
+    }
+
+    /// Every packet in `data` as (tag, body), or nil if any header is
+    /// malformed or a length runs past the end. Partial and indeterminate
+    /// lengths are refused, as they are for key material everywhere here.
+    static func packets(in data: Data) -> [(tag: UInt8, body: Data)]? {
+        let bytes = [UInt8](data)
+        var index = 0
+        var result: [(tag: UInt8, body: Data)] = []
+        while index < bytes.count {
+            guard let packet = nextPacket(in: bytes, at: &index) else { return nil }
+            result.append(packet)
+        }
+        return result
     }
 
     /// Packet types legal inside one transferable public key after the primary

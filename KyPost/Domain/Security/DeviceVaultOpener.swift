@@ -15,9 +15,11 @@ import Foundation
 
 nonisolated struct DeviceVaultOpener: VaultOpening {
     private let vault: EnrollmentVault
+    private let inspector: any PgpKeyInspecting
 
-    init(vault: EnrollmentVault) {
+    init(vault: EnrollmentVault, inspector: any PgpKeyInspecting) {
         self.vault = vault
+        self.inspector = inspector
     }
 
     func open() async -> VaultOpenOutcome {
@@ -26,7 +28,19 @@ nonisolated struct DeviceVaultOpener: VaultOpening {
         // the main actor freezes the window the prompt is attached to.
         await Task.detached(priority: .userInitiated) {
             do {
-                return VaultOpenOutcome.opened(privateKey: try vault.storedPrivateKey())
+                guard let record = try vault.storedRecord() else { return .notEnrolled }
+                switch record.kind {
+                case .legacyArmor:
+                    return VaultOpenOutcome.opened(.legacyArmor(record.material))
+                case .keyring:
+                    // The record's kind decides how its bytes are read; the
+                    // bytes are never sniffed. A keyring record that no longer
+                    // reopens as one is a broken record, not legacy armor.
+                    guard let ring = reopenPgpKeyring(record.material, inspector: inspector) else {
+                        return .failed("the keys stored on this device could not be read")
+                    }
+                    return .opened(.keyring(ring))
+                }
             } catch EnrollmentVaultError.notEnrolled {
                 return .notEnrolled
             } catch EnrollmentVaultError.noDeviceCredential {

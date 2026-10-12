@@ -146,6 +146,10 @@ final class AppEnvironment {
             // user re-runs the ceremony deliberately, which is the point.
             if enabled {
                 graph.enrollmentVault.destroy()
+                // Still paired, so the server's record of this device is now
+                // wrong in the unsafe direction. After `destroy`, which leaves
+                // the marker alone: the next foreground reports "not enrolled".
+                graph.enrollmentVault.markTeardownReport()
                 graph.mailCursorStore.clear()
             }
             // The unsealed copy goes in both directions, unlike the sealed
@@ -315,6 +319,9 @@ final class AppEnvironment {
         // envelope that survived it would be the account's private key left on
         // a device whose pairing and lock were both just erased.
         graph.enrollmentVault.destroy()
+        // The pairing is gone, so no device row is left to correct; a marker
+        // must not speak for the next pairing's device.
+        graph.enrollmentVault.forgetPendingReports()
         // Destroying the sealed envelope is not enough on its own: an unsealed
         // copy may be held right now, and this path promises the device comes
         // back as if reinstalled.

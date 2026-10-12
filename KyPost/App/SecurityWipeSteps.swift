@@ -81,7 +81,10 @@ enum SecurityWipeSteps {
         // list, because a key surviving a wipe nobody chose is exactly what an
         // incomplete result exists to report.
         steps.append(WipeStep("enrollmentVault") {
+            // The wipe also removes the pairing, so a pending report marker
+            // has no device row left to correct.
             let leftBehind = graph.enrollmentVault.destroyReportingFailures()
+                + graph.enrollmentVault.forgetPendingReports()
             guard leftBehind.isEmpty else {
                 throw WipeStepFailure("enrollment vault left \(leftBehind.joined(separator: ", "))")
             }

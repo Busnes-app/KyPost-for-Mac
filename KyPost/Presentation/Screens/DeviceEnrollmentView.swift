@@ -78,6 +78,10 @@ struct DeviceEnrollmentView: View {
         case .envelopeRejected:
             // The feature's one real alarm.
             message("The key that arrived wasn't sealed for this device. Don't continue — start again, and if it happens twice, treat it as a problem with your server.")
+        case .keyringRejected:
+            message("The keys that arrived don't match what your server says it sent, or would replace keys this device still needs. Nothing was changed. Start again from your browser.")
+        case .acknowledgementRefused:
+            message("Your server didn't accept this device's keys as current — your account's keys may have changed meanwhile. Set up encryption on this device again.")
         case .sealFailed(let reason), .failed(let reason):
             message(reason)
         case .cancelled:

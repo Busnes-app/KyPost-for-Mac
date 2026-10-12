@@ -35,7 +35,8 @@ final class DeviceEnrollmentViewModel {
     /// flag rather than the view inferring it.
     var offersRetry: Bool {
         switch state {
-        case .timedOut, .cancelled, .readyToFinish, .failed, .sealFailed:
+        case .timedOut, .cancelled, .readyToFinish, .failed, .sealFailed,
+             .keyringRejected, .acknowledgementRefused:
             true
         case .showingCode(_, let windowOpen):
             !windowOpen
