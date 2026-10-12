@@ -132,6 +132,35 @@ import Testing
         )
         #expect(html == #"<img alt='example src="cid:logo@x"' src="data:image/png;base64,AQID">"#)
     }
+
+    /// Markup inside a comment is not an element: it stays as written and
+    /// does not spend the budget the visible image needs.
+    @Test func commentedOutImagesAreSkipped() {
+        let full = DecryptedAttachment(
+            name: "logo.png", mimeType: "image/png",
+            data: Data(count: InlineImages.byteBudget), contentId: "logo@x"
+        )
+        let comment = #"<!-- <img src="cid:logo@x"> -->"#
+        let html = InlineImages.inlineCidImages(
+            html: comment + #"<img src="cid:logo@x">"#, attachments: [full]
+        )
+        #expect(html == comment + #"<img src="data:image/png;base64,"#
+            + full.data.base64EncodedString() + #"">"#)
+    }
+
+    /// Comments close as HTML parsing closes them, including the abrupt
+    /// forms, and an unterminated one hides everything after it.
+    @Test func commentBoundariesFollowHTMLParsing() {
+        let data = "data:image/png;base64,AQID"
+        #expect(InlineImages.inlineCidImages(html: #"<!--><img src="cid:logo@x">"#, attachments: [png])
+            == #"<!--><img src="\#(data)">"#)
+        #expect(InlineImages.inlineCidImages(html: #"<!---><img src="cid:logo@x">"#, attachments: [png])
+            == #"<!---><img src="\#(data)">"#)
+        #expect(InlineImages.inlineCidImages(html: #"<!-- x --!><img src="cid:logo@x">"#, attachments: [png])
+            == #"<!-- x --!><img src="\#(data)">"#)
+        let open = #"<p>a</p><!-- <img src="cid:logo@x">"#
+        #expect(InlineImages.inlineCidImages(html: open, attachments: [png]) == open)
+    }
 }
 
 // MARK: - Staged previews

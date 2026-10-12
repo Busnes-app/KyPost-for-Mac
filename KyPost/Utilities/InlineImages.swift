@@ -7,10 +7,11 @@
 //  pgp/InlineImages.kt (#109).
 //
 //  Android rewrites a parsed jsoup document; Foundation has no HTML parser, so
-//  this scans `<img>` tags and rewrites only their `src` attribute. Anything it
-//  does not recognise is left exactly as it was — an unresolved `cid:` stays in
-//  place and simply never loads, because the reader fetches no subresource
-//  other than a `data:` image (see `EmailBodyWebView.makeConfiguration`).
+//  this scans `<img>` tags outside comments and rewrites only their `src`
+//  attribute. Anything it does not recognise is left exactly as it was — an
+//  unresolved `cid:` stays in place and simply never loads, because the reader
+//  fetches no subresource other than a `data:` image (see
+//  `EmailBodyWebView.makeConfiguration`).
 //
 
 import Foundation
@@ -46,8 +47,11 @@ nonisolated enum InlineImages {
         var cursor = 0
         var budget = byteBudget
 
-        for tag in imgTag.matches(in: html, range: NSRange(location: 0, length: source.length)) {
-            guard let src = srcAttribute(in: source, tag: tag.range) else { continue }
+        for match in imgTagOrComment.matches(in: html, range: NSRange(location: 0, length: source.length)) {
+            // A comment is matched only so its contents are skipped: markup
+            // inside one is not an element and must not spend the budget.
+            let tag = match.range(at: 1)
+            guard tag.location != NSNotFound, let src = srcAttribute(in: source, tag: tag) else { continue }
             let value = source.substring(with: src.value).trimmingCharacters(in: .whitespaces)
             guard value.count > 4, value.prefix(4).lowercased() == "cid:" else { continue }
             let reference = String(value.dropFirst(4))
@@ -68,9 +72,12 @@ nonisolated enum InlineImages {
         return output
     }
 
-    /// An `<img …>` start tag; quoted attribute values may contain `>`.
-    private static let imgTag = try! NSRegularExpression(
-        pattern: #"<img\b(?:[^>"']|"[^"]*"|'[^']*')*>"#,
+    /// An HTML comment, or (capture group 1) an `<img …>` start tag whose
+    /// quoted attribute values may contain `>`. A comment ends at `-->` or
+    /// `--!>`, `<!-->` and `<!--->` close at once, and an unterminated one
+    /// runs to the end of the input, as in HTML parsing.
+    private static let imgTagOrComment = try! NSRegularExpression(
+        pattern: #"<!--(?:-?>|[\s\S]*?(?:--!?>|\z))|(<img\b(?:[^>"']|"[^"]*"|'[^']*')*>)"#,
         options: [.caseInsensitive]
     )
 

@@ -341,7 +341,7 @@ is the server's pin, not this device's.
   in flight, so a decrypt finishing after it keeps nothing.
 - **`cid:` images become `data:` URIs** (`InlineImages`) for png/jpeg/gif/webp
   only, within 128 KiB per message; anything else keeps its unresolvable
-  `cid:`. `data:` images render with `loadsSubresources` off (verified against
+  `cid:`. Markup inside an HTML comment is skipped and spends no budget. `data:` images render with `loadsSubresources` off (verified against
   WebKit), so remote content stays blocked.
 - **A nested MIME signature is detected, not verified** (#111). With no packet
   signature the verdict is `unchecked` ("Signature not checked") when a
