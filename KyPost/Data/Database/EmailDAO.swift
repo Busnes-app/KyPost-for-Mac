@@ -216,6 +216,9 @@ actor EmailDAO {
         entity.cc = email.cc
         entity.keywords = email.keywords.sorted()
         entity.receivedAt = email.receivedAt
+        // Written even when nil: an updated row without `wokenAt` unpins.
+        entity.wokenAt = email.wokenAt
+        entity.sortDate = email.sortDate
         entity.read = email.read
         entity.starred = email.starred
         entity.hasAttachments = email.hasAttachments
@@ -243,12 +246,33 @@ actor EmailDAO {
         return try modelContext.fetch(descriptor).first
     }
 
+    /// List order, newest first. `receivedAt` breaks ties, including rows
+    /// still awaiting `backfillSortDates`.
+    private static var listOrder: [SortDescriptor<EmailEntity>] {
+        [
+            SortDescriptor(\.sortDate, order: .reverse),
+            SortDescriptor(\.receivedAt, order: .reverse),
+        ]
+    }
+
+    /// Sets `sortDate` on rows stored before AppSchemaV9 added it. None of
+    /// them can be woken, so `receivedAt` is exact. Safe to call every launch.
+    func backfillSortDates() throws {
+        let unset = Date.distantPast
+        let rows = try modelContext.fetch(
+            FetchDescriptor<EmailEntity>(predicate: #Predicate { $0.sortDate == unset })
+        )
+        guard !rows.isEmpty else { return }
+        for row in rows { row.sortDate = row.receivedAt }
+        try modelContext.save()
+    }
+
     /// Newest-first rows of a folder — every row, window and older mail,
     /// unless `limit` says otherwise.
     func getFolder(folder: String, limit: Int? = nil, offset: Int = 0) throws -> [Email] {
         var descriptor = FetchDescriptor<EmailEntity>(
             predicate: #Predicate { $0.folder == folder },
-            sortBy: [SortDescriptor(\.receivedAt, order: .reverse)]
+            sortBy: Self.listOrder
         )
         if let limit { descriptor.fetchLimit = limit }
         descriptor.fetchOffset = offset

@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import SwiftData
 import SwiftUI
 import Testing
 import WebKit
@@ -1307,6 +1308,125 @@ private func makeOutgoing(
         )
         #expect(try await dao.getEmail(folder: "INBOX", serverId: "inboxRow") == nil)
         #expect(try await dao.getEmail(folder: "Archive", serverId: "elsewhere") != nil)
+    }
+}
+
+// MARK: - Snooze pin (wokenAt)
+
+@Suite struct SnoozePinTests {
+    private func dao() throws -> EmailDAO {
+        EmailDAO(modelContainer: try AppDatabase(inMemory: true).container)
+    }
+
+    private func email(_ id: String, receivedAt: TimeInterval, wokenAt: TimeInterval? = nil) -> Email {
+        Email(
+            serverId: id, folder: "INBOX", senderName: "A", senderEmail: "a@x",
+            subject: "S", body: "B", keywords: [],
+            receivedAt: Date(timeIntervalSince1970: receivedAt),
+            wokenAt: wokenAt.map(Date.init(timeIntervalSince1970:)),
+            read: false, starred: false
+        )
+    }
+
+    @Test func wokenAtDecodesAndTheDisplayedDateStaysAtUtc() throws {
+        let email = try JSONDecoder().decode(RelayEmailDTO.self, from: Data("""
+        {"messageId": "m1", "atUtc": "2025-01-01T00:00:00Z", "wokenAt": "2025-06-01T00:00:00Z"}
+        """.utf8)).toDomain(folder: "INBOX", tab: "")
+        #expect(email.receivedAt == Date(timeIntervalSince1970: 1_735_689_600))
+        #expect(email.wokenAt == Date(timeIntervalSince1970: 1_748_736_000))
+    }
+
+    @Test func anAbsentWokenAtIsNil() throws {
+        let email = try JSONDecoder().decode(RelayEmailDTO.self, from: Data("""
+        {"messageId": "m1", "atUtc": "2025-01-01T00:00:00Z"}
+        """.utf8)).toDomain(folder: "INBOX", tab: "")
+        #expect(email.wokenAt == nil)
+    }
+
+    @Test func aWokenOlderEmailSortsAboveANewerOne() async throws {
+        let response = try JSONDecoder().decode(RelayInboxResponse.self, from: Data("""
+        {"byTab": {"Inbox": [
+          {"messageId": "newer", "atUtc": "2025-03-01T00:00:00Z"},
+          {"messageId": "woken", "atUtc": "2025-01-01T00:00:00Z", "wokenAt": "2025-06-01T00:00:00Z"}
+        ]}}
+        """.utf8))
+        let emails = response.allEmails(folder: "INBOX")
+        #expect(emails.map(\.serverId) == ["woken", "newer"])
+
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(folder: "INBOX", emails: emails)
+        #expect(try await dao.getFolder(folder: "INBOX", limit: 10).map(\.serverId) == ["woken", "newer"])
+    }
+
+    @Test func anUpdatedRowWithoutWokenAtClearsThePin() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(
+            folder: "INBOX",
+            emails: [email("m1", receivedAt: 1_000, wokenAt: 5_000), email("m2", receivedAt: 2_000)]
+        )
+        var unpinned = email("m1", receivedAt: 1_000)
+        unpinned.bodyOmitted = true
+        try await dao.applyDelta(
+            folder: "INBOX", emails: [unpinned], updatedIds: ["m1"], removedIds: [],
+            pruneAgainstEmails: false
+        )
+        let stored = try #require(try await dao.getEmail(folder: "INBOX", serverId: "m1"))
+        #expect(stored.wokenAt == nil)
+        #expect(try await dao.getFolder(folder: "INBOX", limit: 10).map(\.serverId) == ["m2", "m1"])
+    }
+
+    /// Older mail paged in (or walked past a delta's overflow) is inserted
+    /// out of the window; a woken row there still sorts by its wake time.
+    @Test func aPagedInWokenRowSortsByItsWakeTime() async throws {
+        let dao = try dao()
+        try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [email("window", receivedAt: 3_000)])
+        try await dao.storeOlderMail(
+            folder: "INBOX",
+            emails: [email("old", receivedAt: 1_000), email("woken", receivedAt: 500, wokenAt: 9_000)]
+        )
+        #expect(try await dao.getFolder(folder: "INBOX").map(\.serverId) == ["woken", "window", "old"])
+    }
+
+    /// V9 added columns to a live @Model; a store written at V8 must still
+    /// open, and its rows must sort by receivedAt once backfilled.
+    @Test func aV8StoreMigratesAndBackfillsSortDate() async throws {
+        let url = URL.temporaryDirectory
+            .appending(path: "snooze-migration-\(UUID().uuidString).store")
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + suffix))
+            }
+        }
+
+        do {
+            let v8Schema = Schema(versionedSchema: AppSchemaV8.self)
+            let container = try ModelContainer(
+                for: v8Schema,
+                configurations: [ModelConfiguration(schema: v8Schema, url: url)]
+            )
+            let context = ModelContext(container)
+            for (id, at) in [("older", 1_000.0), ("newer", 2_000.0)] {
+                context.insert(AppSchemaV8.EmailEntity(
+                    serverId: id, folder: "INBOX", senderName: "A", senderEmail: "a@x",
+                    subject: "S", body: "B", keywords: [],
+                    receivedAt: Date(timeIntervalSince1970: at), read: false, starred: false
+                ))
+            }
+            try context.save()
+        }
+
+        let container = try ModelContainer(
+            for: AppDatabase.schema,
+            migrationPlan: AppMigrationPlan.self,
+            configurations: [ModelConfiguration(schema: AppDatabase.schema, url: url)]
+        )
+        let dao = EmailDAO(modelContainer: container)
+        try await dao.backfillSortDates()
+
+        let rows = try ModelContext(container).fetch(FetchDescriptor<EmailEntity>())
+        #expect(rows.count == 2)
+        #expect(rows.allSatisfy { $0.sortDate == $0.receivedAt && $0.wokenAt == nil })
+        #expect(try await dao.getFolder(folder: "INBOX", limit: 10).map(\.serverId) == ["newer", "older"])
     }
 }
 

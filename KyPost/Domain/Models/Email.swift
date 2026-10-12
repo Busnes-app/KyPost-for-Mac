@@ -22,6 +22,8 @@ struct Email: Identifiable, Hashable, Sendable {
     /// Relay tab/label values; drives inbox tabs.
     var keywords: Set<String>
     var receivedAt: Date
+    /// When a snoozed message returned to the inbox (relay `wokenAt`).
+    var wokenAt: Date?
     var read: Bool
     var starred: Bool
     /// The relay's `bodyMode`: "html" or "plain", or "" when the server did
@@ -54,6 +56,9 @@ struct Email: Identifiable, Hashable, Sendable {
 
     /// (folder, id), never the id alone — see `MailRowKey`.
     var id: MailRowKey { MailRowKey(folder: folder, serverId: serverId) }
+
+    /// List order: a woken message sorts as if it arrived when it woke.
+    nonisolated var sortDate: Date { wokenAt ?? receivedAt }
 
     /// Stands in for a missing or unparseable `atUtc`. A sentinel rather than
     /// an optional so the cached schema and its newest-first sort stay as they

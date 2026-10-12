@@ -92,6 +92,9 @@ struct EmailListRow: View {
                         .foregroundStyle(theme.inkStrong)
                         .lineLimit(1)
                     Spacer()
+                    if email.wokenAt != nil {
+                        chip(Text("Snoozed"))
+                    }
                     // Time for today, a medium date otherwise, blank when the
                     // relay sent none — in the device's zone.
                     Text(InboxRules.rowDate(email.receivedAt, now: today))
@@ -126,12 +129,7 @@ struct EmailListRow: View {
                 if !labelChips.isEmpty {
                     HStack(spacing: 5) {
                         ForEach(labelChips, id: \.self) { keyword in
-                            Text(keyword)
-                                .font(AppFont.ui(11, weight: .medium))
-                                .foregroundStyle(theme.ink)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(Capsule().strokeBorder(theme.line, lineWidth: 1))
+                            chip(Text(keyword))
                         }
                     }
                 }
@@ -148,5 +146,14 @@ struct EmailListRow: View {
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+    }
+
+    private func chip(_ label: Text) -> some View {
+        label
+            .font(AppFont.ui(11, weight: .medium))
+            .foregroundStyle(theme.ink)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(Capsule().strokeBorder(theme.line, lineWidth: 1))
     }
 }

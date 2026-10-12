@@ -459,8 +459,9 @@ final class SingletonGraph {
     let userDefaults: UserDefaults
 
     /// One-time data backfills after schema migrations (the V1→V2 legacy
-    /// email/phone → arrays copy, and the cleanup of rows duplicated by the
-    /// old order-based reconciler). Safe to call every launch.
+    /// email/phone → arrays copy, the V9 email sort-date backfill, and the
+    /// cleanup of rows duplicated by the old order-based reconciler). Safe to
+    /// call every launch.
     func runStartupMigrationsIfNeeded() async {
 #if DEBUG
         if isDemo {
@@ -477,6 +478,11 @@ final class SingletonGraph {
             return
         }
 #endif
+        do {
+            try await emailDAO.backfillSortDates()
+        } catch {
+            Log.sync.error("Email sort-date backfill failed: \(error.localizedDescription)")
+        }
         if !userDefaults.bool(forKey: Self.legacyContactFieldsMigratedKey) {
             do {
                 try await contactDAO.migrateLegacyFields()

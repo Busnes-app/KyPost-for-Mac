@@ -77,6 +77,9 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
     var status: String?
     /// ISO-8601 timestamp.
     var atUtc: String?
+    /// When a snoozed message returned to the inbox. Orders the list; the
+    /// displayed date stays `atUtc`.
+    var wokenAt: String?
     /// "new" or "updated"; only present when the response has delta=true.
     var changeType: String?
     /// OpenPGP state, all omitempty server-side — absent means "no OpenPGP
@@ -113,6 +116,7 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
             keywords: Set(((keywords ?? []) + [keyword]).filter { !$0.isEmpty }),
             // Blank in the list, never "now": see Email.unknownDate.
             receivedAt: Self.parseUtc(atUtc) ?? Email.unknownDate,
+            wokenAt: Self.parseUtc(wokenAt),
             read: (status ?? "unread").lowercased() != "unread",
             starred: false,
             bodyMode: bodyMode ?? "",
@@ -171,9 +175,6 @@ struct RelayInboxResponse: Decodable, Sendable {
     var hasMore: Bool?
     var nextBefore: String?
 
-    /// Flattens the per-tab groups; each email keeps its tab as a keyword.
-    /// Sorted newest first — the per-tab dictionary has no stable iteration
-    /// order, and EmailDAO.getFolder reads the cache in the same order.
     /// Ids the server marked as changed rather than new. Only meaningful on a
     /// delta response; empty otherwise, which makes every row "new" and the
     /// merge a plain upsert.
@@ -185,12 +186,16 @@ struct RelayInboxResponse: Decodable, Sendable {
         )
     }
 
+    /// Flattens the per-tab groups; each email keeps its tab as a keyword.
+    /// Sorted by `sortDate`, newest first — the per-tab dictionary has no
+    /// stable iteration order, and EmailDAO.getFolder reads the cache in the
+    /// same order.
     func allEmails(folder: String) -> [Email] {
         (byTab ?? [:])
             .flatMap { tab, emails in
                 emails.map { $0.toDomain(folder: folder, tab: tab) }
             }
-            .sorted { $0.receivedAt > $1.receivedAt }
+            .sorted { $0.sortDate > $1.sortDate }
     }
 }
 
