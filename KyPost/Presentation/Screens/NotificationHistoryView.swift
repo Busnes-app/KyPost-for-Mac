@@ -9,6 +9,8 @@
 //  Locked means nothing: the scene's LockedOverlay is the usual cover, but on
 //  macOS a sheet can render above it, and history is sender and subject
 //  lines — the same thing `presentLocally` withholds from a locked banner.
+//  An abandoned wipe means nothing either, and the history is not even loaded
+//  (`NotificationHistoryAccess`).
 //
 
 import SwiftUI
@@ -19,18 +21,31 @@ struct NotificationHistorySections: View {
 
     let viewModel: NotificationHistoryViewModel
 
-    private var isLocked: Bool { SingletonGraph.shared.appLockManager.isLocked }
+    private var access: NotificationHistoryAccess {
+        NotificationHistoryAccess.decide(
+            isLocked: SingletonGraph.shared.appLockManager.isLocked,
+            blockedByAbandonedWipe: SingletonGraph.shared.securityWipe.blockedByAbandonedWipe
+        )
+    }
     private var memoryOnly: Bool { SingletonGraph.shared.hostileLocationProtectionStore.enabled }
 
     var body: some View {
-        if isLocked {
+        switch access {
+        case .visible:
+            latestSection
+            historySection
+        case .locked:
             Section {
                 Text("Unlock KyPost to see notification history.")
                     .foregroundStyle(.secondary)
             }
-        } else {
-            latestSection
-            historySection
+        case .blockedByAbandonedWipe:
+            // This scene (macOS Settings) sits outside the main window's
+            // recovery screen, so it must refuse on its own.
+            Section {
+                Text("KyPost could not finish erasing this device. Notification history is unavailable until it is erased.")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

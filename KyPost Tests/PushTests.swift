@@ -492,6 +492,32 @@ private final class PinArmingRecorder: @unchecked Sendable {
         #expect(try env.pairingStore.loadPairing()?.lastDeviceId == "dev-8")
     }
 
+    /// Routine re-registration does not restart the heartbeat's quiet clock:
+    /// hourly foregrounds with no push must not postpone the heartbeat past
+    /// three hours from the original registration.
+    @Test func reregistrationKeepsTheHeartbeatQuietClock() async throws {
+        let client = stubClient(json: #"{"ok": true, "deviceId": "dev-8", "deviceSecret": "s-8"}"#)
+        let env = try makeEnvironment(client: client)
+        // A new pairing starts the clock.
+        guard case .success = await env.service.pair(params: params, deviceToken: "t1") else {
+            Issue.record("pairing failed")
+            return
+        }
+        #expect(env.settings.lastRegisteredAt != nil)
+
+        let paired = try makeEnvironment(client: client, paired: true)
+        let initial = Date().addingTimeInterval(-3 * 60 * 60)
+        paired.settings.lastRegisteredAt = initial
+        for _ in 0..<3 {
+            _ = await paired.service.reregisterIfPaired(deviceToken: "t2")
+        }
+        #expect(paired.settings.lastRegisteredAt == initial)
+        #expect(PullHeartbeatPolicy.decide(
+            mode: .push, lastPushReceivedAt: nil,
+            lastRegisteredAt: paired.settings.lastRegisteredAt, lastPulledAt: nil, now: Date()
+        ) == .poll(heartbeat: true))
+    }
+
     /// Every successful register mints a brand-new secret, invalidating the
     /// previous one — the stored value must be overwritten, not kept.
     @Test func reregisterOverwritesStoredDeviceSecret() async throws {

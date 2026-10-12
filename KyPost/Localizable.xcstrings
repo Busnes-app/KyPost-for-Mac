@@ -22,6 +22,9 @@
     "In Pull mode this Mac checks for notifications every 90 seconds while running. In Push mode it checks the server itself if no push has arrived for three hours." : {
 
     },
+    "KyPost could not finish erasing this device. Notification history is unavailable until it is erased." : {
+
+    },
     "Last checked" : {
 
     },

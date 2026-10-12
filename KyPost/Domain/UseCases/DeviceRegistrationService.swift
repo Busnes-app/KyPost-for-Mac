@@ -135,6 +135,14 @@ final class DeviceRegistrationService {
             deviceId: deviceId
         )
         if case .success(let response) = outcome {
+            // Routine re-registration of the same account (foreground, token
+            // refresh) must not restart the heartbeat's quiet clock: it proves
+            // the relay answers, not that APNs delivers, and resetting it on
+            // every foreground would postpone the heartbeat indefinitely.
+            let previous = try? securePairingStore.loadPairing()
+            let isRoutineReregistration = previous?.sub == params.sub
+                && previous?.srv == params.srv
+                && pushSettingsStore.lastRegisteredAt != nil
             do {
                 try securePairingStore.savePairing(Pairing(
                     sub: params.sub,
@@ -153,7 +161,9 @@ final class DeviceRegistrationService {
                 return .failure("Registered but could not save pairing: \(error)")
             }
             pushSettingsStore.deliveryMode = response.deliveryMode ?? .push
-            pushSettingsStore.lastRegisteredAt = Date()
+            if !isRoutineReregistration {
+                pushSettingsStore.lastRegisteredAt = Date()
+            }
             pushSettingsStore.pullEndpoint = response
                 .resolvedPullEndpoint(srv: params.srv)?.absoluteString
             // Trust on FIRST use: pin the key this handshake presented only

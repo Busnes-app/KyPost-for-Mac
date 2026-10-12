@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import SwiftData
 import Testing
 @testable import KyPost
 
@@ -15,6 +16,7 @@ private struct PullEnvironment {
     var cursorStore: NotificationCursorStore
     var settings: PushSettingsStore
     var dao: PushNotificationDAO
+    var db: AppDatabase
 }
 
 @MainActor
@@ -33,7 +35,78 @@ private func makePullEnvironment(client: HTTPClient, paired: Bool = true) throws
         securePairingStore: pairingStore,
         pushSettingsStore: settings
     )
-    return PullEnvironment(repository: repository, cursorStore: cursorStore, settings: settings, dao: dao)
+    return PullEnvironment(repository: repository, cursorStore: cursorStore, settings: settings, dao: dao, db: db)
+}
+
+/// A transport that holds every response until `release()`, so a test can act
+/// while a pull is waiting on the relay.
+private final class HeldTransport: @unchecked Sendable {
+    let requests = Box(0)
+    private let stream: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+    private let json: String
+
+    init(json: String) {
+        self.json = json
+        (stream, continuation) = AsyncStream<Void>.makeStream()
+    }
+
+    var client: HTTPClient {
+        HTTPClient { [self] request in
+            requests.mutate { $0 += 1 }
+            for await _ in stream { break }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(json.utf8), response)
+        }
+    }
+
+    func release() { continuation.yield(()) }
+
+    func waitForRequest() async {
+        while requests.value == 0 { await Task.yield() }
+    }
+}
+
+@MainActor
+private final class PresentationLog {
+    var items: [String] = []
+    var presenter: PulledPresenter {
+        { [weak self] item in
+            switch item {
+            case .mail(let mail): self?.items.append("mail:\(mail.messageId)")
+            case .mfa(let pulled): self?.items.append("mfa:\(pulled.challenge.challengeId)")
+            }
+        }
+    }
+}
+
+@MainActor
+private func makeScheduler(
+    _ env: PullEnvironment,
+    deliveredPushes: [DeliveredPush] = [],
+    log: PresentationLog? = nil
+) throws -> PullPollingScheduler {
+    let dispatcher = PushNotificationDispatcher(
+        pushRepository: env.repository,
+        approveMfaChallenge: ApproveMfaChallengeUseCase(
+            client: MfaResponseClient(httpClient: stubClient()),
+            securePairingStore: try makePairedStore()
+        ),
+        pushSettingsStore: env.settings
+    )
+    return PullPollingScheduler(
+        pushRepository: env.repository,
+        pushSettingsStore: env.settings,
+        dispatcher: dispatcher,
+        deliveredPushes: { deliveredPushes },
+        presenter: log?.presenter
+    )
+}
+
+/// Every row in the store, visible or not.
+@MainActor
+private func allRows(_ env: PullEnvironment) throws -> [PushNotificationEntity] {
+    try ModelContext(env.db.container).fetch(FetchDescriptor<PushNotificationEntity>())
 }
 
 private let hour: TimeInterval = 60 * 60
@@ -315,26 +388,6 @@ private func rfc3339(_ date: Date) -> String {
 
 @MainActor
 @Suite struct PullPollingSchedulerHeartbeatTests {
-    private func makeScheduler(
-        _ env: PullEnvironment,
-        deliveredPushDate: Date? = nil
-    ) throws -> PullPollingScheduler {
-        let dispatcher = PushNotificationDispatcher(
-            pushRepository: env.repository,
-            approveMfaChallenge: ApproveMfaChallengeUseCase(
-                client: MfaResponseClient(httpClient: stubClient()),
-                securePairingStore: try makePairedStore()
-            ),
-            pushSettingsStore: env.settings
-        )
-        return PullPollingScheduler(
-            pushRepository: env.repository,
-            pushSettingsStore: env.settings,
-            dispatcher: dispatcher,
-            deliveredPushDate: { deliveredPushDate }
-        )
-    }
-
     @Test func healthyPushModeMakesNoRequest() async throws {
         let requests = Box(0)
         let env = try makePullEnvironment(client: stubClient(json: #"{"cursor":0,"notifications":[]}"#) { _ in
@@ -372,7 +425,7 @@ private func rfc3339(_ date: Date) -> String {
         env.settings.deliveryMode = .push
         env.settings.markPushReceived(at: Date().addingTimeInterval(-10 * hour))
 
-        let scheduler = try makeScheduler(env, deliveredPushDate: Date().addingTimeInterval(-60))
+        let scheduler = try makeScheduler(env, deliveredPushes: [DeliveredPush(date: Date().addingTimeInterval(-60))])
         await scheduler.pollNow()
         #expect(requests.value == 0)
     }
@@ -424,5 +477,206 @@ private func rfc3339(_ date: Date) -> String {
         #expect(NotificationHistoryViewModel.openableMessageId(entry("pull-9")) == nil)
         #expect(NotificationHistoryViewModel.openableMessageId(entry("")) == nil)
         #expect(NotificationHistoryViewModel.openableMessageId(entry("abc")) == "abc")
+    }
+}
+
+// MARK: - Review findings
+
+@MainActor
+@Suite struct PullHeartbeatReviewTests {
+    private static func mailJSON(seq: Int, messageId: String, createdAt: Date) -> String {
+        """
+        { "seq": \(seq), "createdAt": "\(rfc3339(createdAt))",
+          "data": { "messageId": "\(messageId)", "senderName": "Ada", "emailSubject": "Hi" } }
+        """
+    }
+
+    /// Teardown stops the poll in flight, not only the cadence: a response
+    /// released after `shutdown` writes and presents nothing.
+    @Test func shutdownStopsAPollWaitingOnTheRelay() async throws {
+        let held = HeldTransport(json: """
+        { "cursor": 1, "notifications": [ \(Self.mailJSON(seq: 1, messageId: "m-1", createdAt: Date())) ] }
+        """)
+        let env = try makePullEnvironment(client: held.client)
+        env.settings.deliveryMode = .pull
+        let log = PresentationLog()
+        let scheduler = try makeScheduler(env, log: log)
+
+        let poll = Task { await scheduler.pollNow() }
+        await held.waitForRequest()
+        scheduler.shutdown()
+        held.release()
+        await poll.value
+
+        #expect(try allRows(env).isEmpty)
+        #expect(log.items.isEmpty)
+        #expect(env.cursorStore.lastCursor == 0)
+    }
+
+    /// Unpairing while a pull waits on the relay: the old account's response
+    /// must not repopulate history, the cursor, the heartbeat clock, or
+    /// present anything.
+    @Test func unpairDuringAPullLeavesNothingBehind() async throws {
+        let held = HeldTransport(json: """
+        { "cursor": 7, "deliveryMode": "pull", "notifications": [
+            \(Self.mailJSON(seq: 7, messageId: "m-7", createdAt: Date())),
+            { "seq": 8, "createdAt": "\(rfc3339(Date()))",
+              "data": { "type": "mfa_challenge", "challengeId": "c-1", "matchDigits": "42", "decoyDigits": "17,88" } }
+        ] }
+        """)
+        let env = try makePullEnvironment(client: held.client)
+        env.settings.deliveryMode = .pull
+        let log = PresentationLog()
+        let scheduler = try makeScheduler(env, log: log)
+
+        let poll = Task { await scheduler.pollNow() }
+        await held.waitForRequest()
+        try await env.repository.clearForUnpair()
+        held.release()
+        await poll.value
+
+        #expect(try allRows(env).isEmpty)
+        #expect(env.cursorStore.lastCursor == 0)
+        #expect(env.settings.lastPulledAt == nil)
+        #expect(env.settings.lastHeartbeatAttemptAt == nil)
+        #expect(log.items.isEmpty)
+
+        // The repository refuses on its own, without the scheduler.
+        let direct = HeldTransport(json: """
+        { "cursor": 9, "notifications": [ \(Self.mailJSON(seq: 9, messageId: "m-9", createdAt: Date())) ] }
+        """)
+        let env2 = try makePullEnvironment(client: direct.client)
+        let pull = Task { try await env2.repository.pullOnce() }
+        await direct.waitForRequest()
+        try await env2.repository.clearForUnpair()
+        direct.release()
+        await #expect(throws: CancellationError.self) { try await pull.value }
+        #expect(try allRows(env2).isEmpty)
+        #expect(env2.cursorStore.lastCursor == 0)
+    }
+
+    /// A failed heartbeat is spaced like a successful one.
+    @Test func failedHeartbeatsAreSpacedOut() async throws {
+        let requests = Box(0)
+        let env = try makePullEnvironment(client: stubClient(status: 500, json: "oops") { _ in
+            requests.mutate { $0 += 1 }
+        })
+        env.settings.deliveryMode = .push
+        let start = Date()
+        env.settings.markPushReceived(at: start.addingTimeInterval(-4 * hour))
+        let scheduler = try makeScheduler(env)
+
+        await scheduler.pollNow(now: start)
+        await scheduler.pollNow(now: start.addingTimeInterval(90))
+        await scheduler.pollNow(now: start.addingTimeInterval(900))
+        #expect(requests.value == 2)
+    }
+
+    /// Delivery ids outlive the 30 visible rows for the heartbeat window, so
+    /// pushes pruned from view are still not alerted twice.
+    @Test func prunedPushesAreNotReAlertedByTheHeartbeat() async throws {
+        let now = Date()
+        let base = now.addingTimeInterval(-3.5 * hour)
+        let entries = (0..<31).map {
+            Self.mailJSON(seq: $0 + 1, messageId: "m-\($0)", createdAt: base.addingTimeInterval(TimeInterval($0)))
+        }
+        let env = try makePullEnvironment(client: stubClient(json: """
+        { "cursor": 31, "notifications": [ \(entries.joined(separator: ",")) ] }
+        """))
+        for index in 0..<31 {
+            try await env.repository.recordPushArrival(
+                MailPushPayload(messageId: "m-\(index)", senderName: "Ada", emailSubject: "Hi", keywords: []),
+                receivedAt: base.addingTimeInterval(TimeInterval(index))
+            )
+        }
+        #expect(try await env.repository.history().count == PushNotificationDAO.historyLimit)
+        #expect(try await !env.repository.history().contains { $0.messageId == "m-0" })
+
+        let batch = try await env.repository.pullOnce(
+            now: now, minCreatedAt: now.addingTimeInterval(-PullHeartbeatPolicy.heartbeatWindow)
+        )
+        #expect(batch.mail.isEmpty)
+        // The row kept for its id carries no content.
+        let kept = try #require(try allRows(env).first { $0.messageId == "m-0" })
+        #expect(kept.senderName.isEmpty && kept.emailSubject.isEmpty && kept.keywords.isEmpty)
+    }
+
+    /// A mail push iOS showed while the app was suspended never reached
+    /// `handleIncoming`; the heartbeat still must not alert it again.
+    @Test func aDeliveredBannerIsNotAlertedAgainByTheHeartbeat() async throws {
+        let now = Date()
+        let delivered = now.addingTimeInterval(-4 * hour)
+        let requests = Box(0)
+        let env = try makePullEnvironment(client: stubClient(json: """
+        { "cursor": 1, "notifications": [ \(Self.mailJSON(seq: 1, messageId: "m-1", createdAt: delivered)) ] }
+        """) { _ in requests.mutate { $0 += 1 } })
+        env.settings.deliveryMode = .push
+        let log = PresentationLog()
+        let pushed = PushNotificationDispatcher.deliveredPush(
+            userInfo: ["messageId": "m-1", "senderName": "Ada", "emailSubject": "Hi"],
+            date: delivered
+        )
+        #expect(pushed.mail?.messageId == "m-1")
+        let scheduler = try makeScheduler(env, deliveredPushes: [pushed], log: log)
+
+        await scheduler.pollNow(now: now)
+        #expect(requests.value == 1)
+        #expect(log.items.isEmpty)
+        #expect(try await env.repository.history().map(\.messageId) == ["m-1"])
+    }
+
+    /// A banner from before this pairing registered is not this pairing's mail.
+    @Test func bannersFromBeforeThePairingAreNotRecorded() async throws {
+        let env = try makePullEnvironment(client: stubClient())
+        let now = Date()
+        env.settings.lastRegisteredAt = now.addingTimeInterval(-hour)
+        await env.repository.reconcileDeliveredPushes([
+            (payload: MailPushPayload(messageId: "old", senderName: "A", emailSubject: "s", keywords: []),
+             receivedAt: now.addingTimeInterval(-2 * hour)),
+            (payload: MailPushPayload(messageId: "new", senderName: "A", emailSubject: "s", keywords: []),
+             receivedAt: now.addingTimeInterval(-60)),
+        ])
+        #expect(try await env.repository.history().map(\.messageId) == ["new"])
+    }
+
+    /// The cap applies to a store written before it existed, with no new
+    /// arrival to trigger it.
+    @Test func legacyHistoryIsCappedWithoutANewArrival() async throws {
+        let env = try makePullEnvironment(client: stubClient())
+        let context = ModelContext(env.db.container)
+        let old = Date().addingTimeInterval(-30 * 24 * hour)
+        for index in 0..<100 {
+            context.insert(PushNotificationEntity(from: PushNotification(
+                seq: index, messageId: "m-\(index)", senderName: "Ada", emailSubject: "Hi",
+                keywords: [], receivedAt: old.addingTimeInterval(TimeInterval(index)), read: false
+            )))
+        }
+        try context.save()
+
+        try await env.repository.pruneHistory()
+        let rows = try allRows(env)
+        #expect(rows.count == PushNotificationDAO.historyLimit)
+        #expect(Set(rows.map(\.messageId)) == Set((70..<100).map { "m-\($0)" }))
+    }
+
+    /// The history screen loads nothing after a wipe that gave up.
+    @Test func historyIsNotLoadedAfterAnAbandonedWipe() async throws {
+        let env = try makePullEnvironment(client: stubClient())
+        try await env.repository.recordPushArrival(
+            MailPushPayload(messageId: "m-1", senderName: "Ada", emailSubject: "Secret", keywords: ["Work"])
+        )
+        let viewModel = NotificationHistoryViewModel(
+            repository: env.repository,
+            pushSettingsStore: env.settings,
+            isBlockedByAbandonedWipe: { true }
+        )
+        await viewModel.load()
+        #expect(viewModel.entries.isEmpty)
+        #expect(viewModel.latest == nil)
+
+        #expect(NotificationHistoryAccess.decide(isLocked: false, blockedByAbandonedWipe: true) == .blockedByAbandonedWipe)
+        #expect(NotificationHistoryAccess.decide(isLocked: true, blockedByAbandonedWipe: true) == .blockedByAbandonedWipe)
+        #expect(NotificationHistoryAccess.decide(isLocked: true, blockedByAbandonedWipe: false) == .locked)
+        #expect(NotificationHistoryAccess.decide(isLocked: false, blockedByAbandonedWipe: false) == .visible)
     }
 }

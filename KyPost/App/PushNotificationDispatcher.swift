@@ -219,17 +219,26 @@ extension PushNotificationDispatcher {
         data.filter { ["type", "challengeId", "matchDigits", "decoyDigits"].contains($0.key) }
     }
 
-    /// The newest remote (APNs) notification still in Notification Center.
-    /// Alert pushes do not wake a suspended app, so this is how the heartbeat
-    /// learns push is alive without a service extension. Nil when the user
-    /// has cleared them — the heartbeat then errs toward one extra poll.
-    func latestDeliveredRemoteNotificationDate(
+    /// The remote (APNs) notifications still in Notification Center, with
+    /// the mail each one alerted. Alert pushes do not wake a suspended app,
+    /// so this is how the heartbeat learns push is alive, and how history
+    /// learns what push already alerted, without a service extension. Empty
+    /// when the user has cleared them — the heartbeat then errs toward one
+    /// extra poll — and after an abandoned wipe, which records nothing.
+    func deliveredRemotePushes(
         center: UNUserNotificationCenter = .current()
-    ) async -> Date? {
-        await center.deliveredNotifications()
+    ) async -> [DeliveredPush] {
+        guard !SingletonGraph.shared.securityWipe.blockedByAbandonedWipe else { return [] }
+        return await center.deliveredNotifications()
             .filter { $0.request.trigger is UNPushNotificationTrigger }
-            .map(\.date)
-            .max()
+            .map { Self.deliveredPush(userInfo: $0.request.content.userInfo, date: $0.date) }
+    }
+
+    static func deliveredPush(userInfo: [AnyHashable: Any], date: Date) -> DeliveredPush {
+        guard case .mail(let mail) = PushPayloadMapper.map(userInfo: userInfo, receivedAt: date) else {
+            return DeliveredPush(date: date, mail: nil)
+        }
+        return DeliveredPush(date: date, mail: mail)
     }
 }
 

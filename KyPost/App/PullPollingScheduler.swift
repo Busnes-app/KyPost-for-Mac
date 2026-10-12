@@ -45,18 +45,23 @@ nonisolated enum PullHeartbeatPolicy {
     /// `pushQuietThreshold`, counted from the last push or, when none has ever
     /// arrived, from the last registration. A pull answer of "push" is not
     /// "stop polling".
+    ///
+    /// Spacing counts from the later of the last successful pull and the last
+    /// heartbeat *attempt*, so a relay answering errors is retried every
+    /// `heartbeatSpacing`, not every tick.
     static func decide(
         mode: RegistrationResponse.DeliveryMode?,
         lastPushReceivedAt: Date?,
         lastRegisteredAt: Date?,
         lastPulledAt: Date?,
+        lastHeartbeatAttemptAt: Date? = nil,
         now: Date
     ) -> Decision {
         if mode == .pull { return .poll(heartbeat: false) }
         let quietSince = lastPushReceivedAt ?? lastRegisteredAt ?? .distantPast
         guard now.timeIntervalSince(quietSince) >= pushQuietThreshold else { return .skip }
-        if let lastPulledAt, now.timeIntervalSince(lastPulledAt) < heartbeatSpacing,
-           lastPulledAt <= now {
+        for last in [lastPulledAt, lastHeartbeatAttemptAt].compactMap({ $0 })
+        where last <= now && now.timeIntervalSince(last) < heartbeatSpacing {
             return .skip
         }
         return .poll(heartbeat: true)
@@ -73,10 +78,13 @@ final class PullPollingScheduler {
     private let pushRepository: PushRepository
     private let pushSettingsStore: PushSettingsStore
     private let dispatcher: PushNotificationDispatcher
-    /// Newest APNs arrival the system still remembers. iOS alert pushes do
-    /// not wake the app, so Notification Center is the only evidence a push
-    /// arrived while it was suspended.
-    private let deliveredPushDate: () async -> Date?
+    /// APNs pushes the system still shows in Notification Center. iOS alert
+    /// pushes do not wake the app, so this is the only evidence a push
+    /// arrived — and which mail it alerted — while it was suspended.
+    private let deliveredPushes: () async -> [DeliveredPush]
+    /// Where pulled arrivals are shown; the dispatcher's local banners unless
+    /// a test substitutes a recorder.
+    private let presenter: PulledPresenter?
     private var pollingTask: Task<Void, Never>?
     private var inFlight: Task<Void, Never>?
 
@@ -84,12 +92,14 @@ final class PullPollingScheduler {
         pushRepository: PushRepository,
         pushSettingsStore: PushSettingsStore,
         dispatcher: PushNotificationDispatcher,
-        deliveredPushDate: @escaping () async -> Date? = { nil }
+        deliveredPushes: @escaping () async -> [DeliveredPush] = { [] },
+        presenter: PulledPresenter? = nil
     ) {
         self.pushRepository = pushRepository
         self.pushSettingsStore = pushSettingsStore
         self.dispatcher = dispatcher
-        self.deliveredPushDate = deliveredPushDate
+        self.deliveredPushes = deliveredPushes
+        self.presenter = presenter
     }
 
     /// Starts the foreground cadence (immediate tick, then every 90s). Runs
@@ -110,6 +120,17 @@ final class PullPollingScheduler {
         pollingTask = nil
     }
 
+    /// Graph teardown (`SingletonGraph.shutdown`): stops the cadence *and*
+    /// the poll in flight, which is its own task and outlives the cadence's
+    /// cancellation. A cancelled poll persists and presents nothing.
+    /// Backgrounding only stops the cadence, so a poll already under way
+    /// still delivers its banners.
+    func shutdown() {
+        stopForegroundPolling()
+        inFlight?.cancel()
+        inFlight = nil
+    }
+
     /// Whether the 90s cadence is running (shutdown assertions in tests).
     var isPolling: Bool { pollingTask != nil }
 
@@ -128,33 +149,51 @@ final class PullPollingScheduler {
         let task = Task { await self.runPoll(now: now) }
         inFlight = task
         await task.value
-        inFlight = nil
+        // `shutdown` may have cleared (or a later poll replaced) the slot.
+        if inFlight == task { inFlight = nil }
     }
 
     private func runPoll(now: Date) async {
-        if let delivered = await deliveredPushDate() {
-            pushSettingsStore.markPushReceived(at: delivered)
+        let delivered = await deliveredPushes()
+        guard !Task.isCancelled else { return }
+        if let newest = delivered.map(\.date).max() {
+            pushSettingsStore.markPushReceived(at: newest)
         }
+        // Before the pull, so history already knows what push alerted.
+        await pushRepository.reconcileDeliveredPushes(
+            delivered.compactMap { item in item.mail.map { (payload: $0, receivedAt: item.date) } }
+        )
         let decision = PullHeartbeatPolicy.decide(
             mode: pushSettingsStore.deliveryMode,
             lastPushReceivedAt: pushSettingsStore.lastPushReceivedAt,
             lastRegisteredAt: pushSettingsStore.lastRegisteredAt,
             lastPulledAt: pushSettingsStore.lastPulledAt,
+            lastHeartbeatAttemptAt: pushSettingsStore.lastHeartbeatAttemptAt,
             now: now
         )
-        guard case .poll(let heartbeat) = decision else { return }
+        guard case .poll(let heartbeat) = decision, !Task.isCancelled else { return }
+        if heartbeat {
+            pushSettingsStore.lastHeartbeatAttemptAt = now
+        }
         do {
             let batch = try await pushRepository.pullOnce(
                 now: now,
                 minCreatedAt: heartbeat ? now.addingTimeInterval(-PullHeartbeatPolicy.heartbeatWindow) : nil
             )
+            func stillCurrent() -> Bool {
+                !Task.isCancelled && pushRepository.isCurrent(session: batch.session)
+            }
             for pulled in batch.mfaChallenges
             where now.timeIntervalSince(pulled.challenge.receivedAt) < Self.mfaFreshness {
-                await dispatcher.presentMfaLocally(pulled.challenge, userInfo: pulled.userInfo)
+                guard stillCurrent() else { return }
+                await present(.mfa(pulled))
             }
             for notification in batch.mail {
-                await dispatcher.presentLocally(notification)
+                guard stillCurrent() else { return }
+                await present(.mail(notification))
             }
+        } catch is CancellationError {
+            // Shut down or unpaired mid-pull; nothing was kept.
         } catch MailSourceError.notPaired {
             // Not an error state; pairing just hasn't happened yet.
         } catch MailSourceError.credentialUnavailable {
@@ -163,4 +202,32 @@ final class PullPollingScheduler {
             Log.push.error("Pull poll failed: \(error)")
         }
     }
+
+    private func present(_ item: PulledPresentation) async {
+        if let presenter {
+            await presenter(item)
+            return
+        }
+        switch item {
+        case .mfa(let pulled):
+            await dispatcher.presentMfaLocally(pulled.challenge, userInfo: pulled.userInfo)
+        case .mail(let notification):
+            await dispatcher.presentLocally(notification)
+        }
+    }
 }
+
+/// One APNs notification still in Notification Center: when it arrived and,
+/// for mail, which message it alerted.
+struct DeliveredPush: Equatable, Sendable {
+    var date: Date
+    var mail: MailPushPayload? = nil
+}
+
+/// Something a pull asks to be shown.
+enum PulledPresentation: Sendable {
+    case mail(PushNotification)
+    case mfa(PushRepository.PulledMfaChallenge)
+}
+
+typealias PulledPresenter = @MainActor (PulledPresentation) async -> Void

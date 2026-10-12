@@ -18,6 +18,7 @@ final class PushSettingsStore {
         static let lastPushReceivedAt = "push.lastPushReceivedAt"
         static let lastRegisteredAt = "push.lastRegisteredAt"
         static let lastPulledAt = "push.lastPulledAt"
+        static let lastHeartbeatAttemptAt = "push.lastHeartbeatAttemptAt"
     }
 
     private let defaults: UserDefaults
@@ -78,12 +79,21 @@ final class PushSettingsStore {
         set { defaults.set(newValue, forKey: Key.lastPulledAt) }
     }
 
+    /// When the last heartbeat request was *started*, whether or not it
+    /// succeeded. Stamped before the request, so a failing relay is retried
+    /// on the heartbeat spacing rather than on every 90-second tick.
+    var lastHeartbeatAttemptAt: Date? {
+        get { defaults.object(forKey: Key.lastHeartbeatAttemptAt) as? Date }
+        set { defaults.set(newValue, forKey: Key.lastHeartbeatAttemptAt) }
+    }
+
     /// Forgets the heartbeat clock; unpair calls this so a new pairing starts
     /// counting from its own registration.
     func clearHeartbeatState() {
         defaults.removeObject(forKey: Key.lastPushReceivedAt)
         defaults.removeObject(forKey: Key.lastRegisteredAt)
         defaults.removeObject(forKey: Key.lastPulledAt)
+        defaults.removeObject(forKey: Key.lastHeartbeatAttemptAt)
     }
 
     /// Latest APNs token, kept for re-registration on foreground/pairing.

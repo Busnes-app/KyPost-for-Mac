@@ -16,6 +16,15 @@ final class PushRepository {
     private let securePairingStore: SecurePairingStore
     private let pushSettingsStore: PushSettingsStore
 
+    /// The pairing session this repository is writing for. `clearForUnpair`
+    /// moves it on before clearing anything, and every write a pull makes is
+    /// checked against the value it started with — so a pull still waiting on
+    /// the relay when the pairing is removed leaves nothing behind.
+    private(set) var session = 0
+
+    /// Whether work started under `session` may still write or present.
+    func isCurrent(session: Int) -> Bool { session == self.session }
+
     init(
         dao: PushNotificationDAO,
         cursorStore: NotificationCursorStore,
@@ -36,6 +45,14 @@ final class PushRepository {
         try await dao.listHistory(limit: limit)
     }
 
+    /// Applies the history cap to rows already on disk — a store written
+    /// before the cap existed, or one that has received nothing since.
+    /// Runs at launch (`runStartupMigrationsIfNeeded`) and when the history
+    /// screen loads.
+    func pruneHistory(now: Date = Date()) async throws {
+        try await dao.prune(keeping: PushNotificationDAO.historyLimit, now: now)
+    }
+
     func markRead(seq: Int) async throws {
         try await dao.markRead(seq: seq)
     }
@@ -49,10 +66,11 @@ final class PushRepository {
         _ payload: MailPushPayload,
         receivedAt: Date = Date()
     ) async throws -> PushNotification? {
+        let session = self.session
         if try await dao.contains(messageId: payload.messageId) { return nil }
         var seq = Int(receivedAt.timeIntervalSince1970 * 1000)
         var notification = payload.toNotification(seq: seq, receivedAt: receivedAt)
-        while try await !dao.insert(notification: notification) {
+        while try await !dao.insert(notification: notification, session: session) {
             if try await dao.contains(messageId: payload.messageId) { return nil }
             seq += 1
             notification.seq = seq
@@ -62,10 +80,36 @@ final class PushRepository {
 
     /// Unpair: history, the pull cursor and the heartbeat clock all belong to
     /// the account the pairing was for.
+    ///
+    /// The session moves on first, synchronously, so nothing a pull already
+    /// in flight does afterwards is accepted — not its history rows, not its
+    /// cursor, not its heartbeat stamps, not its banners.
     func clearForUnpair() async throws {
+        session += 1
+        await dao.invalidateSession(to: session)
         cursorStore.reset()
         pushSettingsStore.clearHeartbeatState()
         try await dao.deleteAll()
+    }
+
+    /// Records mail pushes the system delivered while the app was not
+    /// running. iOS alert pushes do not wake a suspended app, so these never
+    /// reached `handleIncoming`; without them history cannot tell the
+    /// heartbeat that this mail was already alerted. Idempotent: history
+    /// dedupes by message id. Banners older than the current pairing's
+    /// registration are skipped: unpair leaves Notification Center alone, and
+    /// a previous pairing's mail does not belong in this one's history.
+    func reconcileDeliveredPushes(_ delivered: [(payload: MailPushPayload, receivedAt: Date)]) async {
+        guard !delivered.isEmpty, securePairingStore.isPaired else { return }
+        let pairedSince = pushSettingsStore.lastRegisteredAt ?? .distantPast
+        for item in delivered where item.receivedAt >= pairedSince {
+            do {
+                try await recordPushArrival(item.payload, receivedAt: item.receivedAt)
+            } catch {
+                // Session moved on (unpair) or the store failed; stop either way.
+                return
+            }
+        }
     }
 
     // MARK: - Pull mode
@@ -76,6 +120,9 @@ final class PushRepository {
     struct PullBatch: Equatable, Sendable {
         var mail: [PushNotification] = []
         var mfaChallenges: [PulledMfaChallenge] = []
+        /// The pairing session it was fetched under; present nothing from it
+        /// once `isCurrent(session:)` is false.
+        var session = 0
     }
 
     struct PulledMfaChallenge: Equatable, Sendable {
@@ -102,17 +149,17 @@ final class PushRepository {
             throw NetworkError.invalidURL
         }
 
+        let session = self.session
         let lastCursor = cursorStore.lastCursor
         let response = try await client.pull(
             endpoint: endpoint,
             auth: RelayAuth(pairing: pairing),
             after: lastCursor
         )
-        // The response mode is authoritative: a flip to pull makes the next
-        // tick poll unconditionally, a flip back makes it a heartbeat again.
-        if let mode = response.deliveryMode.flatMap(RegistrationResponse.DeliveryMode.wire) {
-            pushSettingsStore.deliveryMode = mode
-        }
+        // Nothing below may land for a pairing that is gone, or for a graph
+        // that has been shut down.
+        try Task.checkCancellation()
+        guard isCurrent(session: session) else { throw CancellationError() }
 
         let floor = minCreatedAt ?? (lastCursor == 0 ? now.addingTimeInterval(-Self.firstPullWindow) : nil)
         var seen = Set<Int>()
@@ -130,7 +177,7 @@ final class PushRepository {
             case .mail(let notification):
                 // History is the dedupe against what push already delivered:
                 // same messageId, no second alert.
-                if try await dao.insert(notification: notification) {
+                if try await dao.insert(notification: notification, session: session, now: now) {
                     batch.mail.append(notification)
                 }
             case .mfaChallenge(let challenge, let userInfo):
@@ -140,9 +187,19 @@ final class PushRepository {
             }
         }
 
+        // Re-checked after the last suspension; from here to the return there
+        // is none, so an unpair cannot interleave with these writes.
+        try Task.checkCancellation()
+        guard isCurrent(session: session) else { throw CancellationError() }
+        // The response mode is authoritative: a flip to pull makes the next
+        // tick poll unconditionally, a flip back makes it a heartbeat again.
+        if let mode = response.deliveryMode.flatMap(RegistrationResponse.DeliveryMode.wire) {
+            pushSettingsStore.deliveryMode = mode
+        }
         // Hand-off complete; only now advance the cursor (spec §3).
         cursorStore.advance(to: max(lastCursor, response.cursor))
         pushSettingsStore.lastPulledAt = now
+        batch.session = session
         return batch
     }
 

@@ -352,7 +352,7 @@ final class SingletonGraph {
             pushRepository: pushRepository,
             pushSettingsStore: pushSettingsStore,
             dispatcher: dispatcher,
-            deliveredPushDate: { await dispatcher.latestDeliveredRemoteNotificationDate() }
+            deliveredPushes: { await dispatcher.deliveredRemotePushes() }
         )
     }()
 
@@ -385,7 +385,7 @@ final class SingletonGraph {
     /// construct them first — harmless, a freshly built scheduler/monitor
     /// stops as a no-op.
     func shutdown() {
-        pullPollingScheduler.stopForegroundPolling()
+        pullPollingScheduler.shutdown()
         systemContactsChangeMonitor.stop()
         inboxViewModel.stopAutoRefresh()
         // Drops in-flight requests, the connection pool, and the session's
@@ -456,6 +456,13 @@ final class SingletonGraph {
             } catch {
                 Log.sync.error("Contact import-dupe repair failed: \(error.localizedDescription)")
             }
+        }
+        // Every launch, not once: the cap applies to history written before
+        // it existed, and to a store that has received nothing since.
+        do {
+            try await pushRepository.pruneHistory()
+        } catch {
+            Log.push.error("Notification history prune failed: \(error.localizedDescription)")
         }
     }
 

@@ -10,6 +10,21 @@
 import Foundation
 import os
 
+/// What the history surface may show. Decided in one place so the view and
+/// the loader cannot disagree.
+enum NotificationHistoryAccess: Equatable {
+    case visible
+    case locked
+    /// A security wipe gave up with data still on disk; history is part of
+    /// what it failed to delete, and is never shown or loaded.
+    case blockedByAbandonedWipe
+
+    static func decide(isLocked: Bool, blockedByAbandonedWipe: Bool) -> Self {
+        if blockedByAbandonedWipe { return .blockedByAbandonedWipe }
+        return isLocked ? .locked : .visible
+    }
+}
+
 @Observable
 @MainActor
 final class NotificationHistoryViewModel {
@@ -19,17 +34,33 @@ final class NotificationHistoryViewModel {
 
     private let repository: PushRepository
     private let pushSettingsStore: PushSettingsStore
+    private let isBlockedByAbandonedWipe: @MainActor () -> Bool
 
-    init(repository: PushRepository, pushSettingsStore: PushSettingsStore) {
+    /// `isBlockedByAbandonedWipe` defaults to re-reading the live graph's
+    /// `securityWipe` at each load.
+    init(
+        repository: PushRepository,
+        pushSettingsStore: PushSettingsStore,
+        isBlockedByAbandonedWipe: (@MainActor () -> Bool)? = nil
+    ) {
         self.repository = repository
         self.pushSettingsStore = pushSettingsStore
+        self.isBlockedByAbandonedWipe = isBlockedByAbandonedWipe ?? {
+            SingletonGraph.shared.securityWipe.blockedByAbandonedWipe
+        }
     }
 
     var latest: PushNotification? { entries.first }
 
     func load() async {
+        guard !isBlockedByAbandonedWipe() else {
+            entries = []
+            lastCheckedAt = nil
+            return
+        }
         lastCheckedAt = pushSettingsStore.lastPulledAt
         do {
+            try await repository.pruneHistory()
             entries = try await repository.history()
             loadFailed = false
         } catch {
