@@ -4,7 +4,8 @@
 //
 //  Inbox state: cached-first load, server refresh, keyword tab filtering,
 //  the 90-second foreground refresh cadence (spec §2), list actions held for
-//  Undo, and the freshness / empty-folder / new-mail signals.
+//  Undo, older mail, server-side search of the folder on screen, and the
+//  freshness / empty-folder / new-mail signals.
 //
 
 import CryptoKit
@@ -93,6 +94,25 @@ final class InboxViewModel {
     /// different one — its rows and answers belong to the account forgotten.
     private var accountGeneration = 0
 
+    /// The submitted search on screen, trimmed; nil when not searching. It
+    /// lives only here — never logged, persisted, or restored with the scene.
+    private(set) var searchQuery: String?
+    /// Results for `searchQuery`, stamped with the searched folder and never
+    /// written to the cache. Nil while the search is in flight and after a
+    /// failure: the folder list shows then, never an older query's results.
+    private(set) var searchResults: [Email]?
+    private(set) var isSearchInFlight = false
+    /// Which submission may land; any newer one, or the search ending,
+    /// supersedes it.
+    private var searchGeneration = 0
+    /// Bumped whenever the selection must end: a search starting, its results
+    /// landing, or the search ending. Selection state lives in the views.
+    private(set) var selectionResetRequest = 0
+    /// Bumped when the search ends for a reason other than the field — a
+    /// folder switch, a notification tap, leaving the account — so the view
+    /// clears and closes the field too.
+    private(set) var searchDismissRequest = 0
+
     private var refreshTask: Task<Void, Never>?
     private var delayedRefreshErrorTask: Task<Void, Never>?
     private var initialRefreshRetryTask: Task<Void, Never>?
@@ -136,21 +156,31 @@ final class InboxViewModel {
         return emails.filter { !hidden.contains($0.id) }
     }
 
+    /// What the list shows: search results while they are on screen (keyword
+    /// tabs do not filter them), otherwise the folder under its tab. Held and
+    /// in-flight rows are hidden from both, by (folder, id).
     var filteredEmails: [Email] {
+        if let searchResults {
+            let hidden = pending.heldKeys.union(inFlightKeys)
+            return searchResults.filter { !hidden.contains($0.id) }
+        }
         guard let selectedTab else { return visibleEmails }
         return visibleEmails.filter { $0.keywords.contains(selectedTab) }
     }
 
+    var isSearchActive: Bool { searchQuery != nil }
+
     /// No chips at all once All and every keyword are hidden: the list then
-    /// shows everything, unfiltered.
+    /// shows everything, unfiltered. None while searching either: the tabs
+    /// do not filter results.
     var showsTabStrip: Bool {
-        showsAllTab || !tabs.isEmpty
+        !isSearchActive && (showsAllTab || !tabs.isEmpty)
     }
 
     /// The "Load older mail" footer: below a non-empty list, until the folder
     /// has nothing older or its server cannot page.
     var showsLoadOlder: Bool {
-        !emails.isEmpty && !olderExhausted.contains(folder)
+        !isSearchActive && !emails.isEmpty && !olderExhausted.contains(folder)
     }
 
     var isLoadingOlder: Bool { loadingOlder.contains(folder) }
@@ -171,12 +201,16 @@ final class InboxViewModel {
 
     /// Whether "No messages in …" is true — only once this folder refreshed.
     var showsEmptyFolderState: Bool {
-        InboxRules.showsEmptyFolder(
+        if searchResults != nil { return filteredEmails.isEmpty }
+        return InboxRules.showsEmptyFolder(
             shown: filteredEmails.count, loadedFolder: loadedFolder, currentFolder: folder
         )
     }
 
     var emptyFolderMessage: String {
+        if searchResults != nil {
+            return String(localized: "No matching messages")
+        }
         if let selectedTab {
             return String(localized: "Nothing tagged \(selectedTab)")
         }
@@ -200,6 +234,7 @@ final class InboxViewModel {
     }
 
     private func resetForFolder(_ name: String, tab: String?) {
+        endSearch(dismissingField: true)
         folder = name
         selectedTab = tab
         emails = []
@@ -446,6 +481,7 @@ final class InboxViewModel {
         topLevelFolders = []
         hasLoaded = false
         resetForFolder(Config.defaultFolder, tab: nil)
+        endSearch(dismissingField: true)
     }
 
     private func finish(_ entry: HeldMailAction, with result: MailActionResult) {
@@ -453,6 +489,7 @@ final class InboxViewModel {
         let confirmed = Set(result.confirmedIds)
         if !confirmed.isEmpty {
             emails.removeAll { $0.folder == entry.folder && confirmed.contains($0.serverId) }
+            searchResults?.removeAll { $0.folder == entry.folder && confirmed.contains($0.serverId) }
             rebuildTabs()
         }
         if let message = result.failureMessage {
@@ -524,7 +561,9 @@ final class InboxViewModel {
             return result.failureMessage
                 ?? String(localized: "The server reported no change.")
         }
-        emails.removeAll { $0.folder == email.folder && $0.serverId == email.serverId }
+        emails.removeAll { $0.id == email.id }
+        // An opened search result leaves the results with it.
+        searchResults?.removeAll { $0.id == email.id }
         rebuildTabs()
         return nil
     }
@@ -539,6 +578,13 @@ final class InboxViewModel {
         for index in emails.indices
         where emails[index].folder == requested && serverIds.contains(emails[index].serverId) {
             emails[index].read = true
+        }
+        if var results = searchResults {
+            for index in results.indices
+            where results[index].folder == requested && serverIds.contains(results[index].serverId) {
+                results[index].read = true
+            }
+            searchResults = results
         }
         do {
             try await mailRepository.markRead(messageIds: serverIds, from: requested)
@@ -705,11 +751,14 @@ final class InboxViewModel {
         if let index = emails.firstIndex(where: { $0.id == email.id }) {
             emails[index].read = true
         }
+        if let index = searchResults?.firstIndex(where: { $0.id == email.id }) {
+            searchResults?[index].read = true
+        }
     }
 
-    /// The row on screen for `key`, or nil.
+    /// The row on screen for `key` — a folder row or a search result — or nil.
     func email(for key: MailRowKey) -> Email? {
-        emails.first { $0.id == key }
+        emails.first { $0.id == key } ?? searchResults?.first { $0.id == key }
     }
 
     /// Prepares the list for a notification tap and returns its target.
@@ -725,6 +774,7 @@ final class InboxViewModel {
     /// tap reports failure and returns nil rather than the cached row.
     func prepareForPushTap(messageId: String) async -> Email? {
         selectionGeneration += 1
+        endSearch(dismissingField: true)
         if folder != StandardFolder.inbox {
             resetForFolder(StandardFolder.inbox, tab: nil)
         } else {
@@ -742,6 +792,71 @@ final class InboxViewModel {
         // A push names an Inbox message by id alone; the same id in another
         // folder is a different message.
         return email(for: MailRowKey(folder: StandardFolder.inbox, serverId: messageId))
+    }
+
+    // MARK: - Search
+
+    /// Searches the folder on screen on the server, every field. Submit-only;
+    /// blank text is ignored. Starting a search and its results landing both
+    /// end the selection. Results land only if this submission is still the
+    /// newest and its query and folder are still the ones on screen; a
+    /// failure says why and leaves the folder list.
+    func submitSearch(_ text: String) async {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        let requested = folder
+        let account = accountGeneration
+        searchGeneration += 1
+        let generation = searchGeneration
+        searchQuery = query
+        searchResults = nil
+        isSearchInFlight = true
+        selectionResetRequest += 1
+        let outcome: Result<[Email], any Error>
+        do {
+            outcome = .success(try await mailRepository.search(query, in: requested))
+        } catch {
+            outcome = .failure(error)
+        }
+        // A search that answers after the account was forgotten lists the
+        // forgotten account's mail: it never lands.
+        guard account == accountGeneration, generation == searchGeneration,
+              searchQuery == query, folder == requested else { return }
+        isSearchInFlight = false
+        selectionResetRequest += 1
+        switch outcome {
+        case .success(let rows):
+            searchResults = rows
+        case .failure(let error):
+            searchResults = nil
+            showNotice(MailOutcome.from(error).userMessage
+                ?? String(localized: "Unable to connect to the mail server."))
+        }
+    }
+
+    /// The field's text changed. Results must match the text on screen, so
+    /// editing it away from the submitted query ends the search — and so does
+    /// clearing it.
+    func searchTextChanged(_ text: String) {
+        guard let searchQuery,
+              text.trimmingCharacters(in: .whitespacesAndNewlines) != searchQuery
+        else { return }
+        endSearch()
+    }
+
+    /// The field was cleared or cancelled: the folder list comes back.
+    func endSearch() {
+        endSearch(dismissingField: false)
+    }
+
+    private func endSearch(dismissingField: Bool) {
+        if dismissingField { searchDismissRequest += 1 }
+        guard searchQuery != nil else { return }
+        searchGeneration += 1
+        searchQuery = nil
+        searchResults = nil
+        isSearchInFlight = false
+        selectionResetRequest += 1
     }
 
     // MARK: - New mail

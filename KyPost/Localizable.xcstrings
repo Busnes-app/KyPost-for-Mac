@@ -79,6 +79,15 @@
     "Load older mail" : {
 
     },
+    "Malformed search response" : {
+
+    },
+    "No matching messages" : {
+
+    },
+    "Search %@" : {
+
+    },
     "The server reported more new mail than it would page." : {
 
     },

@@ -3,8 +3,8 @@
 //  KyPost
 //
 //  The small pieces around the mail list that both shells share: the
-//  freshness line, the Undo bar, the "N new messages" pill, and the "Load
-//  older mail" footer.
+//  freshness line, the Undo bar, the "N new messages" pill, the "Load older
+//  mail" footer, and the search field's wiring.
 //
 
 import SwiftUI
@@ -136,6 +136,42 @@ extension View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: viewModel.newMailCount)
+    }
+
+    /// Server-side search of the folder on screen. Submit-only; editing the
+    /// text away from the submitted query, clearing it, or cancelling ends the
+    /// search. The text is plain view state — never stored or restored — and
+    /// the field is cleared when the view model ends the search itself
+    /// (folder switch, notification tap).
+    func inboxSearch(
+        viewModel: InboxViewModel,
+        text: Binding<String>,
+        isPresented: Binding<Bool>,
+        placement: SearchFieldPlacement
+    ) -> some View {
+        searchable(
+            text: text,
+            isPresented: isPresented,
+            placement: placement,
+            prompt: Text("Search \(viewModel.folderDisplayName)")
+        )
+        .autocorrectionDisabled()
+#if os(iOS)
+        .textInputAutocapitalization(.never)
+#endif
+        .onSubmit(of: .search) {
+            Task { await viewModel.submitSearch(text.wrappedValue) }
+        }
+        .onChange(of: text.wrappedValue) {
+            viewModel.searchTextChanged(text.wrappedValue)
+        }
+        .onChange(of: isPresented.wrappedValue) {
+            if !isPresented.wrappedValue { viewModel.endSearch() }
+        }
+        .onChange(of: viewModel.searchDismissRequest) {
+            text.wrappedValue = ""
+            isPresented.wrappedValue = false
+        }
     }
 
     /// Reports whether the list is scrolled to its top, so new mail is shown

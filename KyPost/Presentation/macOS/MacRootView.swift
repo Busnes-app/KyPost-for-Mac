@@ -56,6 +56,9 @@ struct MacRootView: View {
     @State private var section: MacSection? = .inbox(keyword: nil)
     @State private var selectedEmails: Set<Email> = []
     @State private var selectedContact: Contact?
+    /// The mail search field. Plain view state: never stored or restored.
+    @State private var searchText = ""
+    @State private var isSearchPresented = false
     @State private var showScanKey = false
     /// Which folder sheet is up, if any. One piece of state for both actions
     /// so they cannot be presented at once.
@@ -167,6 +170,10 @@ struct MacRootView: View {
         .onChange(of: inboxViewModel.folder) {
             selectedEmails = []
         }
+        // Nor a search starting, landing, or ending.
+        .onChange(of: inboxViewModel.selectionResetRequest) {
+            selectedEmails = []
+        }
         .onChange(of: inboxViewModel.filteredEmails) {
             // Re-point the selection at the refreshed values (Email is
             // Hashable by value, so a read-flag change would otherwise
@@ -205,7 +212,9 @@ struct MacRootView: View {
                         deletable: sub.deletable
                     )
                 }
-                ForEach(inboxViewModel.tabs, id: \.name) { tab in
+                // Keyword rows do not filter search results, so they step
+                // aside while a search is on screen.
+                ForEach(inboxViewModel.isSearchActive ? [] : inboxViewModel.tabs, id: \.name) { tab in
                     Label(tab.name, systemImage: "tag")
                         .badge(tab.count)
                         .padding(.leading, 12)
@@ -320,6 +329,11 @@ struct MacRootView: View {
     private func emailList(theme: ThemePalette) -> some View {
         VStack(spacing: 0) {
             FreshnessLine(lastRefreshed: inboxViewModel.lastRefreshed)
+            if inboxViewModel.isSearchInFlight {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.vertical, 4)
+            }
             if inboxViewModel.filteredEmails.isEmpty {
                 Group {
                     // "No messages" only once this folder refreshed: a loading
@@ -327,7 +341,10 @@ struct MacRootView: View {
                     if let message = inboxViewModel.errorMessage {
                         EmptyStateView(message: message, systemImage: "exclamationmark.triangle")
                     } else if inboxViewModel.showsEmptyFolderState {
-                        EmptyStateView(message: inboxViewModel.emptyFolderMessage, systemImage: "tray")
+                        EmptyStateView(
+                            message: inboxViewModel.emptyFolderMessage,
+                            systemImage: inboxViewModel.isSearchActive ? "magnifyingglass" : "tray"
+                        )
                     } else if inboxViewModel.isRefreshing {
                         ProgressView()
                             .padding(.top, 40)
@@ -410,6 +427,12 @@ struct MacRootView: View {
             }
         }
         .background(theme.bg)
+        .inboxSearch(
+            viewModel: inboxViewModel,
+            text: $searchText,
+            isPresented: $isSearchPresented,
+            placement: .toolbar
+        )
         .undoBar(inboxViewModel)
         .relabelsAtMidnight()
         // Switching to Contacts or closing the window leaves the list, which

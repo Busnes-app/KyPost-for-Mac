@@ -36,7 +36,10 @@ protocol MailSource: Sendable {
     /// One message's body (`GET /api/mail/body`), for a row that arrived
     /// without one: a page of older mail, or a search result.
     func fetchBody(folder: String, messageId: String) async throws -> MailMessageBody
-    func search(folder: String, query: String) async throws -> [String]
+    /// Server-side search of one folder, every field
+    /// (`GET /api/mail/search`). Rows carry no body and are stamped with
+    /// `folder`: an id means nothing outside the folder it came from.
+    func searchMail(folder: String, query: String, limit: Int) async throws -> [Email]
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws
     /// The four verbs that take a message out of `mailbox` return the relay's
     /// per-id report. A 200 is transport success only — see MailActionReport.
@@ -171,8 +174,11 @@ enum MailSourceError: Error, Equatable {
     /// credential gate is on and the app is locked. Not an error state —
     /// background work retries after the next unlock, like `notPaired`.
     case credentialUnavailable
-    /// The relay has no endpoint for this operation (e.g. server-side search).
+    /// The relay has no endpoint for this operation (client-side keyword
+    /// edits).
     case unsupported
+    /// A 200 whose body is not the documented shape. Carries the sentence.
+    case malformedResponse(String)
     /// The relay answered definitively that this message cannot be opened
     /// (404 gone, 413 too large). Not a connectivity failure: retrying will
     /// not help, and saying "couldn't reach the server" would be a lie.
@@ -269,7 +275,8 @@ enum MailOutcome: Equatable, Sendable {
                 ?? .failure(Self.message(for: .badRequest(body: body)))
         case MailSourceError.notConfigured(let message):
             .notConfigured(message)
-        case MailSourceError.messageUnavailable(let message):
+        case MailSourceError.messageUnavailable(let message),
+             MailSourceError.malformedResponse(let message):
             .failure(message)
         case MailSourceError.olderMailUnsupported:
             .failure(String(localized: "This server can't load older mail. Update KyPost Server to use this."))
