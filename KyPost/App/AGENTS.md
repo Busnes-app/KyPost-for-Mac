@@ -137,9 +137,10 @@ Three seams carry it, and each one defaults to the real path:
 - `PgpSendService.preload(hasIdentity:protection:accountAddress:)` — installs
   a bootstrap answer so compose offers Encrypt/Sign. Nothing in a shipping
   build may decide custody locally; this is the only caller.
-- `SingletonGraph.isDemo` — one switch read by the database (in-memory, so a
-  demo mailbox never lands on disk beside real mail), the mail source, and the
-  contact seed in `runStartupMigrationsIfNeeded`.
+- `SingletonGraph.isDemo` (init default `launchIsDemo`) — one switch read by
+  the stores, the database and photo cache (in-memory, so a demo mailbox never
+  lands on disk beside real mail), the mail source, the Contacts adapter, the
+  push wiring, and the contact seed in `runStartupMigrationsIfNeeded`.
 
 Rules:
 
@@ -147,6 +148,18 @@ Rules:
   build.** It fabricates mail and asserts a key custody the server never
   confirmed; both are lies if a user can reach them.
 - The demo database is in-memory on purpose. Do not "fix" it to persist.
+- **The demo graph never touches the real app's state.** It replaces
+  whatever defaults, Keychain, gated credential, device-key tag and Contacts
+  store it was given with `DemoContent.isolated*` stand-ins and
+  `NoopSystemContactStore`, skips APNs registration and the notification
+  prompt, and returns from `runStartupMigrationsIfNeeded` after seeding —
+  the repairs belong to the real stores. The theme reads
+  `SingletonGraph.launchUserDefaults` for the same reason. Anything new that
+  persists or reaches the network goes through the graph, or is gated on
+  `isDemo` explicitly.
+- `-KyPostDemoScreen` is read only together with `-KyPostDemo`.
+- `ScreenshotTests.capture` attaches the app's own window or nothing. Never
+  add a whole-display fallback on macOS: the display carries other apps.
 - `-KyPostDemoScreen mfa` exists because MFA approval arrives by push and has
   no navigable route. Add a case there rather than a new launch argument.
 - The fixtures are invented. Keep them invented, and keep the addresses on

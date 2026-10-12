@@ -32,20 +32,43 @@ final class ScreenshotTests: XCTestCase {
 
     // MARK: - Capture
 
-    /// Attaches the app's own window rather than the whole display: on macOS
-    /// the screen carries whatever else is open, and the listing wants the app.
-    private func capture(_ app: XCUIApplication, _ name: String) {
+    /// Attaches the app's own window and nothing else. There is deliberately
+    /// no whole-display fallback: on macOS the display carries whatever else
+    /// is open, and those images are exported with the listing. No window
+    /// (or an app that is not in the foreground) costs that one screenshot.
+    /// Returns whether an attachment was added.
+    @discardableResult
+    private func capture(_ app: XCUIApplication, _ name: String) -> Bool {
+        guard app.state == .runningForeground else {
+            XCTContext.runActivity(named: "\(name): app not in the foreground, not captured") { _ in }
+            return false
+        }
         let screenshot: XCUIScreenshot
 #if os(macOS)
         let window = app.windows.firstMatch
-        screenshot = window.exists ? window.screenshot() : XCUIScreen.main.screenshot()
+        guard window.exists else {
+            XCTContext.runActivity(named: "\(name): no app window, not captured") { _ in }
+            return false
+        }
+        screenshot = window.screenshot()
 #else
+        // The Simulator's screen holds only the app under test, and the
+        // listing wants the status bar the window excludes.
         screenshot = XCUIScreen.main.screenshot()
 #endif
         let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+        return true
+    }
+
+    /// Regression: a capture without an app window must attach nothing,
+    /// rather than falling back to the whole display.
+    @MainActor
+    func testCaptureWithoutAnAppWindowAttachesNothing() {
+        let absent = XCUIApplication(bundleIdentifier: "org.kysecurity.mail.screenshot-tests.absent")
+        XCTAssertFalse(capture(absent, "absent"))
     }
 
     private func launchDemo(screen: String? = nil) -> XCUIApplication {
@@ -57,7 +80,11 @@ final class ScreenshotTests: XCTestCase {
         app.launch()
         // The inbox arrives through a refresh; the demo source answers
         // immediately but SwiftUI still needs a frame or two to settle.
-        _ = app.wait(for: .runningForeground, timeout: 10)
+        // A launch that never reached the foreground has nothing to capture.
+        XCTAssertTrue(
+            app.wait(for: .runningForeground, timeout: 10),
+            "The demo build did not reach the foreground"
+        )
         settle(2)
         dismissSystemAlerts()
         return app
@@ -251,7 +278,7 @@ final class ScreenshotTests: XCTestCase {
             let to = fields.element(boundBy: 0)
             if to.exists {
                 to.tap()
-                to.typeText("devon@northgatelabs.com")
+                to.typeText("devon@northgatelabs.example")
                 settle()
             }
         }

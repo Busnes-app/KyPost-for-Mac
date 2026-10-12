@@ -59,10 +59,15 @@ private enum PushLifecycle {
         // that could not run rather than silently rejecting it, so a missing
         // wiring is visible instead of quietly disabling the whole ladder.
         graph.appLockManager.onWipe = { await AppEnvironment.shared.performSecurityWipe() }
+        // The screenshot build has no pairing to deliver to, and must not
+        // change the real app's notification permission or APNs token.
+        guard !graph.isDemo else { return }
         Task {
             await graph.pushNotificationDispatcher.requestAuthorization()
         }
     }
+
+    static var registersForRemoteNotifications: Bool { !SingletonGraph.shared.isDemo }
 
     /// A graph rebuild (Hostile Location Protection toggle) needs the launch
     /// wiring re-run against the new graph.
@@ -141,7 +146,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         PushLifecycle.onLaunch()
         PushLifecycle.installRebuildHandler()
-        application.registerForRemoteNotifications()
+        if PushLifecycle.registersForRemoteNotifications {
+            application.registerForRemoteNotifications()
+        }
         registerBackgroundPull()
         return true
     }
@@ -223,7 +230,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         PushLifecycle.onLaunch()
         PushLifecycle.installRebuildHandler()
-        NSApplication.shared.registerForRemoteNotifications()
+        if PushLifecycle.registersForRemoteNotifications {
+            NSApplication.shared.registerForRemoteNotifications()
+        }
         PushLifecycle.onForeground()
 
         // macOS has no background app refresh; resume polling on wake and

@@ -195,6 +195,9 @@ Domain.
   2 donation presentation. `TipJarStore` uses `CupOJoe4Mail` for one-off
   purchases only; prices come from App Store Connect and must not be hardcoded.
   Do not offer recurring support without an ongoing customer benefit.
+  `start()` keeps the `Transaction.updates` listener and drains
+  `Transaction.unfinished`: a tip that returns `.pending` (Ask to Buy) is
+  only ever finished there (`TipJarStoreTests`, `TipJarTests.storekit`).
 
 - Reuse `ContactSearch` for any contact matching; don't hand-roll a filter.
   `localizedCaseInsensitiveContains` over every contact per keystroke routes

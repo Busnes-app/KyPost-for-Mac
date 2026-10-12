@@ -24,23 +24,56 @@ import os
 
 enum DemoContent {
     /// Set by the screenshot runner; absent in an ordinary Debug run.
-    static let launchArgument = "-KyPostDemo"
+    nonisolated static let launchArgument = "-KyPostDemo"
     /// Optional follow-on argument selecting a screen that has no navigable
     /// route (currently only `mfa`, which normally arrives by push).
     static let screenArgument = "-KyPostDemoScreen"
 
-    static var isEnabled: Bool {
-        ProcessInfo.processInfo.arguments.contains(launchArgument)
+    nonisolated static var isEnabled: Bool {
+        isEnabled(in: ProcessInfo.processInfo.arguments)
     }
 
-    /// The value after `-KyPostDemoScreen`, or nil.
+    nonisolated static func isEnabled(in arguments: [String]) -> Bool {
+        arguments.contains(launchArgument)
+    }
+
+    /// The value after `-KyPostDemoScreen`, or nil. Nil without
+    /// `-KyPostDemo` too: the screen argument alone must not present
+    /// fabricated content in an ordinary Debug run.
     static var requestedScreen: String? {
-        let arguments = ProcessInfo.processInfo.arguments
-        guard let index = arguments.firstIndex(of: screenArgument),
+        requestedScreen(in: ProcessInfo.processInfo.arguments)
+    }
+
+    static func requestedScreen(in arguments: [String]) -> String? {
+        guard isEnabled(in: arguments),
+              let index = arguments.firstIndex(of: screenArgument),
               arguments.indices.contains(index + 1)
         else { return nil }
         return arguments[index + 1]
     }
+
+    // MARK: - Isolated stores
+
+    /// Everything the demo graph persists goes here instead of the app's
+    /// own defaults, Keychain items and device key, so a demo launch can
+    /// neither read nor change the real pairing, settings, contact links or
+    /// credentials. The defaults suite is emptied once per process, so every
+    /// capture starts from a fresh install's state.
+    private static let isolatedPrefix = (Bundle.main.bundleIdentifier ?? "org.kysecurity.mail") + ".demo"
+
+    static let isolatedDefaults: UserDefaults = {
+        let suite = isolatedPrefix
+        // Never fall back to `.standard`: that is the domain being protected.
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            fatalError("The demo build could not open its own defaults suite")
+        }
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }()
+
+    static let isolatedKeychain = KeychainStorage(service: isolatedPrefix + ".secure")
+    static let isolatedGatedStore = GatedCredentialStore(service: isolatedPrefix + ".gated")
+    static let isolatedVaultKeyTag = isolatedPrefix + ".enrollment.deviceKey"
 
     /// Fixed clock so a rerun produces identical screenshots.
     private static let now = Date(timeIntervalSince1970: 1_788_260_400)
@@ -49,14 +82,14 @@ enum DemoContent {
         now.addingTimeInterval(-Double(minutes) * 60)
     }
 
-    static let accountAddress = "avery.lang@kypost.app"
+    static let accountAddress = "avery.lang@kypost.example"
 
     static let emails: [Email] = [
         Email(
             serverId: "demo-1",
             folder: StandardFolder.inbox,
             senderName: "Priya Raghavan",
-            senderEmail: "priya@northgatelabs.com",
+            senderEmail: "priya@northgatelabs.example",
             subject: "Re: Q3 rollout — signed off",
             body: """
             Avery,
@@ -68,7 +101,7 @@ enum DemoContent {
             Priya
             """,
             sentTo: "Avery Lang <\(accountAddress)>",
-            cc: "Devon Okafor <devon@northgatelabs.com>",
+            cc: "Devon Okafor <devon@northgatelabs.example>",
             keywords: ["Work"],
             receivedAt: ago(12),
             read: false,
@@ -83,7 +116,7 @@ enum DemoContent {
             serverId: "demo-2",
             folder: StandardFolder.inbox,
             senderName: "Devon Okafor",
-            senderEmail: "devon@northgatelabs.com",
+            senderEmail: "devon@northgatelabs.example",
             subject: "Key rotation is done — new fingerprint inside",
             body: """
             Rotated this morning as planned. The old key is revoked, not just retired, so anything still encrypting to it will fail loudly instead of quietly.
@@ -204,7 +237,7 @@ enum DemoContent {
             Ines
             """,
             sentTo: "Avery Lang <\(accountAddress)>",
-            cc: "Priya Raghavan <priya@northgatelabs.com>",
+            cc: "Priya Raghavan <priya@northgatelabs.example>",
             keywords: ["Work"],
             receivedAt: ago(1_450),
             read: true,
@@ -219,7 +252,7 @@ enum DemoContent {
             serverId: "demo-8",
             folder: StandardFolder.inbox,
             senderName: "Northgate Build",
-            senderEmail: "ci@northgatelabs.com",
+            senderEmail: "ci@northgatelabs.example",
             subject: "main is green again (build 4482)",
             body: """
             The flake in the migration suite was a shared temp directory, not the migration. Fixed and green across all three runners.
@@ -317,7 +350,7 @@ enum DemoContent {
             family: "Raghavan",
             org: "Northgate Labs",
             title: "Head of Delivery",
-            email: "priya@northgatelabs.com",
+            email: "priya@northgatelabs.example",
             phone: "+351 21 555 0148",
             hasKey: true
         ),
@@ -327,7 +360,7 @@ enum DemoContent {
             family: "Okafor",
             org: "Northgate Labs",
             title: "Security Engineer",
-            email: "devon@northgatelabs.com",
+            email: "devon@northgatelabs.example",
             phone: "+1 415 555 0172",
             hasKey: true
         ),

@@ -22,7 +22,30 @@ final class TipJarStore {
     private(set) var isLoading = false
     private(set) var errorMessage: String?
 
+    private var updatesTask: Task<Void, Never>?
+    /// `Transaction.finish`, injectable so a test can see which transactions
+    /// reached it.
+    private let finish: (Transaction) async -> Void
+
+    init(finish: @escaping (Transaction) async -> Void = { await $0.finish() }) {
+        self.finish = finish
+    }
+
+    /// Listens for transactions that complete outside `purchase` — an
+    /// Ask to Buy or SCA tip approved later returns `.pending` there — and
+    /// finishes any left unfinished by an earlier run, so StoreKit stops
+    /// redelivering them.
     func start() async {
+        if updatesTask == nil {
+            updatesTask = Task { [weak self] in
+                for await result in Transaction.updates {
+                    await self?.handle(result)
+                }
+            }
+            for await result in Transaction.unfinished {
+                await handle(result)
+            }
+        }
         await refresh()
     }
 
@@ -54,6 +77,6 @@ final class TipJarStore {
 
     private func handle(_ result: VerificationResult<Transaction>) async {
         guard case .verified(let transaction) = result else { return }
-        await transaction.finish()
+        await finish(transaction)
     }
 }
