@@ -266,7 +266,9 @@ final class DeviceRegistrationService {
     /// Returns nil when the device was never paired — nothing to refresh.
     @discardableResult
     func reregisterIfPaired(deviceToken: String) async -> RegistrationOutcome? {
-        guard let pairing = try? securePairingStore.loadPairing() else { return nil }
+        // Not a retired pairing: re-registering the account being left would
+        // store it again over the teardown.
+        guard let pairing = try? securePairingStore.loadActivePairing() else { return nil }
         return await pair(
             params: PairingParams(pairing: pairing),
             deviceToken: deviceToken,

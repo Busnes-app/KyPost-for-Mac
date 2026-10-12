@@ -19,13 +19,6 @@ final class MailRepository {
     /// the relay path requires. Nil everywhere except the DEBUG screenshot
     /// build (SingletonGraph, DemoContent.isEnabled).
     private let overrideSource: (any MailSource)?
-    /// The pairing `forgetAccount` erased the mail of. Its credentials may
-    /// stay readable after the erase — a pairing to another account stores
-    /// the new one only once the whole teardown has run — and a request made
-    /// with them would fetch the forgotten account's mail under the new
-    /// epoch. Refused until another pairing replaces it.
-    private let forgottenLock = NSLock()
-    private var forgottenAccount: MailAccountBinding?
 
     init(
         securePairingStore: SecurePairingStore,
@@ -53,13 +46,12 @@ final class MailRepository {
         )
     }
 
-    /// The stored pairing, unless it is the one `forgetAccount` left.
+    /// The stored pairing, unless an account teardown retired it
+    /// (`SecurePairingStore.retireCurrentPairing`).
     private func currentPairing() throws -> Pairing {
-        guard let pairing = try securePairingStore.loadPairing() else {
+        guard let pairing = try securePairingStore.loadActivePairing() else {
             throw MailSourceError.notPaired
         }
-        let forgotten = forgottenLock.withLock { forgottenAccount }
-        guard MailAccountBinding(pairing) != forgotten else { throw MailSourceError.notPaired }
         return pairing
     }
 
@@ -201,8 +193,7 @@ final class MailRepository {
     /// Recorded before the epoch moves, so a request that captures the new
     /// epoch can no longer reach the old account.
     func forgetAccount() async throws {
-        let leaving = (try? securePairingStore.loadPairing()).map(MailAccountBinding.init)
-        forgottenLock.withLock { forgottenAccount = leaving }
+        securePairingStore.retireCurrentPairing()
         defer { cursorStore?.clear() }
         try await emailDAO.forgetAccount()
     }

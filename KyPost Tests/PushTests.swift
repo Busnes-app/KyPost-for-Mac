@@ -288,6 +288,7 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         var repository: PushRepository
         var cursorStore: NotificationCursorStore
         var settings: PushSettingsStore
+        var pairingStore: SecurePairingStore
     }
 
     private func makeEnvironment(client: HTTPClient, paired: Bool = true) throws -> Environment {
@@ -306,7 +307,37 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
             securePairingStore: pairingStore,
             pushSettingsStore: settings
         )
-        return Environment(repository: repository, cursorStore: cursorStore, settings: settings)
+        return Environment(
+            repository: repository, cursorStore: cursorStore, settings: settings, pairingStore: pairingStore
+        )
+    }
+
+    /// Pairing another account over this one stores the new pairing only
+    /// after the teardown, so the previous one is still readable meanwhile.
+    /// A pull started in that window must not use it: no request, no rows,
+    /// no cursor. Once the new pairing is saved, pulls work again.
+    @MainActor
+    @Test func aPullAfterTheTeardownNeverUsesThePairingBeingLeft() async throws {
+        let json = #"{"notifications":[{"seq":4,"messageId":"m-4","senderName":"A","emailSubject":"s4"}],"cursor":4}"#
+        let requests = Box(0)
+        let env = try makeEnvironment(client: stubClient(json: json) { _ in requests.mutate { $0 += 1 } })
+
+        #expect(await AccountTeardown(pushRepository: env.repository).run())
+        #expect(try env.pairingStore.loadPairing()?.sub == "u1")
+
+        await #expect(throws: MailSourceError.notPaired) { try await env.repository.pullOnce() }
+        #expect(requests.value == 0)
+        #expect(try await env.repository.history().isEmpty)
+        #expect(env.cursorStore.lastCursor == 0)
+
+        try env.pairingStore.savePairing(Pairing(
+            sub: "u2", deviceSecret: "s2", srv: server, registrationUrl: nil,
+            pairingToken: "pt2", lastDeviceId: "dev-2", pairedAt: Date().addingTimeInterval(1)
+        ))
+        try await env.repository.pullOnce()
+        #expect(requests.value == 1)
+        #expect(try await env.repository.history().map(\.messageId) == ["m-4"])
+        #expect(env.cursorStore.lastCursor == 4)
     }
 
     @Test func pushArrivalsGetUniqueSynthesizedSeqs() async throws {

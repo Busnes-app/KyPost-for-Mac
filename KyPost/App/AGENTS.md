@@ -81,6 +81,16 @@ mid-teardown sends nothing. `run()` returns false when a step failed: unpair
 says so instead of "Pairing removed", and a replacement does not store the new
 pairing (the previous one stays, so a retry re-runs the teardown).
 
+**The pairing being left is retired, not just outlived.** A replacement keeps
+the old pairing readable until the new one is saved, so each teardown step
+that moves its own session or epoch (`MailRepository.forgetAccount`,
+`PushRepository.clearForUnpair`) first calls
+`SecurePairingStore.retireCurrentPairing`, and work that reaches the relay for
+the account (mail requests, notification pulls, re-registration) reads
+`loadActivePairing`, which refuses it until another pairing is saved. Capture
+the session/epoch *before* loading the pairing, or a request can pair the old
+credentials with the new session.
+
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.
 It is installed once, from the platform delegate

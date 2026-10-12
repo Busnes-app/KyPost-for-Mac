@@ -89,6 +89,9 @@ final class PushRepository {
     /// in flight does afterwards is accepted — not its history rows, not its
     /// cursor, not its heartbeat stamps, not its banners.
     func clearForUnpair() async throws {
+        // Before the session moves: a pull that captures the new session
+        // must not be able to load the pairing being left.
+        securePairingStore.retireCurrentPairing()
         session += 1
         await dao.invalidateSession(to: session)
         cursorStore.reset()
@@ -119,7 +122,7 @@ final class PushRepository {
         includingBeforeRegistration: Bool = false
     ) async {
         let session = self.session
-        guard !delivered.isEmpty, securePairingStore.isPaired else { return }
+        guard !delivered.isEmpty, (try? securePairingStore.loadActivePairing()) != nil else { return }
         let windowFloor = now.addingTimeInterval(-PullHeartbeatPolicy.heartbeatWindow)
         let since = includingBeforeRegistration
             ? windowFloor
@@ -164,14 +167,17 @@ final class PushRepository {
     /// same reason: the queue holds the account's whole recent backlog.
     @discardableResult
     func pullOnce(now: Date = Date(), minCreatedAt: Date? = nil) async throws -> PullBatch {
-        guard let pairing = try securePairingStore.loadPairing() else {
+        // Session first, then the pairing: a teardown retires the pairing
+        // before it moves the session, so either the session is stale or the
+        // old pairing is refused.
+        let session = self.session
+        guard let pairing = try securePairingStore.loadActivePairing() else {
             throw MailSourceError.notPaired
         }
         guard let endpoint = resolvePullEndpoint(srv: pairing.srv) else {
             throw NetworkError.invalidURL
         }
 
-        let session = self.session
         let lastCursor = cursorStore.lastCursor
         let response = try await client.pull(
             endpoint: endpoint,
