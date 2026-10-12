@@ -4,55 +4,88 @@
 //
 //  A tip that returns `.pending` from `purchase` (Ask to Buy, SCA) completes
 //  later, outside the purchase call; only the `Transaction.updates` listener
-//  can finish it.
+//  can finish it. The streams are injected so this runs without StoreKitTest
+//  or a simulator store.
 //
 
 import Foundation
-import StoreKit
-import StoreKitTest
 import Testing
 @testable import KyPost
 
-private final class TipJarTestsBundleAnchor {}
-
 @MainActor
 @Suite(.serialized) struct TipJarStoreTests {
-    private func makeSession() throws -> SKTestSession {
-        let url = try #require(
-            Bundle(for: TipJarTestsBundleAnchor.self)
-                .url(forResource: "TipJarTests", withExtension: "storekit")
-        )
-        let session = try SKTestSession(contentsOf: url)
-        session.resetToDefaultState()
-        session.clearTransactions()
-        session.disableDialogs = true
-        return session
+    private struct Harness {
+        let store: TipJarStore
+        let updates: AsyncStream<TipJarTransactionUpdate>.Continuation
+        let unfinished: AsyncStream<TipJarTransactionUpdate>.Continuation
+    }
+
+    private func makeHarness() -> Harness {
+        let (updates, updatesContinuation) = AsyncStream<TipJarTransactionUpdate>.makeStream()
+        let (unfinished, unfinishedContinuation) = AsyncStream<TipJarTransactionUpdate>.makeStream()
+        let store = TipJarStore(source: TipJarTransactionSource(
+            loadProducts: { _ in [] },
+            updates: { updates },
+            unfinished: { unfinished }
+        ))
+        return Harness(store: store, updates: updatesContinuation, unfinished: unfinishedContinuation)
+    }
+
+    private func update(_ id: String, verified: Bool, into finished: Box<[String]>) -> TipJarTransactionUpdate {
+        TipJarTransactionUpdate(productID: id, isVerified: verified, finish: {
+            finished.mutate { $0.append(id) }
+        })
+    }
+
+    /// Bounded wait: polls up to ~5 s for `condition`.
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<50 where !condition() {
+            try await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     @Test func aDeferredTipIsFinishedOnceApproved() async throws {
-        let session = try makeSession()
-        session.askToBuyEnabled = true
-        defer { session.clearTransactions() }
-
+        let harness = makeHarness()
         let finished = Box<[String]>([])
-        let store = TipJarStore(finish: { transaction in
-            finished.mutate { $0.append(transaction.productID) }
-            await transaction.finish()
-        })
-        await store.start()
-        let product = try #require(store.products.first { $0.id == TipJarStore.ProductID.oneTimeMail })
-
-        await store.purchase(product)
-        let pending = try #require(session.allTransactions().first { $0.pendingAskToBuyConfirmation })
+        harness.unfinished.finish()
+        await harness.store.start()
         #expect(finished.value.isEmpty)
 
         // Approved outside the purchase call, as a parent approving later is.
-        try session.approveAskToBuyTransaction(identifier: pending.identifier)
+        harness.updates.yield(update(TipJarStore.ProductID.oneTimeMail, verified: true, into: finished))
 
-        for _ in 0..<50 where finished.value.isEmpty {
-            try await Task.sleep(for: .milliseconds(100))
-        }
+        try await waitUntil { !finished.value.isEmpty }
+        // Give a duplicate finish the chance to show up before asserting once.
+        try await Task.sleep(for: .milliseconds(200))
         #expect(finished.value == [TipJarStore.ProductID.oneTimeMail])
-        withExtendedLifetime(store) {}
+        harness.updates.finish()
+    }
+
+    @Test func anUnverifiedUpdateIsNotFinished() async throws {
+        let harness = makeHarness()
+        let finished = Box<[String]>([])
+        harness.unfinished.finish()
+        await harness.store.start()
+
+        harness.updates.yield(update("unverified", verified: false, into: finished))
+        // A verified update after it proves the listener processed both, in order.
+        harness.updates.yield(update("verified", verified: true, into: finished))
+
+        try await waitUntil { !finished.value.isEmpty }
+        #expect(finished.value == ["verified"])
+        harness.updates.finish()
+    }
+
+    @Test func startDrainsUnfinishedTransactions() async throws {
+        let harness = makeHarness()
+        let finished = Box<[String]>([])
+        harness.unfinished.yield(update("left-over", verified: true, into: finished))
+        harness.unfinished.yield(update("tampered", verified: false, into: finished))
+        harness.unfinished.finish()
+
+        await harness.store.start()
+
+        #expect(finished.value == ["left-over"])
+        harness.updates.finish()
     }
 }

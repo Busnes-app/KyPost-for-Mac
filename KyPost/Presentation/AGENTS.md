@@ -197,7 +197,9 @@ Domain.
   Do not offer recurring support without an ongoing customer benefit.
   `start()` keeps the `Transaction.updates` listener and drains
   `Transaction.unfinished`: a tip that returns `.pending` (Ask to Buy) is
-  only ever finished there (`TipJarStoreTests`, `TipJarTests.storekit`).
+  only ever finished there. Only verified transactions are finished. The
+  StoreKit surface is injected (`TipJarTransactionSource`) so
+  `TipJarStoreTests` runs without StoreKitTest or a simulator store.
 
 - Reuse `ContactSearch` for any contact matching; don't hand-roll a filter.
   `localizedCaseInsensitiveContains` over every contact per keystroke routes

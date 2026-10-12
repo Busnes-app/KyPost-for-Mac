@@ -23,12 +23,10 @@ final class TipJarStore {
     private(set) var errorMessage: String?
 
     private var updatesTask: Task<Void, Never>?
-    /// `Transaction.finish`, injectable so a test can see which transactions
-    /// reached it.
-    private let finish: (Transaction) async -> Void
+    private let source: TipJarTransactionSource
 
-    init(finish: @escaping (Transaction) async -> Void = { await $0.finish() }) {
-        self.finish = finish
+    init(source: TipJarTransactionSource = .storeKit) {
+        self.source = source
     }
 
     /// Listens for transactions that complete outside `purchase` — an
@@ -37,13 +35,14 @@ final class TipJarStore {
     /// redelivering them.
     func start() async {
         if updatesTask == nil {
+            let updates = source.updates()
             updatesTask = Task { [weak self] in
-                for await result in Transaction.updates {
-                    await self?.handle(result)
+                for await update in updates {
+                    await self?.handle(update)
                 }
             }
-            for await result in Transaction.unfinished {
-                await handle(result)
+            for await update in source.unfinished() {
+                await handle(update)
             }
         }
         await refresh()
@@ -55,7 +54,7 @@ final class TipJarStore {
         defer { isLoading = false }
 
         do {
-            products = try await Product.products(for: ProductID.all)
+            products = try await source.loadProducts(ProductID.all)
                 .sorted { ProductID.all.firstIndex(of: $0.id)! < ProductID.all.firstIndex(of: $1.id)! }
         } catch {
             errorMessage = "Support options are temporarily unavailable. Please try again later."
@@ -66,7 +65,7 @@ final class TipJarStore {
         errorMessage = nil
         do {
             switch try await product.purchase() {
-            case .success(let result): await handle(result)
+            case .success(let result): await handle(TipJarTransactionUpdate(result))
             case .userCancelled, .pending: break
             @unknown default: break
             }
@@ -75,8 +74,60 @@ final class TipJarStore {
         }
     }
 
-    private func handle(_ result: VerificationResult<Transaction>) async {
-        guard case .verified(let transaction) = result else { return }
-        await finish(transaction)
+    /// Only a verified transaction is finished. An unverified one is left for
+    /// StoreKit to redeliver rather than acknowledged as a delivered tip.
+    private func handle(_ update: TipJarTransactionUpdate) async {
+        guard update.isVerified else { return }
+        await update.finish()
+    }
+}
+
+/// What `TipJarStore` needs from one StoreKit transaction delivery.
+nonisolated struct TipJarTransactionUpdate: Sendable {
+    let productID: String
+    let isVerified: Bool
+    let finish: @Sendable () async -> Void
+}
+
+nonisolated extension TipJarTransactionUpdate {
+    init(_ result: VerificationResult<Transaction>) {
+        switch result {
+        case .verified(let transaction):
+            self.init(productID: transaction.productID, isVerified: true,
+                      finish: { await transaction.finish() })
+        case .unverified(let transaction, _):
+            self.init(productID: transaction.productID, isVerified: false,
+                      finish: { await transaction.finish() })
+        }
+    }
+}
+
+/// The StoreKit surface `TipJarStore` consumes. Production reads
+/// `Product.products`, `Transaction.updates` and `Transaction.unfinished`; a
+/// test feeds its own.
+nonisolated struct TipJarTransactionSource: Sendable {
+    let loadProducts: @Sendable ([String]) async throws -> [Product]
+    let updates: @Sendable () -> AsyncStream<TipJarTransactionUpdate>
+    let unfinished: @Sendable () -> AsyncStream<TipJarTransactionUpdate>
+
+    static let storeKit = TipJarTransactionSource(
+        loadProducts: { try await Product.products(for: $0) },
+        updates: { mapped(Transaction.updates) },
+        unfinished: { mapped(Transaction.unfinished) }
+    )
+
+    private static func mapped<S: AsyncSequence & Sendable>(_ sequence: S) -> AsyncStream<TipJarTransactionUpdate>
+    where S.Element == VerificationResult<Transaction> {
+        AsyncStream { continuation in
+            let task = Task {
+                do {
+                    for try await result in sequence {
+                        continuation.yield(TipJarTransactionUpdate(result))
+                    }
+                } catch {}
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 }
