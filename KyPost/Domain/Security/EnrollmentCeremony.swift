@@ -135,8 +135,11 @@ actor EnrollmentCeremony {
     /// Records that the acknowledgement did not land, for the launch-time
     /// reporter to restate. Android enqueues a WorkManager job here.
     private let deferReport: @Sendable () -> Void
-    /// Records that it did, clearing any earlier pending restatement.
-    private let reportLanded: @Sendable () -> Void
+    /// Records that it was settled — landed, or refused with a 409 — clearing
+    /// any earlier pending restatement. A refused claim left pending from an
+    /// earlier failed delivery would otherwise be repeated on the next
+    /// foreground, and a 409 is terminal.
+    private let reportSettled: @Sendable () -> Void
 
     /// Set once a keypair exists, so teardown knows whether there is anything
     /// to destroy and cannot report a deletion it never performed.
@@ -153,11 +156,11 @@ actor EnrollmentCeremony {
             try? await Task.sleep(for: .seconds(seconds))
         },
         deferReport: @escaping @Sendable () -> Void = {},
-        reportLanded: @escaping @Sendable () -> Void = {},
+        reportSettled: @escaping @Sendable () -> Void = {},
         onState: @escaping @Sendable (EnrollmentState) -> Void
     ) {
         self.deferReport = deferReport
-        self.reportLanded = reportLanded
+        self.reportSettled = reportSettled
         self.transport = transport
         self.sealer = sealer
         self.deviceId = deviceId
@@ -266,8 +269,9 @@ actor EnrollmentCeremony {
         // that is not on disk would be a claim this device cannot back.
         switch await transport.report(report) {
         case .ok:
-            reportLanded()
+            reportSettled()
         case .conflict:
+            reportSettled()
             return emit(.acknowledgementRefused)
         case .unauthorized, .notFound, .failed:
             // A dropped report is not a failed enrollment: the record is

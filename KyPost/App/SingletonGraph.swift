@@ -180,7 +180,7 @@ final class SingletonGraph {
             hostileLocationEnabled: { hostileStore.enabled },
             hasDeviceCredential: { vault.hasDeviceCredential },
             deferReport: { vault.markReportPending() },
-            reportLanded: { vault.clearReportPending() },
+            reportSettled: { vault.clearReportPending() },
             onState: onState
         )
     }

@@ -116,12 +116,15 @@ transient `errSecInteractionNotAllowed` at launch used to trigger it
 permanently. Any new caller that acts destructively on this flag uses
 `lockState` and fails closed on `.unreadable`.
 
-`onForeground` also runs `SingletonGraph.makeEnrollmentStateReporter()` — the
-restatement of an enrollment acknowledgement that did not land, or of a
-Hostile Location Protection teardown. It is a no-op without a marker, nil when
-unpaired, and skipped while `securityWipe.blockedByAbandonedWipe`: telling the
-server what key material this device holds is not a claim to make from a device
-the app failed to erase. Being inside `onForeground` puts it behind the lock.
+`PushLifecycle.runEnrollmentReporter()` restates an enrollment acknowledgement
+that did not land, or a Hostile Location Protection teardown. It runs from
+`onForeground` and, on macOS, from `applicationDidBecomeActive` — macOS has no
+foreground transition, so without it a pending report waits for a relaunch or
+an unlock. It is a no-op without a marker, nil when unpaired, and
+`EnrollmentReportTrigger` skips it while `appLockManager.isLocked` or
+`securityWipe.blockedByAbandonedWipe` (telling the server what key material
+this device holds is not a claim to make from a device the app failed to
+erase) and while a run is already in flight, so overlapping hooks send once.
 
 Background pull is gated on `appLockManager.isLocked` in the `BGTaskScheduler`
 handler as well as in `onForeground`, and `presentLocally` withholds sender and

@@ -314,7 +314,7 @@ private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
             // deterministic and the test instant.
             sleep: { seconds in clock.value = clock.value.addingTimeInterval(seconds) },
             deferReport: { deferred.mutate { $0 += 1 } },
-            reportLanded: { landed.mutate { $0 += 1 } },
+            reportSettled: { landed.mutate { $0 += 1 } },
             onState: { state in transcript.mutate { $0.append(state) } }
         )
     }
@@ -359,6 +359,43 @@ private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
         let outcome = await ceremony(transport: transport, deferred: deferred).run()
         #expect(outcome == .acknowledgementRefused)
         #expect(deferred.value == 0)
+    }
+
+    /// A 409 also settles an earlier failed delivery's marker: otherwise the
+    /// next foreground repeats the claim the server just refused.
+    @Test func aRefusedAcknowledgementClearsAnEarlierPendingMarker() async throws {
+        let vault = EnrollmentVault(
+            keychain: MemoryItemStore(), keyTag: "org.kysecurity.mail.tests.\(UUID().uuidString)"
+        )
+        try vault.store(VaultRecord(
+            kind: .keyring, material: V3Fixtures.ringBytes,
+            identityFingerprint: V3Fixtures.active, materialGeneration: 2
+        ))
+        vault.markReportPending(attempts: 1)
+
+        let transport = FakeTransport()
+        transport.envelopeResults = [.sealed("{}", delivery: delivery)]
+        transport.reportResult = .conflict
+        let ceremony = EnrollmentCeremony(
+            transport: transport,
+            sealer: FakeSealer(),
+            deviceId: "dev-1",
+            hostileLocationEnabled: { false },
+            hasDeviceCredential: { true },
+            sleep: { _ in },
+            deferReport: { vault.markReportPending() },
+            reportSettled: { vault.clearReportPending() },
+            onState: { _ in }
+        )
+        #expect(await ceremony.run() == .acknowledgementRefused)
+
+        let sent = Box(0)
+        let reporter = EnrollmentStateReporter(store: vault) { _ in
+            sent.mutate { $0 += 1 }
+            return .ok
+        }
+        #expect(await reporter.runIfNeeded() == nil)
+        #expect(sent.value == 0)
     }
 
     /// A dropped acknowledgement is not a failed enrollment: the record is

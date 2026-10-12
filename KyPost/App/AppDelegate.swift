@@ -113,14 +113,23 @@ private enum PushLifecycle {
         Task {
             await graph.systemContactsChangeMonitor.reconcileNow()
         }
-        // An enrollment acknowledgement that did not land, or a teardown the
-        // server has not heard about. A no-op unless a marker is set. Never
-        // after an abandoned wipe: telling the server what key material this
-        // device holds is not a claim to make from a device it failed to erase.
-        if !graph.securityWipe.blockedByAbandonedWipe,
-           let reporter = graph.makeEnrollmentStateReporter() {
-            Task { await reporter.runIfNeeded() }
-        }
+        runEnrollmentReporter()
+    }
+
+    /// Process-wide, not graph-owned: it holds no graph child, and a run that
+    /// outlives a rebuild must still keep a second one from starting.
+    static let enrollmentReportTrigger = EnrollmentReportTrigger()
+
+    /// An enrollment acknowledgement that did not land, or a teardown the
+    /// server has not heard about. A no-op unless a marker is set. Gated on
+    /// the app lock and on an abandoned wipe inside the trigger.
+    static func runEnrollmentReporter() {
+        let graph = SingletonGraph.shared
+        enrollmentReportTrigger.fire(
+            isLocked: graph.appLockManager.isLocked,
+            blockedByAbandonedWipe: graph.securityWipe.blockedByAbandonedWipe,
+            makeReporter: { graph.makeEnrollmentStateReporter() }
+        )
     }
 
     static func onBackground() {
@@ -268,6 +277,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 SingletonGraph.shared.appLockManager.lock()
             }
         }
+    }
+
+    /// macOS has no foreground transition: `onForeground` runs only at launch,
+    /// rebuild and unlock. Activation is the "next foreground" a pending
+    /// enrollment report waits for. Only the reporter runs here; polling is
+    /// already full-time while the app runs.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        PushLifecycle.runEnrollmentReporter()
     }
 
     func application(

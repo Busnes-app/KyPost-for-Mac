@@ -162,7 +162,8 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
         /// Left by a deliberate teardown while still paired; the one signal
         /// that lets the launch-time report tell the server "not enrolled".
         static let teardownReport = "enrollment.teardownReportPending"
-        /// A direct acknowledgement that failed transiently; the attempt count.
+        /// A direct acknowledgement that failed transiently:
+        /// `"<attempts>:<revision>"`.
         static let reportPending = "enrollment.reportPendingAttempts"
     }
 
@@ -351,20 +352,59 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
 
     /// Records that the ceremony's own acknowledgement did not land, so the
     /// next launch or foreground restates it. `attempts` counts tries so far.
+    ///
+    /// Each new delivery mints a fresh `revision`, so a reporter whose request
+    /// was in flight when it was written can tell the marker is not the one it
+    /// sent for, and leaves it alone.
     @discardableResult
-    func markReportPending(attempts: Int = 0) -> Bool {
-        (try? keychain.setData(Data(String(attempts).utf8), forKey: Key.reportPending)) != nil
+    func markReportPending(attempts: Int = 0, revision: String = UUID().uuidString) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return writeReportPending(PendingEnrollmentReport(attempts: attempts, revision: revision))
+    }
+
+    /// The pending acknowledgement, or nil when none is pending. A marker from
+    /// before revisions existed reads with an empty revision.
+    var pendingReport: PendingEnrollmentReport? {
+        lock.lock()
+        defer { lock.unlock() }
+        return readReportPending()
     }
 
     /// Attempts made so far, or nil when no report is pending.
-    var pendingReportAttempts: Int? {
-        guard let data = (try? keychain.data(forKey: Key.reportPending)) ?? nil else { return nil }
-        return Int(String(decoding: data, as: UTF8.self)) ?? 0
+    var pendingReportAttempts: Int? { pendingReport?.attempts }
+
+    /// Replaces (or with nil, clears) the pending marker only if it is still
+    /// the revision `expected` names. Returns false when a newer marker, or
+    /// none, is there — the caller's request is then out of date.
+    @discardableResult
+    func replacePendingReport(ifRevision expected: String, with next: PendingEnrollmentReport?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard readReportPending()?.revision == expected else { return false }
+        guard let next else { return (try? keychain.remove(Key.reportPending)) != nil }
+        return writeReportPending(next)
     }
 
     @discardableResult
     func clearReportPending() -> Bool {
-        (try? keychain.remove(Key.reportPending)) != nil
+        lock.lock()
+        defer { lock.unlock() }
+        return (try? keychain.remove(Key.reportPending)) != nil
+    }
+
+    private func readReportPending() -> PendingEnrollmentReport? {
+        guard let data = (try? keychain.data(forKey: Key.reportPending)) ?? nil else { return nil }
+        let text = String(decoding: data, as: UTF8.self)
+        let parts = text.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        let attempts = Int(parts[0]) ?? 0
+        let revision = parts.count > 1 ? String(parts[1]) : ""
+        return PendingEnrollmentReport(attempts: attempts, revision: revision)
+    }
+
+    private func writeReportPending(_ pending: PendingEnrollmentReport) -> Bool {
+        let value = "\(pending.attempts):\(pending.revision)"
+        return (try? keychain.setData(Data(value.utf8), forKey: Key.reportPending)) != nil
     }
 
     /// Both markers. For dropping the pairing: with no device row left there

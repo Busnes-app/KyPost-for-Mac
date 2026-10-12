@@ -80,6 +80,12 @@ nonisolated func teardownReportSpent(_ result: EnrollmentReportResult) -> Bool {
     }
 }
 
+/// A pending acknowledgement: tries so far, and the delivery it belongs to.
+nonisolated struct PendingEnrollmentReport: Equatable, Sendable {
+    var attempts: Int
+    var revision: String
+}
+
 /// The vault half the reporter needs, so the reporter is testable without the
 /// Keychain.
 nonisolated protocol EnrollmentReportStore: Sendable {
@@ -87,9 +93,11 @@ nonisolated protocol EnrollmentReportStore: Sendable {
     /// nothing and must not speak for the device.
     func recordSummary() throws -> EnrollmentRecordSummary?
     var teardownReportPending: Bool { get }
-    var pendingReportAttempts: Int? { get }
-    @discardableResult func markReportPending(attempts: Int) -> Bool
-    @discardableResult func clearReportPending() -> Bool
+    var pendingReport: PendingEnrollmentReport? { get }
+    /// Compare-and-set: acts only while the marker is still `expected`, so a
+    /// request that finishes after a newer delivery cannot clear or rewind it.
+    @discardableResult
+    func replacePendingReport(ifRevision expected: String, with next: PendingEnrollmentReport?) -> Bool
     @discardableResult func clearTeardownReport() -> Bool
 }
 
@@ -116,7 +124,7 @@ nonisolated struct EnrollmentStateReporter: Sendable {
     @discardableResult
     func runIfNeeded() async -> EnrollmentReport? {
         let tornDown = store.teardownReportPending
-        let pending = store.pendingReportAttempts
+        let pending = store.pendingReport
         guard tornDown || pending != nil else { return nil }
 
         let summary: EnrollmentRecordSummary?
@@ -126,21 +134,56 @@ nonisolated struct EnrollmentStateReporter: Sendable {
             return nil
         }
         guard let report = enrollmentReportFor(summary, tornDown: tornDown) else {
-            store.clearReportPending()
+            if let pending { store.replacePendingReport(ifRevision: pending.revision, with: nil) }
             return nil
         }
 
         let result = await send(report)
         if tornDown, teardownReportSpent(result) { store.clearTeardownReport() }
-        let attempts = (pending ?? 0) + 1
+        // Only a pending acknowledgement counts attempts; a teardown report is
+        // governed by its own marker above. Every write is conditional on the
+        // revision read before sending: a re-enrollment while the request was
+        // in flight wrote a newer marker this result says nothing about.
+        guard let pending else { return report }
+        let attempts = pending.attempts + 1
         switch enrollmentReportOutcome(result, attempts: attempts) {
         case .done, .giveUp:
-            store.clearReportPending()
+            store.replacePendingReport(ifRevision: pending.revision, with: nil)
         case .retry:
-            // Only a pending acknowledgement counts attempts; a teardown
-            // report is governed by its own marker above.
-            if pending != nil { store.markReportPending(attempts: attempts) }
+            store.replacePendingReport(
+                ifRevision: pending.revision,
+                with: PendingEnrollmentReport(attempts: attempts, revision: pending.revision)
+            )
         }
         return report
+    }
+}
+
+/// Runs the reporter from the app's lifecycle hooks — launch, unlock, iOS
+/// foreground, macOS activation — behind the app lock and the abandoned-wipe
+/// gate, at most one run at a time. Hooks overlap (macOS fires launch and
+/// activation together), and two runs would read the same marker and send the
+/// same claim twice.
+@MainActor
+final class EnrollmentReportTrigger {
+    private var inFlight: Task<Void, Never>?
+
+    /// Starts a run unless gated or one is already in flight; returns it.
+    @discardableResult
+    func fire(
+        isLocked: Bool,
+        blockedByAbandonedWipe: Bool,
+        makeReporter: () -> EnrollmentStateReporter?
+    ) -> Task<Void, Never>? {
+        // Telling the server what key material this device holds is not a
+        // claim to make while locked, or from a device the app failed to erase.
+        guard !isLocked, !blockedByAbandonedWipe, inFlight == nil,
+              let reporter = makeReporter() else { return nil }
+        let task = Task { [weak self] in
+            await reporter.runIfNeeded()
+            self?.inFlight = nil
+        }
+        inFlight = task
+        return task
     }
 }

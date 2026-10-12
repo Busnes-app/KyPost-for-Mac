@@ -829,6 +829,30 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
         ))
     }
 
+    /// The marker is only replaced or cleared while it is still the revision
+    /// the caller read, and a marker written before revisions still reads.
+    @Test func thePendingMarkerIsReplacedOnlyAtTheRevisionRead() throws {
+        let store = MemoryItemStore()
+        let vault = vault(store)
+        try store.setData(Data("2".utf8), forKey: "enrollment.reportPendingAttempts")
+        #expect(vault.pendingReport == PendingEnrollmentReport(attempts: 2, revision: ""))
+
+        vault.markReportPending(attempts: 0, revision: "b")
+        #expect(!vault.replacePendingReport(ifRevision: "", with: nil), "an older revision is out of date")
+        #expect(vault.pendingReport == PendingEnrollmentReport(attempts: 0, revision: "b"))
+        #expect(vault.replacePendingReport(
+            ifRevision: "b", with: PendingEnrollmentReport(attempts: 1, revision: "b")
+        ))
+        #expect(vault.pendingReportAttempts == 1)
+        #expect(vault.replacePendingReport(ifRevision: "b", with: nil))
+        #expect(vault.pendingReport == nil)
+        #expect(!vault.replacePendingReport(ifRevision: "b", with: nil))
+
+        vault.markReportPending()
+        vault.markReportPending()
+        #expect(vault.pendingReport?.revision.isEmpty == false, "each delivery mints its own revision")
+    }
+
     /// Android b0786ee8: destroy leaves the teardown marker for the report;
     /// dropping the pairing clears it, so it never speaks for the next device.
     @Test func destroyKeepsTheTeardownMarkerAndForgettingTheParingDropsIt() throws {
@@ -959,15 +983,22 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
     var summary: EnrollmentRecordSummary?
     var unreadable = false
     var teardownReportPending = false
-    var pendingReportAttempts: Int?
+    var pendingReport: PendingEnrollmentReport?
+    var pendingReportAttempts: Int? {
+        get { pendingReport?.attempts }
+        set { pendingReport = newValue.map { PendingEnrollmentReport(attempts: $0, revision: "r0") } }
+    }
 
     func recordSummary() throws -> EnrollmentRecordSummary? {
         if unreadable { throw EnrollmentVaultError.unreadableRecord }
         return summary
     }
 
-    func markReportPending(attempts: Int) -> Bool { pendingReportAttempts = attempts; return true }
-    func clearReportPending() -> Bool { pendingReportAttempts = nil; return true }
+    func replacePendingReport(ifRevision expected: String, with next: PendingEnrollmentReport?) -> Bool {
+        guard pendingReport?.revision == expected else { return false }
+        pendingReport = next
+        return true
+    }
     func clearTeardownReport() -> Bool { teardownReportPending = false; return true }
 }
 
@@ -1043,6 +1074,30 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
         result.value = .ok
         _ = await reporter.runIfNeeded()
         #expect(!store.teardownReportPending)
+    }
+
+    /// A re-enrollment while an older request is in flight writes a newer
+    /// marker; whatever the older request returns says nothing about it.
+    @Test(arguments: [EnrollmentReportResult.ok, .conflict, .failed("offline")])
+    func anOlderRequestLeavesANewerMarkerAlone(_ outcome: EnrollmentReportResult) async {
+        let store = FakeReportStore()
+        store.summary = EnrollmentRecordSummary(kind: .keyring, acknowledgement: ack)
+        store.pendingReportAttempts = 3
+        let (started, startedTo) = AsyncStream<Void>.makeStream()
+        let (release, releaseTo) = AsyncStream<EnrollmentReportResult>.makeStream()
+        let reporter = EnrollmentStateReporter(store: store) { _ in
+            startedTo.yield()
+            for await result in release { return result }
+            return .failed("closed")
+        }
+        let run = Task { await reporter.runIfNeeded() }
+        for await _ in started { break }
+
+        let newer = PendingEnrollmentReport(attempts: 0, revision: "newer")
+        store.pendingReport = newer
+        releaseTo.yield(outcome)
+        _ = await run.value
+        #expect(store.pendingReport == newer)
     }
 
     /// An unreadable record proves nothing and must not speak for the device.
@@ -1141,5 +1196,69 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
         guard case .failed = await down.report(.legacy) else {
             Issue.record("expected a transient failure"); return
         }
+    }
+}
+
+// MARK: - Report trigger
+
+@MainActor @Suite(.serialized) struct EnrollmentReportTriggerTests {
+    private func pendingVault() throws -> EnrollmentVault {
+        let vault = EnrollmentVault(
+            keychain: MemoryItemStore(), keyTag: "org.kysecurity.mail.tests.\(UUID().uuidString)"
+        )
+        try vault.store(VaultRecord(
+            kind: .keyring, material: V3Fixtures.ringBytes,
+            identityFingerprint: V3Fixtures.active, materialGeneration: 2
+        ))
+        vault.markReportPending()
+        return vault
+    }
+
+    @Test func nothingRunsWhileLockedOrAfterAnAbandonedWipe() {
+        let trigger = EnrollmentReportTrigger()
+        let built = Box(0)
+        let make: () -> EnrollmentStateReporter? = {
+            built.mutate { $0 += 1 }
+            return nil
+        }
+        #expect(trigger.fire(isLocked: true, blockedByAbandonedWipe: false, makeReporter: make) == nil)
+        #expect(trigger.fire(isLocked: false, blockedByAbandonedWipe: true, makeReporter: make) == nil)
+        #expect(built.value == 0)
+    }
+
+    /// macOS: a failed acknowledgement is retried on reactivation without a
+    /// relaunch, exactly once.
+    @Test func anActivationRetriesAPendingAcknowledgementOnce() async throws {
+        let vault = try pendingVault()
+        let sent = Box(0)
+        let reporter = EnrollmentStateReporter(store: vault) { _ in
+            sent.mutate { $0 += 1 }
+            return .ok
+        }
+        let trigger = EnrollmentReportTrigger()
+        await trigger.fire(isLocked: false, blockedByAbandonedWipe: false) { reporter }?.value
+        #expect(sent.value == 1)
+        #expect(vault.pendingReport == nil)
+        await trigger.fire(isLocked: false, blockedByAbandonedWipe: false) { reporter }?.value
+        #expect(sent.value == 1, "nothing is pending any more")
+    }
+
+    /// Launch and activation fire together on macOS; only one run may send.
+    @Test func overlappingHooksStartOneRun() async throws {
+        let vault = try pendingVault()
+        let sent = Box(0)
+        let (release, releaseTo) = AsyncStream<Void>.makeStream()
+        let reporter = EnrollmentStateReporter(store: vault) { _ in
+            sent.mutate { $0 += 1 }
+            for await _ in release { break }
+            return .ok
+        }
+        let trigger = EnrollmentReportTrigger()
+        let first = trigger.fire(isLocked: false, blockedByAbandonedWipe: false) { reporter }
+        #expect(first != nil)
+        #expect(trigger.fire(isLocked: false, blockedByAbandonedWipe: false) { reporter } == nil)
+        releaseTo.yield()
+        await first?.value
+        #expect(sent.value == 1)
     }
 }

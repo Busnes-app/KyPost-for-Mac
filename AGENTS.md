@@ -358,9 +358,14 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
 - **Acknowledge with metadata.** A keyring is confirmed as
   `{encryptionEnrolled, envelopeVersion: 3, materialGeneration, fingerprint}`,
   never the bare boolean. A 409 is `acknowledgementRefused`, terminal, never
-  retried. A transient failure sets a pending marker that
-  `EnrollmentStateReporter` restates on the next unlocked foreground (Android:
-  WorkManager), up to `maxEnrollmentReportAttempts`.
+  retried — and it clears any pending marker an earlier failed delivery left.
+  A transient failure sets a pending marker that `EnrollmentStateReporter`
+  restates on the next unlocked foreground (Android: WorkManager), up to
+  `maxEnrollmentReportAttempts`.
+- **Each pending marker carries a revision** minted per delivery. The reporter
+  clears or advances it only via `replacePendingReport(ifRevision:)` with the
+  revision it read before sending, so a request that finishes after a
+  re-enrollment cannot erase or rewind the newer marker.
 - **Teardown marker (Android `b0786ee8`).** Enabling Hostile Location
   Protection destroys the vault *then* marks it, so the reporter tells the
   server `encryptionEnrolled: false`. `destroy` leaves the marker; `store`
