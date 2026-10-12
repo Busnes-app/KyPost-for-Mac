@@ -108,7 +108,9 @@ The platforms split at the root view. iOS uses a tab layout (`MainTabView`). mac
 
 The Android reference repo (`llama-mobile`) defines the relay endpoints and the payload shapes. The primary documents are `Mobile_Mail_Relay.md` and `Mobile_Contact_Sync.md`:
 
-- `GET /api/inbox` — emails grouped by tab (`{tabs, byTab, cursor, delta, removed}`)
+- `GET /api/inbox` — emails grouped by tab (`{tabs, byTab, cursor, delta, removed, agedOut, hasMore, nextBefore}`);
+  with `before=<messageId>&bodies=0`, one page of older mail (`{byTab, hasMore, nextBefore}`)
+- `GET /api/mail/body?mailbox=&messageId=` — one message's body, for a row that arrived without one
 - `GET /api/inbox/folders?parent=` — folder listing (full paths, for example `INBOX/Receipts`)
 - `POST /api/inbox/actions` — bulk read, archive, spam, delete and move
 - `POST /api/mail/send` — comma-joined recipient strings
