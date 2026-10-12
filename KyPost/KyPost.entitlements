@@ -12,6 +12,10 @@
 	<true/>
 	<key>com.apple.security.personal-information.addressbook</key>
 	<true/>
+	<!-- Write-only calendar access for an invite's "Add to Calendar", asked
+	     for on that tap only. The app never reads the calendar. -->
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
 	<!-- ACCESS-GROUP RENAME, 2026-08-27. Read before changing this value again.
 
 	     This group moved with the bundle id, from com.urlxl.mail. Keychain

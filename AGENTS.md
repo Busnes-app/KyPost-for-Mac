@@ -700,6 +700,48 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
   candidates the challenge-id term cancels out of every comparison, leaving a
   plain numeric sort that put the answer in the same slot on every challenge.
 
+### Calendar invites and RSVP (`Domain/Calendar/`)
+
+Port of kypost-android #172/#176 against KyPost-Server #353/#354. KyPost writes
+an event only when asked and syncs no calendar.
+
+- **The parser refuses rather than repairs** (`parseCalendarInvite`): over
+  256 KiB or 50 VEVENTs, any structural error, any unparseable event, or no
+  series master (override-only) is no card at all. Only a VEVENT's own
+  properties count (a VALARM's DESCRIPTION does not). Lines are unfolded **as
+  bytes** before UTF-8 decoding; dates are strict (no rollover); controls and
+  `\p{Cf}` are stripped from text (ZWJ kept) and make an address unusable.
+- **TZID lookup chain:** as given, last three then two path segments, then
+  CLDR's Windows-name table (`WindowsTimeZones`, regenerate from CLDR — ICU's
+  lookup is not public API). Over 128 characters or unresolved reads as
+  floating, and the card says so.
+- **The organizer is its bare `mailto:` address, never CN**, and the card says
+  when it is not the From address. Notices: phishing, organizer ≠ sender,
+  CANCEL, update (REQUEST with SEQUENCE > 0), unknown zone.
+- **Add to Calendar is a tap only**, never for CANCEL or REPLY. EventKit
+  write-only access is requested on that tap and nowhere else
+  (`INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription`, macOS
+  `personal-information.calendars` entitlement). Under Hostile Location
+  Protection every handoff is confirmed first. An RRULE EventKit cannot express
+  adds the first occurrence and says so.
+- **RSVP (REPLY)** copies UID verbatim and SEQUENCE, restates RECURRENCE-ID
+  without TZID (a zoned one becomes UTC; unrestatable means no RSVP), adds
+  DTSTAMP, folds at 75 octets without splitting UTF-8. ATTENDEE is the
+  `suggestedUserIDs` address the invite lists, else the primary, fetched fresh
+  per RSVP; an alias is also sent as `from`. Buttons need the relay's
+  `calendarMethod`.
+- **Always unencrypted and unsigned** (`RelaySendRequest(calendarReply:)` has
+  no PGP flag), and every RSVP is confirmed in a prompt that says so.
+- **Only a 200 with `"calendarReply": true` is an RSVP.** Without it the
+  organizer got plain mail: say so, never retry. Only a definite refusal
+  (`rsvpRefusedBeforeSending`) re-arms the buttons; anything else is "may have
+  been sent".
+- **`RsvpTracker` owns state** per UID + RECURRENCE-ID + SEQUENCE, outliving the
+  screen. It advances its `session` and drops everything on
+  `.kyPostSessionReset`; a send confirmed in an ended session does no I/O, and
+  `MailRepository.sendCalendarReply` refuses a replaced pairing from the same
+  read that authenticates the request.
+
 ### Contact groups
 
 - `GET /api/groups` is **pull-only and cursorless**. Every pull is the whole

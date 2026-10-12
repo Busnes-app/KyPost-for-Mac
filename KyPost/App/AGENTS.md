@@ -44,7 +44,7 @@ router, and `scenePhase == .active` makes it check for KyAuth's response.
   the request, discards the response, drops a finished link, voids in-flight
   work), the router drops its deferred action and presented routes, and
   `ForwardAttachmentHandoff` drops a forward's held attachments and voids any
-  forward still in flight.
+  forward still in flight, and `RsvpTracker` ends its RSVP session.
   Anything new that erases the pairing posts it, and any new App-level state
   that could present or re-pair observes it (`NotificationObservation`).
 

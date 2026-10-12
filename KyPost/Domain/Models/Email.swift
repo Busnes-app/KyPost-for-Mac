@@ -122,6 +122,10 @@ struct EmailAttachment: Identifiable, Hashable, Sendable {
     var mimeType: String
     /// Decoded size in bytes.
     var size: Int
+    /// The iTIP METHOD of a calendar part (REQUEST, CANCEL, …), as the relay
+    /// lists it (KyPost-Server #353); empty for anything else, and for every
+    /// part on a relay too old to know it — which also cannot RSVP.
+    var calendarMethod: String = ""
 
     var id: Int { index }
 }

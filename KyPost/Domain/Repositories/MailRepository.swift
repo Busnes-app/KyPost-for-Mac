@@ -214,6 +214,40 @@ final class MailRepository {
         }
     }
 
+    /// The pairing a send is bound to, or nil when unpaired.
+    func currentAccount() -> MailAccountBinding? {
+        guard overrideSource == nil, let pairing = try? securePairingStore.loadPairing() else { return nil }
+        return MailAccountBinding(pairing)
+    }
+
+    /// Sends an RSVP **only as the account it was confirmed under**. Nil, with
+    /// no I/O, when the pairing was removed or replaced since: the same read
+    /// that authenticates the request is the one compared, so an old account's
+    /// reply never reaches a new relay.
+    func sendCalendarReply(
+        _ draft: CalendarReplyDraft,
+        as account: MailAccountBinding
+    ) async -> (result: RsvpResult, reason: String)? {
+        let pairing: Pairing?
+        do {
+            pairing = try securePairingStore.loadPairing()
+        } catch {
+            // The credential is behind the lock: nothing was sent.
+            return (.refused, MailOutcome.from(error).reason)
+        }
+        guard let pairing, MailAccountBinding(pairing) == account else { return nil }
+        let source = RelayMailSource(
+            httpClient: httpClient,
+            serverUrl: pairing.srv,
+            auth: RelayAuth(pairing: pairing)
+        )
+        do {
+            return try await source.sendCalendarReply(draft) ? (.sent, "") : (.sentAsPlainMail, "")
+        } catch {
+            return (rsvpRefusedBeforeSending(error) ? .refused : .maybeSent, MailOutcome.from(error).reason)
+        }
+    }
+
     /// The paired server's base URL, for building webmail links. Nil when
     /// unpaired, so callers show no link rather than a dead one.
     var pairedServerUrl: String? {
@@ -221,5 +255,38 @@ final class MailRepository {
               !pairing.srv.isEmpty
         else { return nil }
         return pairing.srv
+    }
+}
+
+/// Which pairing a send was confirmed under. `pairedAt` changes on every
+/// re-pair, so a replaced pairing for the same account still compares
+/// unequal.
+nonisolated struct MailAccountBinding: Equatable, Sendable {
+    var sub: String
+    var srv: String
+    var pairedAt: Date
+
+    init(_ pairing: Pairing) {
+        sub = pairing.sub
+        srv = pairing.srv
+        pairedAt = pairing.pairedAt
+    }
+}
+
+/// True when the relay answered and refused, so nothing went out and asking
+/// again is safe. Anything else — a timeout, a 5xx, an answer that would not
+/// decode — may have been sent.
+nonisolated func rsvpRefusedBeforeSending(_ error: Error) -> Bool {
+    switch error {
+    case NetworkError.badRequest, NetworkError.unauthorized, NetworkError.conflict,
+         NetworkError.rateLimited, NetworkError.serviceUnavailable,
+         NetworkError.certificateMismatch, NetworkError.invalidURL:
+        true
+    case MailSourceError.notPaired, MailSourceError.credentialUnavailable,
+         MailSourceError.invalidServerURL, MailSourceError.notConfigured,
+         MailSourceError.clientSideNeeded:
+        true
+    default:
+        false
     }
 }

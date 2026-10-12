@@ -209,6 +209,15 @@ struct RelaySendResponse: Decodable, Sendable {
     var ok: Bool?
     var sentSaved: Bool?
     var warning: String?
+    /// `true` only when the relay built the request's `calendarReply` into
+    /// the message (KyPost-Server #354). Absent on a relay that ignored it.
+    var calendarReply: Bool?
+}
+
+/// `calendarReply` on /api/mail/send: an iTIP REPLY the relay attaches as
+/// `text/calendar; method=REPLY` beside the body.
+nonisolated struct RelayCalendarReplyDTO: Encodable, Equatable, Sendable {
+    var ics: String
 }
 
 /// Shape of a relay 409 body. Both PGP refusals are told apart from an
@@ -245,13 +254,15 @@ struct RelayAttachmentDTO: Decodable, Equatable, Sendable {
     var name: String?
     var mimeType: String?
     var size: Int?
+    var calendarMethod: String?
 
     func toDomain() -> EmailAttachment {
         EmailAttachment(
             index: index,
             name: name?.isEmpty == false ? name! : "attachment",
             mimeType: mimeType ?? "application/octet-stream",
-            size: size ?? 0
+            size: size ?? 0,
+            calendarMethod: calendarMethod ?? ""
         )
     }
 }
@@ -292,6 +303,10 @@ struct RelaySendRequest: Encodable, Equatable, Sendable {
     var encrypt: Bool?
     var sign: Bool?
     var allowPickupFallback: Bool?
+    /// An alias to send as; omitted for the account's primary address.
+    var from: String?
+    /// An RSVP. Omitted on every other send.
+    var calendarReply: RelayCalendarReplyDTO?
 
     /// `pgpFlags: false` builds the draft-save body, which carries no PGP
     /// fields at all.
@@ -309,6 +324,19 @@ struct RelaySendRequest: Encodable, Equatable, Sendable {
         encrypt = pgp && email.encrypt ? true : nil
         sign = pgp && email.sign ? true : nil
         allowPickupFallback = pgp && email.encrypt && email.allowPickupFallback ? true : nil
+    }
+
+    /// An RSVP: plain text, and never a PGP flag — the relay refuses
+    /// `calendarReply` beside `encrypt` or `sign`.
+    init(calendarReply draft: CalendarReplyDraft) {
+        to = draft.to
+        cc = ""
+        bcc = ""
+        subject = draft.subject
+        body = draft.body
+        mode = "plain"
+        from = draft.from.isEmpty ? nil : draft.from
+        calendarReply = RelayCalendarReplyDTO(ics: draft.ics)
     }
 }
 
@@ -492,6 +520,18 @@ final class RelayMailSource: MailSource {
         } catch NetworkError.conflict(let body) {
             throw Self.conflictError(body: body) ?? NetworkError.conflict(body: body)
         }
+    }
+
+    /// Sends an RSVP. Returns whether the relay acknowledged it as a calendar
+    /// reply; a 200 without that is plain mail to the organizer.
+    func sendCalendarReply(_ draft: CalendarReplyDraft) async throws -> Bool {
+        let response = try await httpClient.post(
+            RelaySendResponse.self,
+            url: try endpoint("api/mail/send"),
+            headers: auth.headerFields,
+            jsonBody: RelaySendRequest(calendarReply: draft)
+        )
+        return response.calendarReply == true
     }
 
     func saveDraft(email: OutgoingEmail) async throws {
