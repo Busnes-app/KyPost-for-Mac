@@ -78,11 +78,13 @@ final class RsvpTracker {
     }
 
     /// A fresh open of the invite is the user's deliberate retry of an
-    /// unsure send. A confirmed RSVP stays sent.
+    /// unsure send (Android's rule): the buttons re-arm, but the outcome
+    /// sentence stays, so the retry is made beside "may have been sent" or
+    /// "the organizer got a plain email" — and still goes through the
+    /// confirmation. A confirmed RSVP stays sent.
     func opened(_ key: String, freshOpen: Bool) {
         if freshOpen, phases[key] == .unsure {
             phases[key] = nil
-            messages[key] = nil
         }
     }
 

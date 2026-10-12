@@ -126,8 +126,8 @@ struct InviteCardView: View {
                 set: { if !$0 { model.pendingHandoff = nil } }
             ),
             presenting: model.pendingHandoff
-        ) { event in
-            Button("Add to Calendar") { Task { await model.add(event) } }
+        ) { pending in
+            Button("Add to Calendar") { Task { await model.add(pending) } }
             Button("Cancel", role: .cancel) { model.pendingHandoff = nil }
         } message: { _ in
             Text("Hostile Location Protection is on. Your calendar will store this event outside KyPost, where a wipe can't remove it.")

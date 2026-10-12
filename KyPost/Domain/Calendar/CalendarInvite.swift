@@ -43,6 +43,11 @@ nonisolated struct CalendarEvent: Equatable, Sendable, CustomStringConvertible {
     /// A DTSTART or DTEND TZID that resolved to nothing, so the floating
     /// fallback was used. At most 64 characters.
     var unknownZone: String?
+    /// The zone DTSTART names: its resolved TZID, or UTC for a `Z` time. Nil
+    /// for an all-day date, a floating time, or an unresolved TZID — all read
+    /// in the viewer's zone, which is also how a calendar treats a zoneless
+    /// event. A series repeats in this zone, not the viewer's.
+    var timeZone: TimeZone? = nil
     /// Bare addresses of every ATTENDEE that has a usable one.
     var attendees: [String] = []
     /// An override's RECURRENCE-ID line restated without TZID, or nil for a
@@ -51,6 +56,10 @@ nonisolated struct CalendarEvent: Equatable, Sendable, CustomStringConvertible {
     /// An iTIP REPLY needs a UID, an organizer, a readable SEQUENCE, and a
     /// RECURRENCE-ID that could be restated if there is one.
     var canReply = false
+
+    /// A time of day with neither `Z` nor a TZID: RFC 5545 floating, read in
+    /// the viewer's zone. An all-day date and an unresolved TZID are not this.
+    var isFloating: Bool { !allDay && timeZone == nil && unknownZone == nil }
 
     /// Redacted: the notes are message content.
     var description: String { "CalendarEvent(redacted)" }
@@ -243,6 +252,9 @@ private nonisolated enum ICS {
         var zone: TimeZone
         var allDay: Bool
         var unknownZone: String?
+        /// The zone the value named (TZID or `Z`); nil when it named none or
+        /// an unresolvable one.
+        var declaredZone: TimeZone? = nil
     }
 
     static func parse(
@@ -364,6 +376,7 @@ private nonisolated enum ICS {
                 allDay: start.allDay,
                 rrule: isSafeRRule(rrule) ? rrule : "",
                 unknownZone: start.unknownZone ?? endTime?.unknownZone,
+                timeZone: start.allDay ? nil : start.declaredZone,
                 attendees: attendees,
                 recurrenceId: recurrenceId,
                 canReply: !uid.isEmpty && !organizer.isEmpty && sequence != nil
@@ -416,7 +429,7 @@ private nonisolated enum ICS {
         if value.count == 16 {
             let utc = TimeZone(identifier: "UTC")!
             return makeDate(date, hour: hour, minute: minute, second: second, zone: utc)
-                .map { EventTime(at: $0, zone: utc, allDay: false, unknownZone: nil) }
+                .map { EventTime(at: $0, zone: utc, allDay: false, unknownZone: nil, declaredZone: utc) }
         }
         let tzid = line.params["TZID"]?.trimmingCharacters(in: .whitespaces) ?? ""
         let resolved = tzid.isEmpty ? nil : resolveZone(tzid, windowsZone: windowsZone)
@@ -426,7 +439,8 @@ private nonisolated enum ICS {
                 at: $0,
                 zone: zone,
                 allDay: false,
-                unknownZone: !tzid.isEmpty && resolved == nil ? String(tzid.prefix(64)) : nil
+                unknownZone: !tzid.isEmpty && resolved == nil ? String(tzid.prefix(64)) : nil,
+                declaredZone: resolved
             )
         }
     }

@@ -714,16 +714,25 @@ an event only when asked and syncs no calendar.
 - **TZID lookup chain:** as given, last three then two path segments, then
   CLDR's Windows-name table (`WindowsTimeZones`, regenerate from CLDR — ICU's
   lookup is not public API). Over 128 characters or unresolved reads as
-  floating, and the card says so.
+  floating, and the card says so. A time with neither `Z` nor TZID is
+  floating too and gets its own notice; an all-day date does not.
 - **The organizer is its bare `mailto:` address, never CN**, and the card says
   when it is not the From address. Notices: phishing, organizer ≠ sender,
-  CANCEL, update (REQUEST with SEQUENCE > 0), unknown zone.
+  CANCEL, update (REQUEST with SEQUENCE > 0), unknown zone, floating time.
 - **Add to Calendar is a tap only**, never for CANCEL or REPLY. EventKit
   write-only access is requested on that tap and nowhere else
   (`INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription`, macOS
   `personal-information.calendars` entitlement). Under Hostile Location
   Protection every handoff is confirmed first. An RRULE EventKit cannot express
-  adds the first occurrence and says so.
+  adds the first occurrence and says so — including a weekly `INTERVAL > 1`
+  rule whose days a different week start would regroup, since EventKit takes
+  no WKST. The event carries DTSTART's zone (`CalendarEvent.timeZone`), so a
+  series repeats at the organizer's wall clock; floating and all-day stay
+  zoneless.
+- **A handoff is bound to the session it was tapped in** (`PendingHandoff`,
+  `RsvpTracker.session`). `CalendarHandoff.add` rechecks it after the
+  permission prompt and before saving: nothing from an ended session reaches
+  the calendar store.
 - **RSVP (REPLY)** copies UID verbatim and SEQUENCE, restates RECURRENCE-ID
   without TZID (a zoned one becomes UTC; unrestatable means no RSVP), adds
   DTSTAMP, folds at 75 octets without splitting UTF-8. ATTENDEE is the
@@ -734,8 +743,10 @@ an event only when asked and syncs no calendar.
   no PGP flag), and every RSVP is confirmed in a prompt that says so.
 - **Only a 200 with `"calendarReply": true` is an RSVP.** Without it the
   organizer got plain mail: say so, never retry. Only a definite refusal
-  (`rsvpRefusedBeforeSending`) re-arms the buttons; anything else is "may have
-  been sent".
+  (`rsvpRefusedBeforeSending`) re-arms the buttons on the open screen;
+  anything else is "may have been sent". As on Android, a fresh open of the
+  invite is the user's deliberate retry of an unsure send: it re-arms the
+  buttons but keeps the warning shown, and the retry is still confirmed.
 - **`RsvpTracker` owns state** per UID + RECURRENCE-ID + SEQUENCE, outliving the
   screen. It advances its `session` and drops everything on
   `.kyPostSessionReset`; a send confirmed in an ended session does no I/O, and

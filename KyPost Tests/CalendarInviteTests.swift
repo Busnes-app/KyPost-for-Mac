@@ -592,6 +592,26 @@ private func expectRelayAccepts(_ ics: String) {
         #expect(!tracker.canAnswer(key), "cancel releases only a pending send")
     }
 
+    /// A fresh open re-arms an unsure send (Android's rule) but keeps its
+    /// warning on screen; only a new send clears it.
+    @Test func aFreshOpenKeepsTheUnsureWarning() throws {
+        let tracker = RsvpTracker(center: NotificationCenter())
+        let key = try key()
+        for result in [RsvpResult.maybeSent, .sentAsPlainMail] {
+            let warning = rsvpOutcomeMessage(result, reason: "timeout")
+            #expect(tracker.begin(key))
+            #expect(tracker.complete(key, result: result, message: warning, session: tracker.session))
+            tracker.opened(key, freshOpen: false)
+            #expect(!tracker.canAnswer(key))
+            #expect(tracker.messages[key] == warning)
+            tracker.opened(key, freshOpen: true)
+            #expect(tracker.messages[key] == warning)
+            #expect(tracker.begin(key))
+            #expect(tracker.messages[key] == nil)
+            tracker.cancel(key)
+        }
+    }
+
     /// Unpair or wipe: the session advances and the tracker empties; a
     /// completion from the old session records nothing.
     @Test func aCompletionFromAnEndedSessionIsDropped() throws {
@@ -629,9 +649,11 @@ private func expectRelayAccepts(_ ics: String) {
         tracker: RsvpTracker,
         addresses: [String]? = ["me@example.com"],
         sent: Box<[CalendarReplyDraft]> = Box([]),
-        outcome: (RsvpResult, String)? = (.sent, "")
+        outcome: (RsvpResult, String)? = (.sent, ""),
+        calendar: FakeCalendarStore? = nil
     ) -> InviteCardModel {
         let account = self.account
+        let calendar = calendar ?? FakeCalendarStore()
         return InviteCardModel(
             tracker: tracker,
             accountAddresses: { addresses },
@@ -640,7 +662,8 @@ private func expectRelayAccepts(_ ics: String) {
                 sent.value.append(draft)
                 return outcome.map { (result: $0.0, reason: $0.1) }
             },
-            now: { now }
+            now: { now },
+            calendarStore: { calendar }
         )
     }
 
@@ -728,6 +751,43 @@ private func expectRelayAccepts(_ ics: String) {
         #expect(subject.handoffMessage == nil)
     }
 
+    /// A wipe or unpair while the calendar permission prompt is up: granting
+    /// it afterwards writes nothing outside KyPost.
+    @Test func aHandoffWaitingOnPermissionDiesWithTheSession() async {
+        let center = NotificationCenter()
+        let calendar = FakeCalendarStore()
+        let subject = model(tracker: RsvpTracker(center: center), calendar: calendar)
+        await load(subject)
+        let tap = Task { await subject.requestAdd(hostileLocationProtection: false) }
+        while !calendar.isWaiting { await Task.yield() }
+        center.post(name: .kyPostSessionReset, object: nil)
+        calendar.grant()
+        await tap.value
+        #expect(calendar.saves == 0)
+        #expect(subject.handoffMessage == nil)
+        #expect(!subject.isAdding)
+    }
+
+    /// The Hostile Location Protection confirmation is bound to the session
+    /// it was raised in.
+    @Test func aHandoffConfirmedAfterTheSessionEndedWritesNothing() async throws {
+        let center = NotificationCenter()
+        let calendar = FakeCalendarStore(authorization: .writeOnly)
+        let subject = model(tracker: RsvpTracker(center: center), calendar: calendar)
+        await load(subject)
+        await subject.requestAdd(hostileLocationProtection: true)
+        let pending = try #require(subject.pendingHandoff)
+        center.post(name: .kyPostSessionReset, object: nil)
+        await subject.add(pending)
+        #expect(calendar.saves == 0)
+        #expect(subject.handoffMessage == nil)
+
+        // The same tap in a live session does write.
+        await subject.requestAdd(hostileLocationProtection: false)
+        #expect(calendar.saves == 1)
+        #expect(subject.handoffMessage == "Added to Home.")
+    }
+
     @Test func aCancelledInviteOffersNoAdd() async {
         let subject = model(tracker: RsvpTracker(center: NotificationCenter()))
         let data = invite(method: "CANCEL", request)
@@ -751,6 +811,22 @@ private func expectRelayAccepts(_ ics: String) {
         #expect(notices[2].contains("cancelled"))
         #expect(notices[3].contains("Narnia"))
         #expect(inviteNotices(parsed, senderEmail: "BOSS@example.com", phishing: false).count == 2)
+    }
+
+    /// A time with neither `Z` nor TZID is read in the viewer's zone, and the
+    /// card says so; a UTC, zoned or all-day start does not get the notice.
+    @Test func aFloatingTimeGetsItsNotice() throws {
+        let notice = "This invite gives no time zone, so this time is read as your own zone."
+        let floating = try #require(parse(invite(["DTSTART:20261012T090000"])))
+        #expect(floating.primary.isFloating)
+        #expect(floating.primary.timeZone == nil)
+        #expect(inviteNotices(floating, senderEmail: "", phishing: false).contains(notice))
+        for start in ["DTSTART:20261012T090000Z", "DTSTART;TZID=America/New_York:20261012T090000",
+                      "DTSTART;VALUE=DATE:20261012", "DTSTART;TZID=Narnia:20261012T090000"] {
+            let parsed = try #require(parse(invite([start])))
+            #expect(!parsed.primary.isFloating, "\(start)")
+            #expect(!inviteNotices(parsed, senderEmail: "", phishing: false).contains(notice), "\(start)")
+        }
     }
 
     @Test func whenTextIsInTheViewersZone() throws {
@@ -789,6 +865,13 @@ private func expectRelayAccepts(_ ics: String) {
         ("FREQ=WEEKLY;BYDAY=XX", false),
         ("FREQ=DAILY;UNTIL=20260231", false),
         ("COUNT=3", false),
+        // EventKit takes no week start: refuse a rule that depends on one.
+        ("FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,SU;WKST=SU", false),
+        ("FREQ=WEEKLY;INTERVAL=2;BYDAY=SU,MO", false),
+        ("FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH;WKST=SU", true),
+        ("FREQ=WEEKLY;BYDAY=TU,SU;WKST=SU", true),
+        ("FREQ=WEEKLY;INTERVAL=2;BYDAY=SU;WKST=SU", true),
+        ("FREQ=WEEKLY;WKST=XX", false),
     ])
     func onlyExpressibleRulesMapToEventKit(_ rrule: String, _ expressible: Bool) {
         #expect((RecurrenceSpec(rrule, zone: berlin) != nil) == expressible)
@@ -803,5 +886,84 @@ private func expectRelayAccepts(_ ics: String) {
         let rule = spec.rule()
         #expect(rule.interval == 2)
         #expect(rule.recurrenceEnd?.occurrenceCount == 6)
+    }
+
+    /// A week-start-dependent rule is not saved as a different series: the
+    /// first occurrence goes in, and the outcome says so.
+    @MainActor
+    @Test func aWeekStartDependentRuleAddsTheFirstOccurrence() async throws {
+        let event = try #require(parse(invite([
+            "DTSTART;TZID=America/New_York:20261013T090000", "RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,SU;WKST=SU",
+        ]))).primary
+        let calendar = FakeCalendarStore(authorization: .writeOnly)
+        let outcome = await CalendarHandoff.add(event, store: calendar) { true }
+        #expect(outcome == .added(calendar: "Home", repeatsDropped: true))
+        #expect(calendar.saves == 1)
+    }
+
+    /// A daily 09:00 New York series added from Berlin keeps New York's wall
+    /// clock across Berlin's DST change (October 25) — 13:00 UTC on the 26th,
+    /// not 12:00.
+    @MainActor
+    @Test func aSeriesRepeatsInItsOwnZone() throws {
+        let newYork = TimeZone(identifier: "America/New_York")!
+        let event = try #require(parse(invite([
+            "DTSTART;TZID=America/New_York:20261024T090000", "DTEND;TZID=America/New_York:20261024T100000",
+            "RRULE:FREQ=DAILY;COUNT=5",
+        ]), zone: berlin)).primary
+        #expect(event.timeZone == newYork)
+
+        let item = EKEvent(eventStore: EKEventStore())
+        CalendarHandoff.configure(item, from: event, recurrence: RecurrenceSpec(event.rrule, zone: newYork))
+        let zone = try #require(item.timeZone)
+        #expect(zone == newYork)
+        var wallClock = Calendar(identifier: .gregorian)
+        wallClock.timeZone = zone
+        let third = try #require(wallClock.date(byAdding: .day, value: 2, to: item.startDate))
+        #expect(third == iso("2026-10-26T13:00:00Z"))
+
+        // Floating and all-day events stay zoneless.
+        for start in ["DTSTART:20261024T090000", "DTSTART;VALUE=DATE:20261024"] {
+            let zoneless = try #require(parse(invite([start]))).primary
+            let other = EKEvent(eventStore: EKEventStore())
+            CalendarHandoff.configure(other, from: zoneless, recurrence: nil)
+            #expect(other.timeZone == nil, "\(start)")
+        }
+    }
+
+    /// A date-only UNTIL ends at the close of that day in the event's zone.
+    @Test func aDateOnlyUntilEndsInTheEventsZone() throws {
+        let newYork = TimeZone(identifier: "America/New_York")!
+        let spec = try #require(RecurrenceSpec("FREQ=DAILY;UNTIL=20261030", zone: newYork))
+        #expect(spec.end == .until(iso("2026-10-31T03:59:59Z")))
+    }
+}
+
+/// A calendar store whose permission prompt can be held open.
+@MainActor
+final class FakeCalendarStore: CalendarStoring {
+    var authorization: EKAuthorizationStatus
+    private(set) var saves = 0
+    private var waiting: CheckedContinuation<Bool, Never>?
+
+    init(authorization: EKAuthorizationStatus = .notDetermined) {
+        self.authorization = authorization
+    }
+
+    var isWaiting: Bool { waiting != nil }
+
+    func requestWriteOnlyAccess() async -> Bool {
+        await withCheckedContinuation { waiting = $0 }
+    }
+
+    func grant() {
+        authorization = .writeOnly
+        waiting?.resume(returning: true)
+        waiting = nil
+    }
+
+    func saveToDefaultCalendar(_ configure: (EKEvent) -> Void) throws -> String? {
+        saves += 1
+        return "Home"
     }
 }

@@ -51,7 +51,12 @@ nonisolated struct RecurrenceSpec: Equatable, Sendable {
         }
         guard let raw = parts.removeValue(forKey: "FREQ"), let frequency = Frequency(rawValue: raw) else { return nil }
         self.frequency = frequency
-        parts["WKST"] = nil
+        // RFC 5545's default week start is Monday.
+        var weekStart = 2
+        if let raw = parts.removeValue(forKey: "WKST") {
+            guard let day = Self.weekdays[raw] else { return nil }
+            weekStart = day
+        }
         if let raw = parts.removeValue(forKey: "INTERVAL") {
             guard let n = Int(raw), (1...1_000).contains(n) else { return nil }
             interval = n
@@ -86,6 +91,33 @@ nonisolated struct RecurrenceSpec: Equatable, Sendable {
         }
         // BYHOUR, BYWEEKNO, BYYEARDAY and the rest have no EventKit form.
         guard parts.isEmpty else { return nil }
+        // EventKit takes no week start, so a rule whose occurrences depend on
+        // it would be saved as a different series.
+        if frequency == .weekly, interval > 1,
+           !Self.weekGroupingHolds(Set(days.map(\.weekday)), weekStart: weekStart) {
+            return nil
+        }
+    }
+
+    /// The week starts a calendar may apply in place of WKST: EventKit's own
+    /// choice is not public, and CLDR gives every region one of these.
+    private static let possibleWeekStarts = [6, 7, 1, 2]
+
+    /// Whether `days` fall into the same weeks whichever of
+    /// `possibleWeekStarts` replaces `weekStart`. Two starts group them alike
+    /// unless the days from one start up to the other hold some, not all, of
+    /// them.
+    private static func weekGroupingHolds(_ days: Set<Int>, weekStart: Int) -> Bool {
+        possibleWeekStarts.allSatisfy { other in
+            var between: Set<Int> = []
+            var day = weekStart
+            while day != other {
+                between.insert(day)
+                day = day % 7 + 1
+            }
+            let inside = days.intersection(between)
+            return inside.isEmpty || inside == days
+        }
     }
 
     private static let weekdays = ["SU": 1, "MO": 2, "TU": 3, "WE": 4, "TH": 5, "FR": 6, "SA": 7]
@@ -152,6 +184,38 @@ nonisolated struct RecurrenceSpec: Equatable, Sendable {
     }
 }
 
+/// The calendar store the handoff writes to. A protocol so the permission
+/// wait and the save can be observed in tests without touching a calendar.
+@MainActor
+protocol CalendarStoring {
+    var authorization: EKAuthorizationStatus { get }
+    /// Asks for write-only access; true when granted.
+    func requestWriteOnlyAccess() async -> Bool
+    /// Builds and saves an event in the default calendar, returning that
+    /// calendar's title; nil, saving nothing, when there is no calendar.
+    func saveToDefaultCalendar(_ configure: (EKEvent) -> Void) throws -> String?
+}
+
+@MainActor
+struct EventKitCalendarStore: CalendarStoring {
+    var store = EKEventStore()
+
+    var authorization: EKAuthorizationStatus { EKEventStore.authorizationStatus(for: .event) }
+
+    func requestWriteOnlyAccess() async -> Bool {
+        (try? await store.requestWriteOnlyAccessToEvents()) == true
+    }
+
+    func saveToDefaultCalendar(_ configure: (EKEvent) -> Void) throws -> String? {
+        guard let calendar = store.defaultCalendarForNewEvents else { return nil }
+        let item = EKEvent(eventStore: store)
+        item.calendar = calendar
+        configure(item)
+        try store.save(item, span: .thisEvent, commit: true)
+        return calendar.title
+    }
+}
+
 @MainActor
 enum CalendarHandoff {
     enum Outcome: Equatable {
@@ -161,39 +225,57 @@ enum CalendarHandoff {
         case denied
         case noCalendar
         case failed(String)
+        /// The session the tap belonged to ended (wipe, failed-unlock reset,
+        /// unpair) before the event was written, so nothing was.
+        case sessionEnded
     }
 
     /// Writes the event. Asks for write-only calendar access the first time,
     /// which is why this must only ever run from the user's tap.
-    static func add(_ event: CalendarEvent, store: EKEventStore = EKEventStore()) async -> Outcome {
-        switch EKEventStore.authorizationStatus(for: .event) {
+    ///
+    /// `isCurrent` is the session the tap was made in. It is checked again
+    /// after the permission prompt, which can stay up indefinitely, and
+    /// immediately before the save: content from an ended session must not
+    /// reach a store outside KyPost.
+    static func add(
+        _ event: CalendarEvent,
+        store: some CalendarStoring,
+        isCurrent: () -> Bool
+    ) async -> Outcome {
+        guard isCurrent() else { return .sessionEnded }
+        switch store.authorization {
         case .writeOnly, .fullAccess:
             break
         case .denied, .restricted:
             return .denied
         default:
-            guard (try? await store.requestWriteOnlyAccessToEvents()) == true else { return .denied }
+            guard await store.requestWriteOnlyAccess() else { return .denied }
         }
-        guard let calendar = store.defaultCalendarForNewEvents else { return .noCalendar }
+        guard isCurrent() else { return .sessionEnded }
 
-        let item = EKEvent(eventStore: store)
-        item.calendar = calendar
+        let spec = event.rrule.isEmpty ? nil : RecurrenceSpec(event.rrule, zone: event.timeZone ?? .current)
+        do {
+            guard let calendar = try store.saveToDefaultCalendar({ configure($0, from: event, recurrence: spec) })
+            else { return .noCalendar }
+            return .added(calendar: calendar, repeatsDropped: !event.rrule.isEmpty && spec == nil)
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    /// Fills `item` from the invite. The event's own zone goes with it, so a
+    /// series repeats at the organizer's wall-clock time; a floating or
+    /// all-day event stays zoneless, as the card reads it.
+    static func configure(_ item: EKEvent, from event: CalendarEvent, recurrence spec: RecurrenceSpec?) {
         item.title = event.summary.isEmpty ? String(localized: "Untitled event") : event.summary
         item.isAllDay = event.allDay
+        item.timeZone = event.allDay ? nil : event.timeZone
         item.startDate = event.begin
         // All-day ends are exclusive in the invite; EventKit's are the last
         // day itself, so an exclusive midnight would add a day.
         item.endDate = event.allDay ? max(event.begin, event.end.addingTimeInterval(-1)) : event.end
         if !event.location.isEmpty { item.location = event.location }
         if !event.notes.isEmpty { item.notes = event.notes }
-        let spec = event.rrule.isEmpty ? nil : RecurrenceSpec(event.rrule, zone: .current)
         if let spec { item.addRecurrenceRule(spec.rule()) }
-
-        do {
-            try store.save(item, span: .thisEvent, commit: true)
-            return .added(calendar: calendar.title, repeatsDropped: !event.rrule.isEmpty && spec == nil)
-        } catch {
-            return .failed(error.localizedDescription)
-        }
     }
 }

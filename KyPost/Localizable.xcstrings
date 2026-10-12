@@ -43,6 +43,12 @@
     "Time zone \"%@\" isn't recognised, so this time is read as your own zone and may be wrong." : {
 
     },
+    "This invite gives no time zone, so this time is read as your own zone." : {
+
+    },
+    "This event wasn't added." : {
+
+    },
     "Remove Signature" : {
 
     },

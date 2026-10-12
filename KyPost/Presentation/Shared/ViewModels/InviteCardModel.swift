@@ -28,6 +28,14 @@ struct PendingRsvp: Identifiable {
     let message: String
 }
 
+/// A calendar handoff, bound to the session the user tapped in. A wipe or
+/// unpair ends that session, and the event is then never written.
+struct PendingHandoff: Identifiable {
+    let id = UUID()
+    let event: CalendarEvent
+    let session: Int
+}
+
 @Observable
 @MainActor
 final class InviteCardModel {
@@ -36,7 +44,7 @@ final class InviteCardModel {
     /// Drives the RSVP confirmation.
     var pendingRsvp: PendingRsvp?
     /// Drives the Hostile Location Protection confirmation before a handoff.
-    var pendingHandoff: CalendarEvent?
+    var pendingHandoff: PendingHandoff?
     private(set) var isAdding = false
     private(set) var handoffMessage: String?
     /// Said when an RSVP could not even be offered for confirmation.
@@ -50,6 +58,7 @@ final class InviteCardModel {
     private let currentAccount: @MainActor () -> MailAccountBinding?
     private let send: @MainActor (CalendarReplyDraft, MailAccountBinding) async -> (result: RsvpResult, reason: String)?
     private let now: () -> Date
+    private let calendarStore: @MainActor () -> any CalendarStoring
 
     /// The defaults re-read `SingletonGraph.shared` on every call, so nothing
     /// here outlives a graph rebuild.
@@ -64,13 +73,15 @@ final class InviteCardModel {
         send: @escaping @MainActor (CalendarReplyDraft, MailAccountBinding) async -> (result: RsvpResult, reason: String)? = {
             await SingletonGraph.shared.mailRepository.sendCalendarReply($0, as: $1)
         },
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        calendarStore: @escaping @MainActor () -> any CalendarStoring = { EventKitCalendarStore() }
     ) {
         self.tracker = tracker
         self.accountAddresses = accountAddresses
         self.currentAccount = currentAccount
         self.send = send
         self.now = now
+        self.calendarStore = calendarStore
     }
 
     /// Downloads and parses the listed invite part, if there is one. A
@@ -195,21 +206,30 @@ final class InviteCardModel {
 
     /// Never automatic. Under Hostile Location Protection the event is about
     /// to leave for a store a wipe cannot reach, so that is confirmed first.
+    /// The session is read at the tap, so a confirmation answered after a
+    /// wipe or unpair writes nothing.
     func requestAdd(hostileLocationProtection: Bool) async {
         guard let invite, invite.offersAdd else { return }
+        let pending = PendingHandoff(event: invite.primary, session: tracker.session)
         if hostileLocationProtection {
-            pendingHandoff = invite.primary
+            pendingHandoff = pending
         } else {
-            await add(invite.primary)
+            await add(pending)
         }
     }
 
-    func add(_ event: CalendarEvent) async {
-        pendingHandoff = nil
-        guard !isAdding else { return }
+    func add(_ pending: PendingHandoff) async {
+        if pendingHandoff?.id == pending.id { pendingHandoff = nil }
+        guard !isAdding, tracker.isCurrent(pending.session) else { return }
         isAdding = true
         defer { isAdding = false }
-        handoffMessage = calendarHandoffMessage(await CalendarHandoff.add(event))
+        let tracker = self.tracker
+        let outcome = await CalendarHandoff.add(pending.event, store: calendarStore()) {
+            tracker.isCurrent(pending.session)
+        }
+        // An ended session says nothing either.
+        guard outcome != .sessionEnded, tracker.isCurrent(pending.session) else { return }
+        handoffMessage = calendarHandoffMessage(outcome)
     }
 }
 
@@ -234,6 +254,9 @@ nonisolated func inviteNotices(_ invite: CalendarInvite, senderEmail: String, ph
     }
     if let zone = event.unknownZone {
         notices.append(String(localized: "Time zone \"\(zone)\" isn't recognised, so this time is read as your own zone and may be wrong."))
+    }
+    if event.isFloating {
+        notices.append(String(localized: "This invite gives no time zone, so this time is read as your own zone."))
     }
     return notices
 }
@@ -303,5 +326,7 @@ func calendarHandoffMessage(_ outcome: CalendarHandoff.Outcome) -> String {
         String(localized: "There's no calendar to add this event to.")
     case .failed(let message):
         String(localized: "Couldn't add this event: \(message)")
+    case .sessionEnded:
+        String(localized: "This event wasn't added.")
     }
 }
