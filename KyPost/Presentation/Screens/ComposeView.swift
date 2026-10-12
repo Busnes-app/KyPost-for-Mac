@@ -39,6 +39,11 @@ struct ComposeView: View {
     /// nil = nothing highlighted. The dropdown opens with no selection so
     /// Return commits what was actually typed; see `handleKey`.
     @State private var highlighted: Int?
+    /// Drives the Discard / Keep editing prompt.
+    @State private var confirmingDiscard = false
+    /// Set once the user chose Discard, so the close that follows is not
+    /// asked about again.
+    @State private var discardConfirmed = false
     @FocusState private var focusedField: RecipientField?
 
     /// `draft` prefills reply/reply-all/forward compositions.
@@ -47,7 +52,8 @@ struct ComposeView: View {
             sendEmail: SingletonGraph.shared.sendEmailUseCase,
             contacts: SingletonGraph.shared.contactsViewModel,
             pgp: SingletonGraph.shared.pgpSendService,
-            draft: draft
+            draft: draft,
+            signature: SingletonGraph.shared.mailSignatureStore.signature
         ))
     }
 
@@ -197,7 +203,47 @@ struct ComposeView: View {
             viewModel.closeSuggestions()
             highlighted = nil
         }
+        // Closing a message with anything in it asks first (Android #118).
+        // There is no server-side draft to offer, so it is a plain discard
+        // confirmation, and the copy says nothing is kept.
+        .confirmationDialog(
+            "Discard this message?",
+            isPresented: $confirmingDiscard,
+            titleVisibility: .visible
+        ) {
+            Button("Discard", role: .destructive) {
+                discardConfirmed = true
+                dismiss()
+            }
+            Button("Keep editing", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: {
+            Text("It has not been sent, and KyPost keeps no copy.")
+        }
+#if os(iOS)
+        // A swipe down would otherwise drop the sheet without asking.
+        .interactiveDismissDisabled(needsDiscardConfirmation)
+#else
+        // The window's close button and ⌘W, which never reach `Cancel`.
+        .background(WindowCloseGuard(
+            shouldConfirm: { needsDiscardConfirmation },
+            confirm: { confirmingDiscard = true }
+        ))
+#endif
         .tint(theme.accent)
+    }
+
+    private var needsDiscardConfirmation: Bool {
+        viewModel.closingNeedsConfirmation && !discardConfirmed
+    }
+
+    /// Cancel: closes at once when there is nothing to lose, else asks.
+    private func requestClose() {
+        if needsDiscardConfirmation {
+            confirmingDiscard = true
+        } else {
+            dismiss()
+        }
     }
 
     // MARK: - PGP
@@ -474,7 +520,7 @@ struct ComposeView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
-            Button("Cancel") { dismiss() }
+            Button("Cancel") { requestClose() }
         }
 #if os(macOS)
         ToolbarItemGroup {
@@ -575,3 +621,55 @@ struct ComposeView: View {
         }
     }
 }
+
+#if os(macOS)
+import AppKit
+
+/// Asks before a compose window closes from its title-bar button or ⌘W.
+///
+/// Both arrive as `windowShouldClose(_:)` on the window's delegate, which
+/// SwiftUI owns, so this installs a proxy that answers that one question and
+/// forwards everything else to SwiftUI's delegate untouched. Re-installed on
+/// every update in case SwiftUI replaces its delegate.
+private struct WindowCloseGuard: NSViewRepresentable {
+    let shouldConfirm: () -> Bool
+    let confirm: () -> Void
+
+    func makeCoordinator() -> CloseInterceptor { CloseInterceptor() }
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let interceptor = context.coordinator
+        interceptor.shouldConfirm = shouldConfirm
+        interceptor.confirm = confirm
+        DispatchQueue.main.async { [weak view] in
+            guard let window = view?.window, window.delegate !== interceptor else { return }
+            interceptor.original = window.delegate
+            window.delegate = interceptor
+        }
+    }
+
+    final class CloseInterceptor: NSObject, NSWindowDelegate {
+        weak var original: (any NSWindowDelegate)?
+        var shouldConfirm: () -> Bool = { false }
+        var confirm: () -> Void = {}
+
+        func windowShouldClose(_ sender: NSWindow) -> Bool {
+            if shouldConfirm() {
+                confirm()
+                return false
+            }
+            return original?.windowShouldClose?(sender) ?? true
+        }
+
+        override func responds(to selector: Selector!) -> Bool {
+            super.responds(to: selector) || (original?.responds(to: selector) ?? false)
+        }
+
+        override func forwardingTarget(for selector: Selector!) -> Any? {
+            original?.responds(to: selector) == true ? original : super.forwardingTarget(for: selector)
+        }
+    }
+}
+#endif

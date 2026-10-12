@@ -114,6 +114,7 @@ final class ComposeViewModel {
         contacts: ContactsViewModel,
         pgp: PgpSendService,
         draft: ComposeDraft? = nil,
+        signature: String = "",
         debounceInterval: Duration = .milliseconds(150)
     ) {
         self.sendEmail = sendEmail
@@ -126,8 +127,22 @@ final class ComposeViewModel {
             cc = tokens(from: draft.cc)
             bcc = tokens(from: draft.bcc)
             subject = draft.subject
-            body = AttributedString(draft.body)
         }
+        // Built from plain text: whatever the signature or a mailto body
+        // contains is shown as typed, never parsed as markup.
+        body = AttributedString((draft ?? ComposeDraft()).initialBody(signature: signature))
+    }
+
+    /// Whether closing now would lose something the user wrote. A
+    /// signature-only body counts: comparing against the seeded text would
+    /// miss edits that happen to restore it, and a needless prompt costs one
+    /// click where a wrong close costs the message. Nothing to lose once it
+    /// went out (or was handed to webmail).
+    var closingNeedsConfirmation: Bool {
+        guard !didSend, !isSent else { return false }
+        let typed = [subject, toInput, ccInput, bccInput, String(body.characters)]
+        return !to.isEmpty || !cc.isEmpty || !bcc.isEmpty || !attachments.isEmpty
+            || typed.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     /// Takes a forward's attachments from `ForwardAttachmentHandoff`, once.
@@ -738,6 +753,9 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
     var bcc = ""
     var subject = ""
     var body = ""
+    /// The body came from outside the app (a `mailto:` link): it is the
+    /// message, not a quote, so no signature goes above it.
+    var bodyIsExternal = false
 
     init(
         id: UUID = UUID(),
@@ -745,7 +763,8 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         cc: String = "",
         bcc: String = "",
         subject: String = "",
-        body: String = ""
+        body: String = "",
+        bodyIsExternal: Bool = false
     ) {
         self.id = id
         self.to = to
@@ -753,6 +772,7 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         self.bcc = bcc
         self.subject = subject
         self.body = body
+        self.bodyIsExternal = bodyIsExternal
     }
 
     /// Hand-written because synthesized Decodable doesn't fall back to
@@ -767,6 +787,17 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         bcc = try container.decodeIfPresent(String.self, forKey: .bcc) ?? ""
         subject = try container.decodeIfPresent(String.self, forKey: .subject) ?? ""
         body = try container.decodeIfPresent(String.self, forKey: .body) ?? ""
+        bodyIsExternal = try container.decodeIfPresent(Bool.self, forKey: .bodyIsExternal) ?? false
+    }
+
+    /// The body compose opens with: the signature after its `-- ` delimiter,
+    /// above any quote — except above text another app asked to send, which
+    /// is the message itself. A blank external body still gets one.
+    func initialBody(signature: String) -> String {
+        if bodyIsExternal, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return body
+        }
+        return withSignature(body, signature: signature)
     }
 
     static func reply(to email: Email) -> ComposeDraft {

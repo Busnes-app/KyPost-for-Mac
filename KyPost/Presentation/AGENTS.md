@@ -118,6 +118,29 @@ Domain.
   serialization contract — decode every key with `decodeIfPresent` or an
   archive from an older build throws and the window restores blank. Tokens are
   live editing state and are deliberately not `Codable`.
+- **Closing a compose with content asks first** (Android #118):
+  `ComposeViewModel.closingNeedsConfirmation` — any recipient, pending
+  recipient text, subject, attachment or non-blank body, a signature-only body
+  included — until the message was sent or handed off. Cancel asks; iOS
+  disables the swipe-down; macOS answers `windowShouldClose` through
+  `WindowCloseGuard`, a proxy that forwards every other delegate call to
+  SwiftUI's. Closes the app forces (Hostile Location Protection, wipe) never
+  ask.
+- **The signature is plain text placed by compose** (Android #177,
+  `MailSignatureStore`, ≤1000 characters): after an RFC 3676 `-- ` line and
+  above any quote on new messages, replies and forwards, never above a
+  non-blank external body (`ComposeDraft.bodyIsExternal`, a `mailto:` body).
+  Compose builds its `AttributedString` from plain text, so markup in a
+  signature or a mailto body is shown, never interpreted. Account data:
+  unpair, the failed-unlock reset and the wipe clear it; Hostile Location
+  Protection does not.
+- **`mailto:` links are compose prefills, nothing more** (Android #105,
+  `MailtoLinkParser`): `to`/`cc`/`bcc`/`subject`/`body` only, split before
+  decoding, header fields flattened to one line, the body capped. They route
+  as `NavigationAction.composeMail`, so the lock defers them like any deep
+  link; the shell takes the request (`takeComposeRequest`) and owns the
+  window (macOS) or sheet (iOS) from then on. The message body's link policy
+  still never hands a `mailto:` link to `openURL`.
 - **Uncommitted recipient text lives on the view model**, not in view `@State`,
   so `send()` can flush it. Typing an address and pressing ⌘↩ must still mail
   it.

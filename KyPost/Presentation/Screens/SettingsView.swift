@@ -84,6 +84,13 @@ struct SettingsView: View {
             }
             .listRowBackground(theme.panel)
 
+            Section("Compose") {
+                NavigationLink("Signature") {
+                    SignatureSettingsView()
+                }
+            }
+            .listRowBackground(theme.panel)
+
             Section {
                 Toggle("Enable system notifications", isOn: $viewModel.systemNotificationsEnabled)
                 LabeledContent("Delivery Mode", value: viewModel.deliveryMode)

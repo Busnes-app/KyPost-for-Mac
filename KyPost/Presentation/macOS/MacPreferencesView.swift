@@ -41,6 +41,9 @@ struct MacPreferencesView: View {
             KeywordsPane(viewModel: viewModel)
                 .tabItem { Label("Keywords", systemImage: "tag") }
 
+            SignatureSettingsView()
+                .tabItem { Label("Signature", systemImage: "signature") }
+
             ContactsPane(viewModel: viewModel)
                 .tabItem { Label("Contacts", systemImage: "person.crop.circle") }
 

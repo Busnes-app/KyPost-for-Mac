@@ -152,6 +152,8 @@ final class SettingsViewModel {
         }
         // Keys verified by QR belong to this account's address book.
         recipientPinStore?.clear()
+        // The signature belongs to the account being unpaired, not the next.
+        SingletonGraph.shared.mailSignatureStore.clear()
         statusMessage = "Pairing removed"
     }
 

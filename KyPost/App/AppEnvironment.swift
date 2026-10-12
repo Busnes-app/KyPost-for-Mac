@@ -336,6 +336,7 @@ final class AppEnvironment {
         // back as if reinstalled.
         EnrollmentSession.shared.clear()
         graph.mailCursorStore.clear()
+        graph.mailSignatureStore.clear()
         try? graph.appLockStore.setCredentialGateEnabled(false)
         try graph.appLockStore.setLockEnabled(false)
         try? AppDatabase.deleteStoreFiles()

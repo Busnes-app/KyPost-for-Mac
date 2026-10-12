@@ -251,6 +251,7 @@ final class SingletonGraph {
     private let gatedCredentialStore: any GatedCredentialStoring
     private let systemContactStoreOverride: (any SystemContactStoring)?
     lazy var keywordRepository = KeywordRepository(settingsStore: keywordSettingsStore)
+    lazy var mailSignatureStore = MailSignatureStore(defaults: userDefaults)
     lazy var sendEmailUseCase = SendEmailUseCase(repository: mailRepository)
     lazy var pgpSendService = PgpSendService(
         client: pgpSendClient,

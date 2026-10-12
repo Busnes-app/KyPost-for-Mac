@@ -14,6 +14,8 @@ struct InboxView: View {
 
     @Bindable var viewModel: InboxViewModel
     @State private var showCompose = false
+    /// A `mailto:` compose taken from the router (iOS).
+    @State private var mailtoDraft: ComposeDraft?
     @State private var presentedEmail: Email?
 
     var body: some View {
@@ -115,6 +117,14 @@ struct InboxView: View {
         .sheet(isPresented: $showCompose) {
             ComposeView().environment(\.theme, theme)
         }
+#if os(iOS)
+        .sheet(item: $mailtoDraft) { draft in
+            ComposeView(draft: draft).environment(\.theme, theme)
+        }
+        .onChange(of: router.composeRequest, initial: true) {
+            if let draft = router.takeComposeRequest() { mailtoDraft = draft }
+        }
+#endif
         .task {
             await viewModel.loadIfNeeded()
             viewModel.refreshKeywordTabs()
