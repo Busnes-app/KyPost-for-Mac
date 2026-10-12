@@ -54,6 +54,14 @@ struct EmailDetailView: View {
     @State private var isActing = false
     /// Why the relay did not move this message; non-nil shows an alert.
     @State private var actionFailure: String?
+    /// The body fetched on open for a row that arrived without one (older
+    /// mail). Lives with the screen; the repository caches it only on a
+    /// window row.
+    @State private var fetchedBody: MailMessageBody?
+    @State private var isFetchingBody = false
+    /// Why the body could not be fetched. Distinct from "the message has no
+    /// body": an empty screen must not pass for a short message.
+    @State private var bodyFetchFailure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -120,12 +128,20 @@ struct EmailDetailView: View {
                     .layoutPriority(1)
             } else if suppressesBody {
                 Spacer(minLength: 0)
+            } else if isFetchingBody {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                Spacer(minLength: 0)
+            } else if let bodyFetchFailure {
+                bodyFetchFailureView(bodyFetchFailure)
+                Spacer(minLength: 0)
             } else if !rendersAsPlainText {
-                EmailBodyWebView(html: themedHTML(emailBodyToHTML(email.body, mode: email.bodyMode)))
+                EmailBodyWebView(html: themedHTML(emailBodyToHTML(shown.body, mode: shown.bodyMode)))
                     .layoutPriority(1)
             } else {
                 ScrollView {
-                    Text(email.body)
+                    Text(shown.body)
                         .font(AppFont.mono(14))
                         .foregroundStyle(theme.ink)
                         .textSelection(.enabled)
@@ -206,6 +222,9 @@ struct EmailDetailView: View {
         .task {
             let listing = Task { await inboxViewModel.attachmentListing(for: email) }
             attachmentListing = listing
+            // First: the PGP state the decrypt path reads is computed from the
+            // fetched body when the row arrived without one.
+            await loadBodyIfNeeded()
             await prepareEncryptedRead()
             await inboxViewModel.markRead(email)
             attachments = await listing.value ?? []
@@ -243,13 +262,13 @@ struct EmailDetailView: View {
         // Dimmed instead, and pressing it explains.
         Group {
             Button {
-                replyOrExplain { compose(.reply(to: email)) }
+                replyOrExplain { compose(.reply(to: shown)) }
             } label: {
                 Label("Reply", systemImage: "arrowshape.turn.up.left")
             }
             .help(replyAvailable ? "Reply to the sender" : replyUnavailableHelp)
             Button {
-                replyOrExplain { compose(.replyAll(to: email, ownAddress: ownAddress)) }
+                replyOrExplain { compose(.replyAll(to: shown, ownAddress: ownAddress)) }
             } label: {
                 Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
             }
@@ -400,7 +419,7 @@ struct EmailDetailView: View {
     /// nothing if a session boundary passes meanwhile (`runForward`).
     private func forward() {
         guard forwardTask == nil else { return }
-        let draft = ComposeDraft.forward(email)
+        let draft = ComposeDraft.forward(shown)
         let pendingListing = attachmentListing
         preparingForward = true
         forwardTask = Task {
@@ -448,6 +467,47 @@ struct EmailDetailView: View {
             }
             downloadingIndex = nil
         }
+    }
+
+    /// The row with the fetched body in place of a missing one: what the
+    /// screen renders and what Reply/Forward quote.
+    private var shown: Email {
+        guard let fetchedBody else { return email }
+        var shown = email
+        shown.body = fetchedBody.body
+        if !fetchedBody.bodyMode.isEmpty { shown.bodyMode = fetchedBody.bodyMode }
+        return shown
+    }
+
+    /// Fetches the body of a row that arrived without one (older mail). A
+    /// failure says so instead of rendering an empty message.
+    private func loadBodyIfNeeded() async {
+        guard fetchedBody == nil, MailRepository.needsBodyFetch(email) else { return }
+        isFetchingBody = true
+        bodyFetchFailure = nil
+        do {
+            fetchedBody = try await inboxViewModel.loadBody(for: email)
+        } catch {
+            bodyFetchFailure = MailOutcome.from(error).userMessage
+                ?? String(localized: "Unable to connect to the mail server.")
+        }
+        isFetchingBody = false
+    }
+
+    private func bodyFetchFailureView(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(message)
+                .font(AppFont.ui(13))
+                .foregroundStyle(theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Try again") {
+                Task { await loadBodyIfNeeded() }
+            }
+            .font(AppFont.ui(12, weight: .medium))
+            .buttonStyle(.borderless)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
     }
 
     /// Builds the reader and decrypts immediately when the key is already
@@ -673,7 +733,7 @@ struct EmailDetailView: View {
     /// `bodyMode` when it sent one — sniffing a body the server has already
     /// described is what this replaced. See EmailBodyRendering.swift.
     private var rendersAsPlainText: Bool {
-        isPlainTextBody(email.body, mode: email.bodyMode)
+        isPlainTextBody(shown.body, mode: shown.bodyMode)
     }
 
     private var isPhishing: Bool { isFlaggedPhishing(email.keywords) }
@@ -711,7 +771,7 @@ struct EmailDetailView: View {
         pgpMessageState(
             pgpEncrypted: email.pgpEncrypted,
             pgpDecryptError: email.pgpDecryptError,
-            body: email.body
+            body: shown.body
         )
     }
 

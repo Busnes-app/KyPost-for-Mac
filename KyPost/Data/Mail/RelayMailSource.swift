@@ -7,6 +7,8 @@
 //  against the live backend 2026-07-10. Pairing auth (deviceId/deviceSecret)
 //  travels as headers (RelayAuth.headerFields), not query params:
 //    GET  /api/inbox?limit&mailbox&since
+//    GET  /api/inbox?limit&mailbox&before&bodies=0  (older mail, one page)
+//    GET  /api/mail/body?mailbox&messageId
 //    GET  /api/inbox/folders
 //    POST /api/mail/send  (encrypt/sign/allowPickupFallback — Client_Encrypted_Send.md)
 //    POST /api/mail/draft (same shape as send, minus the PGP flags)
@@ -158,7 +160,15 @@ struct RelayInboxResponse: Decodable, Sendable {
     var byTab: [String: [RelayEmailDTO]]?
     var cursor: FlexibleCursor?
     var delta: Bool?
+    /// Left the mailbox: delete.
     var removed: [String]?
+    /// Fell below the window and still exists: keep (KyPost-Server #349).
+    var agedOut: [String]?
+    /// On a delta: new mail lies below the window. On a `before=` page: there
+    /// is older mail still. Absent on a relay predating #348/#349 — and on a
+    /// `before=` request that absence is how an old server is recognised.
+    var hasMore: Bool?
+    var nextBefore: String?
 
     /// Flattens the per-tab groups; each email keeps its tab as a keyword.
     /// Sorted newest first — the per-tab dictionary has no stable iteration
@@ -181,6 +191,14 @@ struct RelayInboxResponse: Decodable, Sendable {
             }
             .sorted { $0.receivedAt > $1.receivedAt }
     }
+}
+
+/// GET /api/mail/body: `{body, bodyMode}` and nothing else. An absent
+/// `bodyMode` is "the server could not tell", not plain — see
+/// EmailBodyRendering.swift.
+struct RelayMessageBodyResponse: Decodable, Sendable {
+    var body: String?
+    var bodyMode: String?
 }
 
 struct RelayFolderDTO: Decodable, Equatable, Sendable {
@@ -444,8 +462,57 @@ final class RelayMailSource: MailSource {
             removedIds: response.removed ?? [],
             // Derived from what we asked for, never from the wire's `delta`
             // flag — see MailFetchResult.isFullWindow.
-            isFullWindow: sinceValue == "0"
+            isFullWindow: sinceValue == "0",
+            agedOutIds: response.agedOut ?? [],
+            hasMore: response.hasMore ?? false,
+            nextBefore: response.nextBefore
         )
+    }
+
+    func fetchOlder(folder: String, limit: Int, before: String) async throws -> MailPage {
+        let response = try await httpClient.get(
+            RelayInboxResponse.self,
+            url: try endpoint("api/inbox"),
+            query: [
+                URLQueryItem(name: "limit", value: String(max(limit, 1))),
+                URLQueryItem(name: "mailbox", value: folder),
+                URLQueryItem(name: "before", value: before),
+                // A page is metadata only. A server that ignores before=
+                // answers with its window, bodies included unless told not to.
+                URLQueryItem(name: "bodies", value: "0"),
+            ],
+            headers: auth.headerFields
+        )
+        return MailPage(
+            emails: response.allEmails(folder: folder),
+            hasMore: response.hasMore,
+            nextBefore: response.nextBefore
+        )
+    }
+
+    func fetchBody(folder: String, messageId: String) async throws -> MailMessageBody {
+        do {
+            let response = try await httpClient.get(
+                RelayMessageBodyResponse.self,
+                url: try endpoint("api/mail/body"),
+                query: [
+                    URLQueryItem(name: "mailbox", value: folder),
+                    URLQueryItem(name: "messageId", value: messageId),
+                ],
+                headers: auth.headerFields
+            )
+            return MailMessageBody(body: response.body ?? "", bodyMode: response.bodyMode ?? "")
+        } catch NetworkError.server(statusCode: 404) {
+            // Both of these arrived and were answered definitively; telling
+            // the user to check their connection would be a lie.
+            throw MailSourceError.messageUnavailable(
+                String(localized: "This message is no longer on the server.")
+            )
+        } catch NetworkError.server(statusCode: 413) {
+            throw MailSourceError.messageUnavailable(
+                String(localized: "This message is too large for the server to open.")
+            )
+        }
     }
 
     func search(folder: String, query: String) async throws -> [String] {

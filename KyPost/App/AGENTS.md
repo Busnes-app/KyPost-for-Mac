@@ -56,7 +56,8 @@ A `UserDefaults`-backed store that goes memory-only under the mode erases its
 persisted copy there; switching reads to memory does not remove it.
 
 `shutdown()` also **drops** the inbox's held list actions (the undo window)
-rather than sending them: the superseded graph's session is cancelled, and a
+and its older-mail paging state (`InboxViewModel.forgetAccount`) rather than
+sending them: the superseded graph's session is cancelled, and a
 rebuild is a Hostile Location Protection switch or a wipe. The lock sites
 (`PushLifecycle.onBackground`, the macOS screen-lock observer) instead
 **commit** them — on iOS the `didEnterBackgroundNotification` observer in

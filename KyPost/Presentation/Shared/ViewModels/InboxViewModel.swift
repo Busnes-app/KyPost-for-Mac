@@ -81,6 +81,13 @@ final class InboxViewModel {
     private var undoTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
 
+    /// "Load older mail", per folder: where the next page starts (the last
+    /// page's `nextBefore`), folders with nothing older left (or a server
+    /// that cannot page), and folders with a page in flight.
+    private var olderFrontier: [String: String] = [:]
+    private var olderExhausted: Set<String> = []
+    private var loadingOlder: Set<String> = []
+
     private var refreshTask: Task<Void, Never>?
     private var delayedRefreshErrorTask: Task<Void, Never>?
     private var initialRefreshRetryTask: Task<Void, Never>?
@@ -134,6 +141,14 @@ final class InboxViewModel {
     var showsTabStrip: Bool {
         showsAllTab || !tabs.isEmpty
     }
+
+    /// The "Load older mail" footer: below a non-empty list, until the folder
+    /// has nothing older or its server cannot page.
+    var showsLoadOlder: Bool {
+        !emails.isEmpty && !olderExhausted.contains(folder)
+    }
+
+    var isLoadingOlder: Bool { loadingOlder.contains(folder) }
 
     /// Sent or Drafts when the folder on screen resolved to one of them.
     var currentSpecialFolder: SpecialFolder? {
@@ -392,6 +407,16 @@ final class InboxViewModel {
         undoHeldActions()
     }
 
+    /// Everything this view model holds about the account, for a security
+    /// wipe, an unpair, or a graph rebuild: held actions are dropped (see
+    /// `discardHeldActions`) and the older-mail paging state is forgotten — its
+    /// frontiers are message ids of an account this device no longer shows.
+    func forgetAccount() {
+        discardHeldActions()
+        olderFrontier = [:]
+        olderExhausted = []
+    }
+
     private func finish(_ entry: HeldMailAction, with result: MailActionResult) {
         inFlightKeys.subtract(entry.keys)
         let confirmed = Set(result.confirmedIds)
@@ -402,6 +427,53 @@ final class InboxViewModel {
         if let message = result.failureMessage {
             showNotice(message)
         }
+    }
+
+    // MARK: - Older mail
+
+    /// Loads one page of mail older than the list, from the server's last
+    /// `nextBefore` or, for the first page, from the oldest row held. The
+    /// footer hides once nothing older is left, and for good on a server that
+    /// cannot page; a page that lands after a folder switch is not painted.
+    func loadOlderMail() async {
+        let requested = folder
+        guard !loadingOlder.contains(requested) else { return }
+        loadingOlder.insert(requested)
+        defer { loadingOlder.remove(requested) }
+        let outcome = await mailRepository.loadOlder(folder: requested, frontier: olderFrontier[requested])
+        var message: String?
+        switch outcome {
+        case .loaded(let next):
+            if let next {
+                olderFrontier[requested] = next
+            } else {
+                olderFrontier[requested] = nil
+                olderExhausted.insert(requested)
+            }
+        case .nothingToPageFrom:
+            olderExhausted.insert(requested)
+        case .unsupported(let text):
+            olderExhausted.insert(requested)
+            message = text
+        case .failed(let text, let staleAnchor):
+            // A stale frontier answers 400 forever; start again from the
+            // oldest row. Any other failure retries the same page.
+            if staleAnchor { olderFrontier[requested] = nil }
+            message = text
+        }
+        guard requested == folder else { return }
+        if case .loaded = outcome,
+           let rows = try? await mailRepository.cachedFolder(requested),
+           requested == folder {
+            apply(emails: rows)
+        }
+        if let message { showNotice(message) }
+    }
+
+    /// The body to show for a row that arrived without one (older mail),
+    /// fetched from the relay; nil when the row's own body stands.
+    func loadBody(for email: Email) async throws -> MailMessageBody? {
+        try await mailRepository.loadBody(for: email)
     }
 
     // MARK: - Detail-screen actions (not undoable)

@@ -336,12 +336,19 @@ struct MacRootView: View {
                 .frame(maxHeight: .infinity, alignment: .top)
             } else {
                 ScrollViewReader { proxy in
-                    List(inboxViewModel.filteredEmails, selection: cappedSelection) { email in
-                        EmailListRow(email: email)
-                            .draggable(dragPayload(for: email))
-                            .tag(email)
-                            .listRowBackground(theme.bg)
-                            .listRowSeparatorTint(theme.line)
+                    List(selection: cappedSelection) {
+                        ForEach(inboxViewModel.filteredEmails) { email in
+                            EmailListRow(email: email)
+                                .draggable(dragPayload(for: email))
+                                .tag(email)
+                                .listRowBackground(theme.bg)
+                                .listRowSeparatorTint(theme.line)
+                        }
+                        if inboxViewModel.showsLoadOlder {
+                            LoadOlderFooter(isLoading: inboxViewModel.isLoadingOlder) {
+                                Task { await inboxViewModel.loadOlderMail() }
+                            }
+                        }
                     }
                     // Single click selects (fills the preview pane when shown);
                     // double click / primaryAction pops the email out.

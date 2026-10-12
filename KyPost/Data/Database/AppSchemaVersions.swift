@@ -8,7 +8,8 @@
 //  ContactEntity and the five pgp columns to EmailEntity
 //  (Client_PGP_Update.md); V4 adds bodyMode/hasAttachments to EmailEntity;
 //  V5 adds GroupEntity; V6 adds isSelf to ContactEntity; V7 keys EmailEntity
-//  on (folder, serverId) instead of serverId alone.
+//  on (folder, serverId) instead of serverId alone; V8 adds inWindow to
+//  EmailEntity.
 //  The stages are lightweight: V2 renames email/phone
 //  to legacyEmail/legacyPhone via originalName and adds every new field with a
 //  default. The legacy→array data copy happens in app code
@@ -427,6 +428,73 @@ enum AppSchemaV7: VersionedSchema {
         // AppEnvironment discards it — mail lives on the server, and the cache
         // refills from an empty folder (MailRepository.refreshFolder).
         [
+            AppSchemaV7.EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
+            KeywordEntity.self, GroupEntity.self,
+        ]
+    }
+
+    /// Snapshot of EmailEntity keyed on (folder, serverId), before V8's
+    /// `inWindow`. Nested so the entity name stays "EmailEntity".
+    @Model
+    final class EmailEntity {
+        #Unique<EmailEntity>([\.folder, \.serverId])
+
+        var serverId: String
+        var folder: String
+        var senderName: String
+        var senderEmail: String
+        var subject: String
+        var body: String
+        var sentTo: String = ""
+        var cc: String = ""
+        var keywords: [String]
+        var receivedAt: Date
+        var read: Bool
+        var starred: Bool
+        var bodyMode: String = ""
+        var hasAttachments: Bool = false
+        var pgpEncrypted: Bool = false
+        var pgpSigned: Bool = false
+        var pgpVerified: Bool = false
+        var pgpSignerFingerprint: String = ""
+        var pgpDecryptError: String = ""
+        var createdAt: Date
+
+        init(
+            serverId: String,
+            folder: String,
+            senderName: String,
+            senderEmail: String,
+            subject: String,
+            body: String,
+            keywords: [String],
+            receivedAt: Date,
+            read: Bool,
+            starred: Bool,
+            createdAt: Date = Date()
+        ) {
+            self.serverId = serverId
+            self.folder = folder
+            self.senderName = senderName
+            self.senderEmail = senderEmail
+            self.subject = subject
+            self.body = body
+            self.keywords = keywords
+            self.receivedAt = receivedAt
+            self.read = read
+            self.starred = starred
+            self.createdAt = createdAt
+        }
+    }
+}
+
+enum AppSchemaV8: VersionedSchema {
+    static let versionIdentifier = Schema.Version(8, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        // EmailEntity gains inWindow, defaulting to true: every row cached
+        // before it came from the window.
+        [
             EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
             KeywordEntity.self, GroupEntity.self,
         ]
@@ -438,7 +506,7 @@ enum AppMigrationPlan: SchemaMigrationPlan {
         [
             AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self,
             AppSchemaV4.self, AppSchemaV5.self, AppSchemaV6.self,
-            AppSchemaV7.self,
+            AppSchemaV7.self, AppSchemaV8.self,
         ]
     }
 
@@ -450,6 +518,7 @@ enum AppMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
             .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self),
             .lightweight(fromVersion: AppSchemaV6.self, toVersion: AppSchemaV7.self),
+            .lightweight(fromVersion: AppSchemaV7.self, toVersion: AppSchemaV8.self),
         ]
     }
 }

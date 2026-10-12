@@ -64,6 +64,24 @@
     "  ·  Copyright © 2026 Busnes.app" : {
 
     },
+    "Couldn't save older mail on this device. Free up storage and try again." : {
+
+    },
+    "Load older mail" : {
+
+    },
+    "The server reported more new mail than it would page." : {
+
+    },
+    "This message is no longer on the server." : {
+
+    },
+    "This message is too large for the server to open." : {
+
+    },
+    "This server can't load older mail. Update KyPost Server to use this." : {
+
+    },
     "Accept" : {
 
     },

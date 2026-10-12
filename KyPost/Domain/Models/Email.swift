@@ -47,6 +47,10 @@ struct Email: Identifiable, Hashable, Sendable {
     /// against a contact's saved key, which belongs with the contacts work.
     var pgpSignerFingerprint: String = ""
     var pgpDecryptError: String = ""
+    /// False for a row older than the relay's window (paged in, or reported
+    /// `agedOut`). Such a row carries no body, attachment or PGP flags of its
+    /// own; see `MailRepository.loadBody`.
+    var inWindow: Bool = true
 
     /// (folder, id), never the id alone — see `MailRowKey`.
     var id: MailRowKey { MailRowKey(folder: folder, serverId: serverId) }

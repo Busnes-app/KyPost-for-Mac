@@ -624,9 +624,42 @@ old sentence edited out.
   `delta` flag.** A relay predating the matching server fix labels a `since=0`
   response `delta: true` all the same, and only a full window can say what is
   *absent*.
-- **Only a full window may prune.** A partial delta describes what changed;
-  everything it omits is still legitimately in the mailbox. Pruning against one
-  deletes the folder.
+- **Only a full window may prune, and only window rows.** A partial delta
+  describes what changed; everything it omits is still legitimately in the
+  mailbox. Pruning against one deletes the folder.
+- **Mail older than the window is kept** (KyPost-Server `before=` paging and
+  `agedOut`/`hasMore`/`nextBefore`; Android #183). `EmailEntity.inWindow` is
+  false for rows paged in by "Load older mail" (`MailRepository.loadOlder`) or
+  reported `agedOut`, and no snapshot prunes them; `removed` still deletes any
+  row. A full window first takes absent rows dated before its oldest row out
+  of the window (they aged out unreported) and prunes only absent rows inside
+  its range. A page is metadata only: a held row takes just its read state and
+  labels, a new one is stored bodiless and out of the window.
+- **Every `/api/inbox` request uses `MailRepository.windowLimit` (50).** The
+  relay keeps a window and cursor per `limit`; a cursor sent with another limit
+  is one that window never issued.
+- **A delta with `hasMore` is walked before its cursor is committed** (deltas
+  only, never a full window): `before=nextBefore` pages until one holds an id
+  the folder already had, then window and pages are written in one
+  `EmailDAO.reconcile` save (rolled back on error), then the cursor. A failed
+  or contradictory walk — no usable `nextBefore`, a page without `hasMore` —
+  throws, stores nothing (not even the window: a stored row would count as
+  held and the retry would stop at it) and keeps the old cursor. ponytail: the
+  walk stops after `maxOverflowPages` (20) and commits.
+- **A `before=` answer without `hasMore` is a server that ignored it** (its
+  newest window, not older mail): stored nothing, "This server can't load older
+  mail…", and the footer hides for that folder. A 400 there is a stale anchor:
+  the next press starts again from the oldest row held.
+- **A row without a body fetches one on open** (`GET /api/mail/body`,
+  `MailRepository.loadBody`): blank body and not `pgpEncrypted` — a blank
+  encrypted row is the client-protected shape and keeps its decrypt path. The
+  fetched body is cached only on a window row; a page carries no PGP flags, so
+  an out-of-window row fetches again on every open. 404 and 413 are their own
+  sentences, never "couldn't reach the server".
+- Known gaps, all needing server help: out-of-window rows never learn of a
+  deletion (opening one says it is gone) and are not healed after a
+  UIDVALIDITY reset; encrypted mail stored from a page has no PGP flags, so it
+  opens through `/api/mail/body` with no decrypt path.
 - **An "updated" row carries no body.** Merge into the existing row and keep
   the cached body; a blank incoming `bodyMode` never overwrites a known one. If
   there is no existing row, **skip it** — storing it creates a row whose empty

@@ -69,8 +69,15 @@ struct InboxView: View {
                 .refreshable { await viewModel.refresh() }
             } else {
                 ScrollViewReader { proxy in
-                    List(viewModel.filteredEmails, selection: cappedSelection) { email in
-                        row(for: email)
+                    List(selection: cappedSelection) {
+                        ForEach(viewModel.filteredEmails) { email in
+                            row(for: email)
+                        }
+                        if viewModel.showsLoadOlder, !isSelecting {
+                            LoadOlderFooter(isLoading: viewModel.isLoadingOlder) {
+                                Task { await viewModel.loadOlderMail() }
+                            }
+                        }
                     }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)

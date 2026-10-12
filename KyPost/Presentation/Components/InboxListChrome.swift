@@ -3,7 +3,8 @@
 //  KyPost
 //
 //  The small pieces around the mail list that both shells share: the
-//  freshness line, the Undo bar, and the "N new messages" pill.
+//  freshness line, the Undo bar, the "N new messages" pill, and the "Load
+//  older mail" footer.
 //
 
 import SwiftUI
@@ -80,6 +81,36 @@ struct NewMailPill: View {
         .buttonStyle(.plain)
         .padding(.top, 8)
         .accessibilityAddTraits(.updatesFrequently)
+    }
+}
+
+/// "Load older mail", the last row of the list. Not selectable and not
+/// swipeable: it is a control, not a message.
+struct LoadOlderFooter: View {
+    @Environment(\.theme) private var theme
+
+    let isLoading: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+            if isLoading {
+                ProgressView().controlSize(.small)
+            } else {
+                Button(action: action) {
+                    Text("Load older mail")
+                        .font(AppFont.ui(13, weight: .medium))
+                        .foregroundStyle(theme.accent)
+                }
+                .buttonStyle(.borderless)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 8)
+        .listRowBackground(theme.bg)
+        .listRowSeparator(.hidden)
+        .selectionDisabled()
     }
 }
 

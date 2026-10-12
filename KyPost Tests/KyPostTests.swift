@@ -146,12 +146,13 @@ private func makeEmail(
         let rest = try await dao.getFolder(folder: "INBOX", limit: 2, offset: 2)
         #expect(rest.map(\.serverId) == ["1"])
 
-        // A fresh snapshot replaces stale rows for that folder only.
+        // A fresh snapshot replaces stale rows inside its date range, for that
+        // folder only.
         try await dao.replaceFolderSnapshot(folder: "Archive", emails: [
             makeEmail(serverId: "a1", folder: "Archive"),
         ])
         try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [
-            makeEmail(serverId: "3", subject: "Newest"),
+            makeEmail(serverId: "3", subject: "Newest", receivedAt: now.addingTimeInterval(-300)),
         ])
         #expect(try await dao.getFolder(folder: "INBOX", limit: 10).count == 1)
         #expect(try await dao.getFolder(folder: "Archive", limit: 10).count == 1)
