@@ -33,6 +33,9 @@ final class EncryptedReadViewModel {
 
     /// Quick Look files staged from `body.attachments`, deleted by `forget()`.
     private var stagedFiles: [URL] = []
+    /// Advanced by `forget()`. A read that started under an earlier value
+    /// finished after the plaintext was meant to be gone, and is discarded.
+    private var generation = 0
     private let files: DecryptedAttachmentFiles
 
     private let reader: EncryptedMessageReader?
@@ -164,6 +167,7 @@ final class EncryptedReadViewModel {
         guard let reader, !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
+        let started = generation
 
         let result = await reader.read(
             mailbox: mailbox,
@@ -171,6 +175,9 @@ final class EncryptedReadViewModel {
             sender: sender,
             unlockIfNeeded: unlockIfNeeded
         )
+        // `forget()` ran meanwhile (the lock engaged, or the screen went):
+        // keep nothing, and leave Decrypt on offer.
+        guard generation == started else { return }
         outcome = result
 
         if case .decrypted(let body, let signature, let resolvedSender) = result {
@@ -183,6 +190,7 @@ final class EncryptedReadViewModel {
     /// Drops the plaintext. Called when the view goes away, so a decrypted
     /// message does not survive navigating back to the list.
     func forget() {
+        generation &+= 1
         for url in stagedFiles { files.remove(url) }
         stagedFiles = []
         body = nil

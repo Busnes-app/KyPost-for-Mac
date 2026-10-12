@@ -337,7 +337,8 @@ is the server's pin, not this device's.
   `forget()`. Save As goes only where the user picks, and is refused under
   Hostile Location Protection like any attachment. When the app lock engages
   the reader closes the preview and the save panel and calls `forget()`;
-  Decrypt is offered again after unlock.
+  Decrypt is offered again after unlock. `forget()` also voids a read still
+  in flight, so a decrypt finishing after it keeps nothing.
 - **`cid:` images become `data:` URIs** (`InlineImages`) for png/jpeg/gif/webp
   only, within 128 KiB per message; anything else keeps its unresolvable
   `cid:`. `data:` images render with `loadsSubresources` off (verified against

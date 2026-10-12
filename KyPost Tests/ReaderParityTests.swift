@@ -191,6 +191,15 @@ private struct OnePayload: PgpPayloadSource {
     }
 }
 
+/// Holds the fetch until the test opens the gate.
+private struct GatedPayload: PgpPayloadSource {
+    let gate: AsyncGate
+    func fetch(mailbox: String, messageId: String) async throws -> PgpPayloadResult {
+        await gate.wait()
+        return .success(PgpPayload(encryptedPayload: "CIPHERTEXT", resolvedSender: "a@example.com"))
+    }
+}
+
 private struct PlaintextCrypto: PgpDecrypting {
     var mime: String
     func decrypt(armoredCiphertext: String, privateKeys: [Data], signerKeys: [String]) throws -> DecryptedMessage {
@@ -270,6 +279,37 @@ JVBERg==\r
         subject.forget()
         #expect(!FileManager.default.fileExists(atPath: second.path))
         #expect(subject.body == nil)
+    }
+
+    /// A read still in flight when `forget()` runs (the lock engaging) keeps
+    /// nothing when it finishes.
+    @Test func aReadFinishingAfterForgetKeepsNoPlaintext() async {
+        let gate = AsyncGate()
+        let subject = EncryptedReadViewModel(
+            reader: EncryptedMessageReader(
+                opener: OpenedVault(),
+                payloads: GatedPayload(gate: gate),
+                crypto: PlaintextCrypto(mime: mixedMime),
+                pins: .none,
+                session: EnrollmentSession()
+            ),
+            mailbox: "INBOX",
+            messageId: "1",
+            sender: "a@example.com"
+        )
+        let read = Task { @MainActor in await subject.decrypt() }
+        await gate.waitUntilWaiting()
+        subject.forget()
+        await gate.open()
+        await read.value
+        #expect(subject.body == nil)
+        #expect(subject.renderedHTML == nil)
+        #expect(subject.resolvedSender.isEmpty)
+        #expect(subject.outcome == nil)
+        #expect(subject.showsDecryptButton)
+        // A deliberate read afterwards still works.
+        await subject.decrypt()
+        #expect(subject.body != nil)
     }
 
     /// Only this message's own parts can be staged.
