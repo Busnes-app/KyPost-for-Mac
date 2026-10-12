@@ -346,6 +346,26 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
         #expect(viewModel.searchQuery == nil)
         #expect(viewModel.searchResults == nil)
     }
+
+    /// A search still in flight when the account is forgotten answers with
+    /// the forgotten account's mail: it never lands.
+    @Test @MainActor func aSearchInFlightAcrossLeavingTheAccountNeverLands() async throws {
+        let relay = SearchRelay()
+        relay.search.value = { _ in (200, results(["7"])) }
+        relay.gated.value = ["slow"]
+        let (viewModel, _) = try makeInbox(relay)
+
+        let search = Task { await viewModel.submitSearch("slow") }
+        #expect(await eventually { relay.searchQueries.count == 1 })
+        viewModel.forgetAccount()
+        relay.gated.value = []
+        await search.value
+
+        #expect(viewModel.searchQuery == nil)
+        #expect(viewModel.searchResults == nil)
+        #expect(!viewModel.isSearchInFlight)
+        #expect(!viewModel.filteredEmails.contains { $0.serverId == "7" })
+    }
 }
 
 // MARK: - Opening a result
