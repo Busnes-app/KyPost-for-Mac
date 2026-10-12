@@ -132,7 +132,8 @@ final class SingletonGraph {
                 serverUrl: pairing.srv,
                 auth: RelayAuth(pairing: pairing)
             ),
-            crypto: pgpCrypto
+            crypto: pgpCrypto,
+            pins: recipientPinStore.snapshot(revocation: pgpCrypto)
         )
     }
 
@@ -152,6 +153,7 @@ final class SingletonGraph {
                 httpClient: httpClient, serverUrl: pairing.srv, auth: auth
             ),
             crypto: pgpCrypto,
+            pins: recipientPinStore.snapshot(revocation: pgpCrypto),
             accountAddress: accountAddress
         )
     }
@@ -291,7 +293,13 @@ final class SingletonGraph {
         photoCache: contactPhotoCache,
         verifiedKeyStore: verifiedPgpKeyStore,
         groupsClient: groupsSyncClient,
-        groupDAO: groupDAO
+        groupDAO: groupDAO,
+        recipientPins: recipientPinStore,
+        keyRevocation: pgpCrypto
+    )
+    lazy var recipientPinStore = RecipientPinStore(
+        defaults: userDefaults,
+        hostileLocation: hostileLocationProtectionStore
     )
     lazy var groupsSyncClient = GroupsSyncClient(httpClient: httpClient)
     lazy var groupDAO = GroupDAO(modelContainer: database.container)

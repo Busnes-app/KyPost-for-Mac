@@ -220,6 +220,58 @@ Each rule below is a defect someone already found once.
   checked first, then `pgpStateChanged` — and are their own `ClientSendOutcome`
   rows, each with its own sentence naming re-enrollment. Never by prose.
 
+### Keys pinned on this device (`Data/Storage/RecipientPinStore.swift`)
+
+The minimal port of Android's `recipient_pins` (#191). This client had no
+per-address on-device pin before — `VerifiedPgpKeyStore` is per-uid memory for
+holding a synced key change for review, and the relay's TOFU (`key_changed`)
+is the server's pin, not this device's.
+
+- **A key verified here by QR is authoritative for its addresses.** The QR
+  save (`saveContact(_:verifiedInPerson: true)`) pins the contact's key for
+  each of its emails, replacing what was pinned; re-scanning is how a pin
+  changes. A contact with no email gets no pin. Sync never writes a pin.
+- **The one thing a synced copy may do is revoke it**, recorded on every
+  contact write (sync and local), never on a lookup:
+  `PgpKeyRevocation.withVerifiedRevocation` takes only revocation signatures of
+  the pinned primary or of a subkey the pin holds, from a copy of the same
+  primary, each verified against the pinned primary; nothing else crosses.
+  `OpenPgpKeySections` moves packets and decides nothing. GopenPGP cannot
+  verify a lone certification, so a candidate is kept only if it observably
+  revokes (primary: `isRevoked`; subkey: a single-subkey copy loses encrypt or
+  verify). A signing-subkey revocation whose role the primary also fills is
+  therefore not taken — conservative, and recorded here as the known gap.
+- **Reader:** where the resolved sender is pinned, the pin replaces the relay's
+  `signerKeys` (`EncryptedMessageReader.signerKeys`) — intact is the only key
+  and reads `verifiedConfirmed`; revoked or broken is a conflict, so a signed
+  message reads `keyChanged`. Keyed on `resolvedSender`, never a parsed `From`.
+- **Sender:** `ClientEncryptedSender.applyPins` runs after resolve and before
+  the vault opens. Revoked → `recipientKeyRevoked` ("verify the new key by
+  QR"); broken, or a relay key whose bytes fingerprint differently →
+  `keyChanged`; a match encrypts to the pinned bytes.
+- A pin is trusted only while its bytes fingerprint to the stored fingerprint
+  (`broken` otherwise, never "absent"). Pins are a `RecipientPinSnapshot`
+  value taken per reader/sender; `pins:` is deliberately not defaulted on
+  either. Memory-only under Hostile Location Protection, swept by the wipe,
+  cleared on unpair.
+
+### Contacts: sync status and vCard export
+
+- **Sync status** (`Domain/Models/ContactSyncStatus.swift`, Android #182):
+  waiting while named `needsSync` contacts or delete tombstones are queued;
+  stuck when one is over an hour old or three syncs in a row failed. Nameless
+  contacts are held back on purpose and are not counted. The failure count
+  lives in `ContactSyncRepository.health`, **in memory only**; not paired is
+  not a failure. The reason shown is the newest failure's first line, at most
+  200 characters.
+- **vCard** (`Utilities/VCard.swift`, Android #184): 4.0 or 3.0; every value
+  escaped and stripped of control characters by **unicode scalar** (C0, DEL,
+  C1, U+2028/2029 — wider than Android), so no field can start a property or a
+  second card; BDAY only for a real `YYYY-MM-DD`; the server uid is never
+  written. Shared through `ShareLink` over a `DataRepresentation`, so this app
+  writes no file; refused under Hostile Location Protection with an
+  explanation (`VCardShareMenu`).
+
 ### Reading client-protected mail (`Domain/UseCases/EncryptedMessageReader.swift`)
 
 - **The decrypted body is never persisted.** Not to SwiftData, not to the

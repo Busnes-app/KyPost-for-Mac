@@ -92,6 +92,14 @@ struct ContactDetailView: View {
                 .disabled(draft.name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         } else {
+            if contact != nil {
+                ToolbarItem {
+                    // The draft, not `contact`: after an edit it is what was saved.
+                    VCardShareMenu(contacts: [draft]) {
+                        Label("Share as vCard", systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Edit") { isEditing = true }
             }

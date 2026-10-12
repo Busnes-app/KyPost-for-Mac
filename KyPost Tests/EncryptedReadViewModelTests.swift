@@ -56,6 +56,7 @@ private func model(
             opener: StubOpener(outcome: opener),
             payloads: StubPayloads(result: payload),
             crypto: crypto,
+            pins: .none,
             session: EnrollmentSession()
         ),
         mailbox: "INBOX",

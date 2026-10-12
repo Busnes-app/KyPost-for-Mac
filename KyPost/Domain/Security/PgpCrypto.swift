@@ -143,6 +143,24 @@ protocol PgpEncrypting: Sendable {
     func ownPublicKey(privateKey: Data) throws -> String
 }
 
+/// Revocation of keys pinned on this device (Android #191).
+///
+/// A key verified here by QR is authoritative for its address; the one thing a
+/// synced copy of it may do is revoke it.
+protocol PgpKeyRevocation: Sendable {
+    /// `pinned` with the revocations taken from `synced`, or nil when there is
+    /// none to take. `synced` must be a copy of the **same primary key**; it
+    /// may revoke that primary or a subkey the pin already holds, and each
+    /// revocation must verify against the pinned primary. Only those
+    /// signatures cross — no subkey, user id or other material — so a synced
+    /// copy can withdraw pinned keys but never change what they are.
+    func withVerifiedRevocation(pinned: String, synced: String) -> String?
+
+    /// The primary key carries a revocation that verifies against it. A
+    /// revocation packet alone is not enough.
+    func isPrimaryRevoked(armoredPublicKey: String) -> Bool
+}
+
 /// The cap applied before allocating decompressed plaintext.
 let maxDecompressedPlaintextBytes = 32 * 1024 * 1024
 
@@ -152,7 +170,12 @@ let maxDecompressedPlaintextBytes = 32 * 1024 * 1024
 /// returns nothing is indistinguishable from a client-protected message the
 /// user must open in webmail, and that is precisely the confusion the message
 /// states exist to avoid.
-struct UnavailablePgpCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspecting {
+struct UnavailablePgpCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspecting, PgpKeyRevocation {
+    func withVerifiedRevocation(pinned: String, synced: String) -> String? { nil }
+
+    /// Fails closed: a pin whose revocation cannot be checked is not usable.
+    func isPrimaryRevoked(armoredPublicKey: String) -> Bool { true }
+
     func decrypt(
         armoredCiphertext: String,
         privateKeys: [Data],

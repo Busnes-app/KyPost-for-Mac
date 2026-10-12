@@ -22,7 +22,7 @@ import Gopenpgp
 /// leaks a `Gopenpgp` type. Errors from the library are deliberately not
 /// forwarded verbatim — the caller renders an exit-table row, and a Go error
 /// string is not that.
-nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspecting {
+nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspecting, PgpKeyRevocation {
 
     /// gomobile's encoding selector. 0 is "detect", which accepts both the
     /// armored and the binary form; mail carries armored, and a stored draft
@@ -332,6 +332,69 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         let armored = ArmorArmorWithType(binary, Self.privateKeyBlock, &armorError)
         guard armorError == nil, !armored.isEmpty else { return nil }
         return Data(armored.utf8)
+    }
+
+    // MARK: - Pinned-key revocation
+
+    /// GopenPGP exposes no way to verify one certification packet, so each
+    /// candidate is checked by what it **does** to a key: a primary
+    /// revocation must make the pinned key read revoked (`IsRevoked` verifies
+    /// against the primary), and a subkey revocation must take away an
+    /// ability — encrypt or verify — from a copy of the pin holding only that
+    /// subkey. A signature that changes nothing is not taken. That is
+    /// conservative: a genuine revocation of a signing subkey whose role the
+    /// primary also fills cannot be told apart from a forged one this way, so
+    /// it is not taken either.
+    func withVerifiedRevocation(pinned: String, synced: String) -> String? {
+        guard let pinnedSections = OpenPgpKeySections(armored: pinned),
+              let syncedSections = OpenPgpKeySections(armored: synced),
+              let pinnedKey = CryptoKey(fromArmored: pinned),
+              let syncedKey = CryptoKey(fromArmored: synced),
+              !pinnedKey.getFingerprint().isEmpty,
+              pinnedKey.getFingerprint() == syncedKey.getFingerprint(),
+              let candidates = pinnedSections.revocationCandidates(from: syncedSections),
+              !candidates.isEmpty
+        else { return nil }
+
+        let now = Int64(Date().timeIntervalSince1970)
+        var taken: [OpenPgpKeySections.Candidate] = []
+        for candidate in candidates {
+            switch candidate.target {
+            case .primary:
+                guard !pinnedKey.isRevoked(now),
+                      let revoked = Self.key(pinnedSections.adding([candidate])),
+                      revoked.isRevoked(now)
+                else { continue }
+                taken.append(candidate)
+            case .subkey(let index):
+                let isolated = pinnedSections.isolating(subkey: index)
+                let moved = OpenPgpKeySections.Candidate(target: .subkey(0), signature: candidate.signature)
+                guard let before = Self.key(isolated),
+                      let after = Self.key(isolated.adding([moved]))
+                else { continue }
+                let lostEncrypt = before.canEncrypt(now) && !after.canEncrypt(now)
+                let lostVerify = before.canVerify(now) && !after.canVerify(now)
+                guard lostEncrypt || lostVerify else { continue }
+                taken.append(candidate)
+            }
+        }
+        guard !taken.isEmpty else { return nil }
+
+        var error: NSError?
+        let armored = ArmorArmorKey(pinnedSections.adding(taken).data, &error)
+        guard error == nil, !armored.isEmpty,
+              CryptoKey(fromArmored: armored)?.getFingerprint() == pinnedKey.getFingerprint()
+        else { return nil }
+        return armored
+    }
+
+    func isPrimaryRevoked(armoredPublicKey: String) -> Bool {
+        guard let key = CryptoKey(fromArmored: armoredPublicKey) else { return false }
+        return key.isRevoked(Int64(Date().timeIntervalSince1970))
+    }
+
+    private static func key(_ sections: OpenPgpKeySections) -> CryptoKey? {
+        CryptoKey(sections.data)
     }
 
     // MARK: - Private

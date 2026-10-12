@@ -87,6 +87,9 @@ final class VerifiedPgpKeyStore {
 /// `{uid, deleted: true}` in the next sync request delta, then cleared.
 final class ContactPendingDeletesStore {
     private static let key = "contacts.pendingDeletes"
+    /// When the oldest tombstone still queued was added — the outbox age the
+    /// contacts list reports as "stuck".
+    private static let sinceKey = "contacts.pendingDeletes.since"
 
     private let defaults: UserDefaults
 
@@ -98,14 +101,20 @@ final class ContactPendingDeletesStore {
         defaults.stringArray(forKey: Self.key) ?? []
     }
 
-    func add(_ uid: String) {
+    func add(_ uid: String, now: Date = Date()) {
         var uids = all()
         guard !uids.contains(uid) else { return }
+        if uids.isEmpty { defaults.set(now, forKey: Self.sinceKey) }
         uids.append(uid)
         defaults.set(uids, forKey: Self.key)
     }
 
+    var oldestQueuedAt: Date? {
+        all().isEmpty ? nil : defaults.object(forKey: Self.sinceKey) as? Date
+    }
+
     func clear() {
         defaults.removeObject(forKey: Self.key)
+        defaults.removeObject(forKey: Self.sinceKey)
     }
 }

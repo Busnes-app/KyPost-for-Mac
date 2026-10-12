@@ -67,12 +67,14 @@ private func makeReader(
     payload: PgpPayloadResult = .success(PgpPayload(encryptedPayload: "CIPHERTEXT")),
     crypto: FakeCrypto = FakeCrypto(body: mimeBody),
     thrown: (any Error)? = nil,
+    pins: RecipientPinSnapshot = .none,
     session: EnrollmentSession
 ) -> EncryptedMessageReader {
     EncryptedMessageReader(
         opener: FakeOpener(outcome: opener),
         payloads: FakePayloads(result: payload, thrown: thrown),
         crypto: crypto,
+        pins: pins,
         session: session
     )
 }

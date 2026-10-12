@@ -79,6 +79,10 @@ Domain.
   `confirmWithDeviceAuth` and then uses
   `AppLockManager.disableLockAfterAuthentication`, so one prompt covers both
   changes.
+- **The contacts list carries `ContactSyncBanner`** on both platforms
+  (`safeAreaInset`), re-evaluated each minute because a change turns "stuck"
+  by age alone. Retry is `ContactsViewModel.sync()`. vCard export goes through
+  `VCardShareMenu` only — it owns the Hostile Location Protection refusal.
 - **Loosening a Security picker re-authenticates; tightening does not.** A
   longer lock delay or a higher wipe threshold (or Never) goes through
   `confirmWithDeviceAuth` first, like the *off* paths.

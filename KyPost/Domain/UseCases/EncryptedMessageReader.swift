@@ -51,19 +51,48 @@ nonisolated struct EncryptedMessageReader: Sendable {
     private let crypto: any PgpDecrypting
     private let session: EnrollmentSession
     private let mime: @Sendable (Data) -> DecryptedBody?
+    /// Keys verified on this device. Deliberately not defaulted: an empty
+    /// snapshot is "no pins", and a caller that forgot to pass them would
+    /// silently let the relay's key stand in for one the user verified.
+    private let pins: RecipientPinSnapshot
 
     init(
         opener: any VaultOpening,
         payloads: any PgpPayloadSource,
         crypto: any PgpDecrypting,
+        pins: RecipientPinSnapshot,
         session: EnrollmentSession = .shared,
         mime: @escaping @Sendable (Data) -> DecryptedBody? = { PgpMimeReader.read($0) }
     ) {
         self.opener = opener
         self.payloads = payloads
         self.crypto = crypto
+        self.pins = pins
         self.session = session
         self.mime = mime
+    }
+
+    /// The signer keys a verdict may use. Where this device pinned a key for
+    /// the server's resolved sender, the pin **replaces** what the server
+    /// offered: an intact pin is the only key accepted, and confirmed (it was
+    /// verified in person); a revoked or broken one is a conflict, so a signed
+    /// message reads as `.keyChanged` with no fallback to the relay's key.
+    ///
+    /// Keyed on `resolvedSender` — the server's binding — never on a parsed
+    /// `From`; that parser is the one this client must not have.
+    static func signerKeys(
+        _ offered: [SignerKey],
+        resolvedSender: String,
+        pins: RecipientPinSnapshot
+    ) -> [SignerKey] {
+        switch pins.state(for: resolvedSender) {
+        case nil:
+            return offered
+        case .intact(let publicKey, _):
+            return [SignerKey(addresses: [resolvedSender], publicKey: publicKey, verified: true, source: "device")]
+        case .revoked, .broken:
+            return [SignerKey(addresses: [resolvedSender], conflict: true)]
+        }
     }
 
     /// - Parameters:
@@ -97,7 +126,7 @@ nonisolated struct EncryptedMessageReader: Sendable {
             }
         }
 
-        let payload: PgpPayload
+        var payload: PgpPayload
         do {
             switch try await payloads.fetch(mailbox: mailbox, messageId: messageId) {
             case .success(let fetched): payload = fetched
@@ -109,6 +138,10 @@ nonisolated struct EncryptedMessageReader: Sendable {
         } catch {
             return .fetchFailed(error.localizedDescription)
         }
+
+        payload.signerKeys = Self.signerKeys(
+            payload.signerKeys, resolvedSender: payload.resolvedSender, pins: pins
+        )
 
         guard !payload.encryptedPayload.isEmpty else {
             // A signed-but-not-encrypted message: readable content in the

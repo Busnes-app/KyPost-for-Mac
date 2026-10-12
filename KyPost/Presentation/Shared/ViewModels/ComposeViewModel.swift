@@ -636,6 +636,12 @@ final class ComposeViewModel {
             The key on file for \(addresses.joined(separator: ", ")) has changed. Confirm the new \
             fingerprint with them before sending.
             """
+        case .recipientKeyRevoked(let addresses):
+            keylessWarning = addresses
+            errorMessage = """
+            The key you verified for \(addresses.joined(separator: ", ")) has been revoked by its \
+            owner. Verify their new key by QR before sending.
+            """
         // No pickup fallback here, and there must not be: the server-side one
         // works by storing the plaintext this path exists to avoid.
         case .keysMissing(let addresses):

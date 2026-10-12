@@ -71,6 +71,7 @@ private func makeSender(
     resolve: ResolveResult,
     transport: RecordingTransport = RecordingTransport(),
     crypto: RecordingCrypto = RecordingCrypto(),
+    pins: RecipientPinSnapshot = .none,
     accountAddress: String = "me@example.com",
     session: EnrollmentSession = EnrollmentSession()
 ) -> ClientEncryptedSender {
@@ -79,6 +80,7 @@ private func makeSender(
         resolver: StubResolver(result: resolve),
         transport: transport,
         crypto: crypto,
+        pins: pins,
         accountAddress: accountAddress,
         session: session,
         now: { Date(timeIntervalSince1970: 1_760_000_000) },
@@ -120,6 +122,61 @@ private func makeSender(
         ]))
         let outcome = await sender.send(draft: ClientSendDraft(to: "bob@b.com, carol@b.com"))
         #expect(outcome == .keyChanged(["bob@b.com"]))
+    }
+
+    // MARK: Keys pinned on this device (Android #191)
+
+    /// A revoked pin refuses the send before the vault opens — the opener
+    /// would answer `.cancelled` if it were ever reached.
+    @Test func aRevokedPinRefusesBeforeTheVaultOpens() async {
+        let sender = makeSender(
+            opener: .cancelled,
+            resolve: .success([usable("alice@b.com", key: PinnedKeyFixtures.alicePinned)]),
+            pins: RecipientPinSnapshot(states: ["alice@b.com": .revoked])
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "alice@b.com"))
+        #expect(outcome == .recipientKeyRevoked(["alice@b.com"]))
+    }
+
+    /// The relay's key cannot stand in for a pinned one.
+    @Test func aRelayKeyThatIsNotThePinIsAKeyChange() async {
+        let fingerprint = PgpFingerprint.compute(fromArmored: PinnedKeyFixtures.alicePinned)!
+        let sender = makeSender(
+            opener: .cancelled,
+            resolve: .success([usable("alice@b.com", key: PinnedKeyFixtures.bobRevoked)]),
+            pins: RecipientPinSnapshot(states: [
+                "alice@b.com": .intact(publicKey: PinnedKeyFixtures.alicePinned, fingerprint: fingerprint),
+            ])
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "alice@b.com"))
+        #expect(outcome == .keyChanged(["alice@b.com"]))
+    }
+
+    @Test func aBrokenPinIsAKeyChangeNotAnAbsence() async {
+        let sender = makeSender(
+            opener: .cancelled,
+            resolve: .success([usable("alice@b.com", key: PinnedKeyFixtures.alicePinned)]),
+            pins: RecipientPinSnapshot(states: ["alice@b.com": .broken])
+        )
+        #expect(await sender.send(draft: ClientSendDraft(to: "alice@b.com")) == .keyChanged(["alice@b.com"]))
+    }
+
+    /// A match encrypts to the pinned bytes, not the relay's copy of them.
+    @Test func aMatchingPinEncryptsToThePinnedBytes() async throws {
+        let crypto = RecordingCrypto()
+        let pinnedBytes = try #require(GopenPGPCrypto().withVerifiedRevocation(
+            pinned: PinnedKeyFixtures.alicePinned, synced: PinnedKeyFixtures.aliceRevokedSubkey
+        ))
+        let fingerprint = try #require(PgpFingerprint.compute(fromArmored: pinnedBytes))
+        let sender = makeSender(
+            resolve: .success([usable("alice@b.com", key: PinnedKeyFixtures.alicePinned)]),
+            crypto: crypto,
+            pins: RecipientPinSnapshot(states: [
+                "alice@b.com": .intact(publicKey: pinnedBytes, fingerprint: fingerprint),
+            ])
+        )
+        _ = await sender.send(draft: ClientSendDraft(to: "alice@b.com"))
+        #expect(crypto.encryptCalls.first == [pinnedBytes])
     }
 
     @Test func aChangedKeyOutranksAMissingOne() async {
