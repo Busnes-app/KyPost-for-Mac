@@ -145,9 +145,11 @@ Domain.
   server never saw the plaintext, so `pgpSigned`/`pgpVerified` are not a
   verdict about anything. A client-protected message automatically decrypts
   when its key is already held; otherwise it shows Decrypt, whose deliberate
-  press prompts to unlock the key. Cancelling leaves Decrypt available. The
-  reader has no webmail fallback. PGP explanation and controls disappear once
-  plaintext is visible, and the body has layout priority so it owns the
+  press prompts to unlock the key. Cancelling leaves Decrypt available. "Open
+  in webmail" is offered only when this device cannot read the message (root
+  AGENTS.md, "Reading client-protected mail"). PGP explanation and controls
+  disappear once plaintext is visible — the signature line, a dropped-attachment
+  notice and the decrypted files then show beside the body instead — and the body has layout priority so it owns the
   remaining scrollable space without imposing an infinite-height content
   constraint on its macOS window. The reader navigation bar does not repeat
   the sender, and client-protected PGP/MIME transport parts are not presented
@@ -155,6 +157,18 @@ Domain.
   plain message bodies, and constrains text, tables, images, and preformatted
   blocks to the reader width. Decrypt uses `PrimaryButtonStyle`, whose accent
   fill and `readableOnAccent` foreground are contrast-tested for every theme.
+- **The reader's To/Cc lines are flattened** (`displayHeaderText`): controls,
+  format characters and line/paragraph separators become one space, so a
+  display name cannot forge a labelled line or reverse an address with a bidi
+  override. A field with nothing left is hidden. Decrypted attachment names
+  are flattened the same way for display and through `safeAttachmentFileName`
+  for any file written.
+- **Forward carries the original's attachments through
+  `ForwardAttachmentHandoff`, never `ComposeDraft`** (a scene value restoration
+  archives). One slot keyed by draft id, claimed once from compose's `.task`,
+  at most 12 MiB, refusing rather than evicting; what did not come along is
+  said in compose. Dropped on `.kyPostSessionReset`,
+  `.kyPostCloseComposeWindows` and by the wipe's in-memory step.
 - **The whole email row is the open target.** `EmailListRow` expands to the
   list width and supplies a rectangular content shape, including whitespace.
   The decrypt action uses visible button chrome rather than link styling.

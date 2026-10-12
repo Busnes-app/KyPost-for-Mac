@@ -41,6 +41,11 @@ enum SecurityWipeSteps {
             guard !EnrollmentSession.shared.isHeld else {
                 throw WipeStepFailure("the opened private key is still held in memory")
             }
+            // A forward's attachments waiting for their compose window.
+            ForwardAttachmentHandoff.shared.clear()
+            guard !ForwardAttachmentHandoff.shared.isHoldingAttachments else {
+                throw WipeStepFailure("forwarded attachments are still held in memory")
+            }
             NotificationCenter.default.post(name: .kyPostCloseComposeWindows, object: nil)
         })
 

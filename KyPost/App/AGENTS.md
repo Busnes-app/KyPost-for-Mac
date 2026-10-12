@@ -42,7 +42,8 @@ router, and `scenePhase == .active` makes it check for KyAuth's response.
   (first, before any await), `resetAfterFailedUnlock`, and
   `SettingsViewModel.unpair` post it; the coordinator `reset()`s (withdraws
   the request, discards the response, drops a finished link, voids in-flight
-  work) and the router drops its deferred action and presented routes.
+  work), the router drops its deferred action and presented routes, and
+  `ForwardAttachmentHandoff` drops a forward's held attachments.
   Anything new that erases the pairing posts it, and any new App-level state
   that could present or re-pair observes it (`NotificationObservation`).
 

@@ -105,6 +105,8 @@ final class ComposeViewModel {
 
     private var searchTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
+    /// The draft this window opened with, for claiming a forward's files.
+    private let draftID: UUID?
 
     /// `debounceInterval` is injectable so tests don't sleep.
     init(
@@ -118,6 +120,7 @@ final class ComposeViewModel {
         self.contacts = contacts
         self.pgp = pgp
         self.debounceInterval = debounceInterval
+        self.draftID = draft?.id
         if let draft {
             to = tokens(from: draft.to)
             cc = tokens(from: draft.cc)
@@ -125,6 +128,18 @@ final class ComposeViewModel {
             subject = draft.subject
             body = AttributedString(draft.body)
         }
+    }
+
+    /// Takes a forward's attachments from `ForwardAttachmentHandoff`, once.
+    /// Run from the view's `.task` rather than `init`: SwiftUI may construct
+    /// a view's initial state more than once, and a discarded model must not
+    /// be the one that claimed the bytes.
+    func adoptForwardedAttachments(from handoff: ForwardAttachmentHandoff = .shared) {
+        guard let draftID, let pending = handoff.take(for: draftID) else { return }
+        attachments += pending.attachments.map {
+            ComposeAttachment(name: $0.name, mimeType: $0.mimeType, data: $0.data)
+        }
+        if let notice = pending.notice { noticeMessage = notice }
     }
 
     // MARK: - Contacts

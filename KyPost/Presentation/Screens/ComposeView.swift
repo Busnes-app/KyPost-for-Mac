@@ -115,7 +115,10 @@ struct ComposeView: View {
         .toast(message: viewModel.toastMessage)
         .navigationTitle("New Email")
         .toolbar { toolbarContent }
-        .task { await viewModel.loadContactsIfNeeded() }
+        .task {
+            viewModel.adoptForwardedAttachments()
+            await viewModel.loadContactsIfNeeded()
+        }
         .sheet(isPresented: $showAddressBook) {
             AddressBookView(viewModel: viewModel)
                 .environment(\.theme, theme)
