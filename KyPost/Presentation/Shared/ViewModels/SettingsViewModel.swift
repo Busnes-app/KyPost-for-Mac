@@ -143,42 +143,16 @@ final class SettingsViewModel {
         // A sign-on still in flight would otherwise re-pair right after this.
         AppEnvironment.postSessionReset()
         try? securePairingStore.clear()
-        // Unpairing is a session boundary for the OpenPGP key as much as for
-        // the credential. The envelope is the account's private key sealed to
-        // *this* device, and leaving it behind means the key outlives the
-        // pairing that authorised putting it here — on a Mac the account no
-        // longer knows about, so no revocation reaches it. The in-memory copy
-        // goes with it; destroying the sealed blob while an unsealed one sits
-        // in this process would be theatre.
-        enrollmentVault?.destroy()
-        // No device row is left to correct, and a pending marker must not
-        // speak for whatever device is paired next.
-        enrollmentVault?.forgetPendingReports()
-        EnrollmentSession.shared.clear()
-        // Notification history is the account's sender and subject lines,
-        // and the pull cursor is a position in the account's queue.
-        do {
-            try await pushRepository?.clearForUnpair()
-        } catch {
-            Log.push.error("Could not clear notification history on unpair: \(error)")
-        }
-        // Keys verified by QR belong to this account's address book.
-        recipientPinStore?.clear()
-        // The signature belongs to the account being unpaired, not the next.
-        mailSignatureStore?.clear()
-        // The account's mail — every cached row and body, in or out of the
-        // window, and the cursors. Mail older than the window is never pruned
-        // by a refresh, so left here it would be listed under the next
-        // account paired.
-        do {
-            try await mailRepository.forgetAccount()
-        } catch {
-            Log.mail.error("Could not clear cached mail on unpair: \(error)")
-        }
-        // A list action still in its undo window belongs to the account just
-        // removed; it is dropped rather than sent. The rows on screen and any
-        // refresh or page still in flight go with it.
-        onUnpaired?()
+        // Everything else the account left on this device — the same list a
+        // pairing to another account runs.
+        await AccountTeardown(
+            enrollmentVault: enrollmentVault,
+            pushRepository: pushRepository,
+            recipientPinStore: recipientPinStore,
+            mailSignatureStore: mailSignatureStore,
+            mailRepository: mailRepository,
+            forgetInbox: onUnpaired
+        ).run()
         statusMessage = "Pairing removed"
     }
 

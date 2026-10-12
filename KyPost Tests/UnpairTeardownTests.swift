@@ -132,6 +132,61 @@ import Testing
         #expect(graph.mailCursorStore.cursor(pairingId: "u1", folder: "INBOX") == "")
     }
 
+    /// Pairing account B over A, with no unpair in between, runs the same
+    /// teardown as an unpair before B's pairing is stored: none of A's state
+    /// is left for B.
+    @Test func pairingAnotherAccountOverThisOneLeavesNoneOfItsState() async throws {
+        let graph = try makeGraph()
+        try graph.securePairingStore.savePairing(Pairing(
+            sub: "u1", deviceSecret: "s1", srv: server, registrationUrl: nil,
+            pairingToken: "pt", lastDeviceId: "dev-1", pairedAt: Date()
+        ))
+        // Account A's state, one item per teardown step.
+        try graph.enrollmentVault.store(
+            privateKey: Data("-----BEGIN PGP PRIVATE KEY BLOCK-----".utf8),
+            identityFingerprint: "AABBCCDDEEFF00112233445566778899AABBCCDD"
+        )
+        #expect(graph.enrollmentVault.markReportPending())
+        EnrollmentSession.shared.put(armoredKey: "-----BEGIN PGP PRIVATE KEY BLOCK-----")
+        try await graph.pushRepository.recordPushArrival(
+            MailPushPayload(messageId: "m-1", senderName: "Ada", emailSubject: "Hi", keywords: [])
+        )
+        graph.notificationCursorStore.advance(to: 9)
+        #expect(graph.recipientPinStore.pin(addresses: ["alice@example.invalid"], publicKey: PinnedKeyFixtures.alicePinned))
+        graph.mailSignatureStore.save("Ada, account A")
+        try await seedMail(graph)
+        graph.inboxViewModel.delete(serverIds: ["w1"])
+        #expect(graph.inboxViewModel.undoMessage != nil)
+
+        // Account B's registration, against a stub relay. The TOFU probe
+        // would open a real connection; nothing here pins.
+        graph.nativeRegistrationClient = NativeRegistrationClient(httpClient: stubClient(
+            json: #"{"ok": true, "deviceId": "dev-2", "deviceSecret": "s-2"}"#
+        ))
+        let service = graph.deviceRegistrationService
+        service.probeSpkiHash = nil
+        let outcome = await service.pair(
+            params: PairingParams(sub: "u2", srv: server, pt: "pt-b"), deviceToken: "apns"
+        )
+        guard case .success = outcome else {
+            Issue.record("Expected success, got \(outcome)")
+            return
+        }
+
+        #expect(try graph.securePairingStore.loadPairing()?.sub == "u2")
+        #expect(!graph.enrollmentVault.isEnrolled)
+        #expect(graph.enrollmentVault.pendingReportAttempts == nil)
+        #expect(!EnrollmentSession.shared.isHeld)
+        #expect(try await graph.pushRepository.history().isEmpty)
+        #expect(graph.notificationCursorStore.lastCursor == 0)
+        #expect(graph.recipientPinStore.all().isEmpty)
+        #expect(graph.mailSignatureStore.signature.isEmpty)
+        #expect(try await graph.emailDAO.getFolder(folder: "INBOX").isEmpty)
+        #expect(graph.mailCursorStore.cursor(pairingId: "u1", folder: "INBOX") == "")
+        #expect(graph.inboxViewModel.undoMessage == nil)
+        #expect(graph.inboxViewModel.emails.isEmpty)
+    }
+
     private func seedMail(_ graph: SingletonGraph) async throws {
         func email(_ id: String, _ body: String) -> Email {
             Email(

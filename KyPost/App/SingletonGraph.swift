@@ -346,16 +346,11 @@ final class SingletonGraph {
         service.reconcileExistingPairingPushes = { [weak self] in
             await self?.pullPollingScheduler.reconcileDeliveredPushesForExistingPairing()
         }
-        // Pairing another account over this one erases the previous
-        // account's mail, as an unpair does. Weak: the graph owns the service.
+        // Pairing another account over this one erases what the previous
+        // account left here, exactly as an unpair does. Weak: the graph owns
+        // the service.
         service.onAccountReplaced = { [weak self] in
-            guard let self else { return }
-            self.inboxViewModel.forgetAccount()
-            do {
-                try await self.mailRepository.forgetAccount()
-            } catch {
-                Log.mail.error("Could not clear cached mail on re-pairing: \(error)")
-            }
+            await self?.makeAccountTeardown().run()
         }
         return service
     }()
@@ -401,6 +396,19 @@ final class SingletonGraph {
         gatedStore: gatedCredentialStore,
         lockManager: appLockManager
     )
+
+    /// The account teardown over this graph's stores, for a pairing that
+    /// replaces the account (unpair builds the same list from its own).
+    func makeAccountTeardown() -> AccountTeardown {
+        AccountTeardown(
+            enrollmentVault: enrollmentVault,
+            pushRepository: pushRepository,
+            recipientPinStore: recipientPinStore,
+            mailSignatureStore: mailSignatureStore,
+            mailRepository: mailRepository,
+            forgetInbox: { [weak self] in self?.inboxViewModel.forgetAccount() }
+        )
+    }
 
     // MARK: - Lifecycle
 

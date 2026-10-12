@@ -67,6 +67,16 @@ and must do so before `appLockManager.lockAfterGrace()` (a grace period
 does not extend the undo window) — see the root "Inbox list actions"
 contract.
 
+**Leaving an account is one list, `AccountTeardown`** (enrollment vault,
+session and pending reports; notification history and pull cursor; recipient
+pins; mail signature; cached mail and cursors; the inbox's held actions and
+rows). `SettingsViewModel.unpair` runs it after clearing the pairing, and a
+registration that stores a pairing for another `sub` or server over the
+current one runs it first (`DeviceRegistrationService.onAccountReplaced`,
+wired to `SingletonGraph.makeAccountTeardown`); an unreadable previous
+pairing counts as another account. A new account-scoped store adds its clear
+there, not at either call site.
+
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.
 It is installed once, from the platform delegate

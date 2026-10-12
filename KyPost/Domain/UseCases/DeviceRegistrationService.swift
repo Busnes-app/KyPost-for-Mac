@@ -58,7 +58,7 @@ final class DeviceRegistrationService {
     /// Runs before a registration's pairing is stored over one for another
     /// account (another `sub` or server), so the previous account's
     /// account-scoped state is erased as an unpair would. Wired by
-    /// SingletonGraph to clear cached mail; nil in tests.
+    /// SingletonGraph to `AccountTeardown`, the list unpair runs; nil in tests.
     var onAccountReplaced: (@MainActor () async -> Void)?
 
     /// One registration per (pairing token, device token). A pairing deep
