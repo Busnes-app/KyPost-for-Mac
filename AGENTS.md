@@ -725,14 +725,19 @@ an event only when asked and syncs no calendar.
   `personal-information.calendars` entitlement). Under Hostile Location
   Protection every handoff is confirmed first. An RRULE EventKit cannot express
   adds the first occurrence and says so — including a weekly `INTERVAL > 1`
-  rule whose days a different week start would regroup, since EventKit takes
-  no WKST. The event carries DTSTART's zone (`CalendarEvent.timeZone`), so a
+  or `BYSETPOS` rule whose days a different week start would regroup, since
+  EventKit takes no WKST. The event carries DTSTART's zone (`CalendarEvent.timeZone`), so a
   series repeats at the organizer's wall clock; floating and all-day stay
   zoneless.
 - **A handoff is bound to the session it was tapped in** (`PendingHandoff`,
   `RsvpTracker.session`). `CalendarHandoff.add` rechecks it after the
   permission prompt and before saving: nothing from an ended session reaches
   the calendar store.
+- **The card's prompts never outlive the lock or the session.** Its alerts sit
+  above `LockedOverlay` on macOS, so `InviteCardModel` presents a prompt only
+  while unlocked and in its session (`presentedRsvp` / `presentedHandoff`),
+  the lock withdraws both (`lockEngaged`, releasing the RSVP revision), and
+  requesting, confirming and saving all refuse while locked.
 - **RSVP (REPLY)** copies UID verbatim and SEQUENCE, restates RECURRENCE-ID
   without TZID (a zoned one becomes UTC; unrestatable means no RSVP), adds
   DTSTAMP, folds at 75 octets without splitting UTF-8. ATTENDEE is the

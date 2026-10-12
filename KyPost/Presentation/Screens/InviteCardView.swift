@@ -109,10 +109,10 @@ struct InviteCardView: View {
         .alert(
             "Send RSVP unencrypted?",
             isPresented: Binding(
-                get: { model.pendingRsvp != nil },
+                get: { model.presentedRsvp != nil },
                 set: { if !$0, let pending = model.pendingRsvp { model.rsvpPromptDismissed(pending) } }
             ),
-            presenting: model.pendingRsvp
+            presenting: model.presentedRsvp
         ) { pending in
             Button("Send unencrypted") { model.confirmRsvp(pending) }
             Button("Cancel", role: .cancel) { model.cancelRsvp(pending) }
@@ -122,15 +122,20 @@ struct InviteCardView: View {
         .alert(
             "Hand off to your calendar?",
             isPresented: Binding(
-                get: { model.pendingHandoff != nil },
+                get: { model.presentedHandoff != nil },
                 set: { if !$0 { model.pendingHandoff = nil } }
             ),
-            presenting: model.pendingHandoff
+            presenting: model.presentedHandoff
         ) { pending in
             Button("Add to Calendar") { Task { await model.add(pending) } }
             Button("Cancel", role: .cancel) { model.pendingHandoff = nil }
         } message: { _ in
             Text("Hostile Location Protection is on. Your calendar will store this event outside KyPost, where a wipe can't remove it.")
+        }
+        // An alert sits above the lock cover on macOS, so the lock withdraws
+        // both prompts rather than leaving them answerable behind it.
+        .onChange(of: SingletonGraph.shared.appLockManager.isLocked) { _, locked in
+            if locked { model.lockEngaged() }
         }
     }
 

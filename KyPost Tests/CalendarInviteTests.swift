@@ -650,7 +650,8 @@ private func expectRelayAccepts(_ ics: String) {
         addresses: [String]? = ["me@example.com"],
         sent: Box<[CalendarReplyDraft]> = Box([]),
         outcome: (RsvpResult, String)? = (.sent, ""),
-        calendar: FakeCalendarStore? = nil
+        calendar: FakeCalendarStore? = nil,
+        locked: Box<Bool> = Box(false)
     ) -> InviteCardModel {
         let account = self.account
         let calendar = calendar ?? FakeCalendarStore()
@@ -663,7 +664,8 @@ private func expectRelayAccepts(_ ics: String) {
                 return outcome.map { (result: $0.0, reason: $0.1) }
             },
             now: { now },
-            calendarStore: { calendar }
+            calendarStore: { calendar },
+            isLocked: { locked.value }
         )
     }
 
@@ -788,6 +790,87 @@ private func expectRelayAccepts(_ ics: String) {
         #expect(subject.handoffMessage == "Added to Home.")
     }
 
+    /// The card's alerts sit above the lock cover on macOS: the lock hides
+    /// the RSVP prompt, withdraws it, and an answer to it sends nothing.
+    @Test func theLockWithdrawsAnRsvpPromptAndItsAnswerSendsNothing() async throws {
+        let locked = Box(false)
+        let sent = Box<[CalendarReplyDraft]>([])
+        let subject = model(tracker: RsvpTracker(center: NotificationCenter()), sent: sent, locked: locked)
+        await load(subject)
+        await subject.requestRsvp(.accepted, senderEmail: "boss@example.com")
+        let pending = try #require(subject.pendingRsvp)
+        #expect(subject.presentedRsvp?.id == pending.id)
+
+        locked.value = true
+        #expect(subject.presentedRsvp == nil)
+        // An answer reaching the model while locked sends nothing.
+        #expect(subject.confirmRsvp(pending) == nil)
+        subject.lockEngaged()
+        #expect(subject.pendingRsvp == nil)
+        #expect(sent.value.isEmpty)
+
+        // Nothing new is raised behind the lock either.
+        await subject.requestRsvp(.accepted, senderEmail: "boss@example.com")
+        #expect(subject.pendingRsvp == nil)
+
+        // After unlocking the revision is free to answer, through a new prompt.
+        locked.value = false
+        #expect(subject.canAnswer)
+        await subject.requestRsvp(.accepted, senderEmail: "boss@example.com")
+        #expect(subject.presentedRsvp != nil)
+    }
+
+    /// A prompt raised before a wipe or unpair is not shown after it.
+    @Test func anEndedSessionHidesItsPrompts() async throws {
+        let center = NotificationCenter()
+        let subject = model(tracker: RsvpTracker(center: center))
+        await load(subject)
+        await subject.requestRsvp(.accepted, senderEmail: "boss@example.com")
+        _ = try #require(subject.presentedRsvp)
+        center.post(name: .kyPostSessionReset, object: nil)
+        #expect(subject.presentedRsvp == nil)
+
+        await load(subject)
+        await subject.requestAdd(hostileLocationProtection: true)
+        _ = try #require(subject.presentedHandoff)
+        center.post(name: .kyPostSessionReset, object: nil)
+        #expect(subject.presentedHandoff == nil)
+    }
+
+    @Test func theLockWithdrawsAHandoffPromptAndItsAnswerWritesNothing() async throws {
+        let locked = Box(false)
+        let calendar = FakeCalendarStore(authorization: .writeOnly)
+        let subject = model(tracker: RsvpTracker(center: NotificationCenter()), calendar: calendar, locked: locked)
+        await load(subject)
+        await subject.requestAdd(hostileLocationProtection: true)
+        let pending = try #require(subject.presentedHandoff)
+        locked.value = true
+        #expect(subject.presentedHandoff == nil)
+        subject.lockEngaged()
+        #expect(subject.pendingHandoff == nil)
+        await subject.add(pending)
+        await subject.requestAdd(hostileLocationProtection: false)
+        #expect(calendar.saves == 0)
+        #expect(subject.handoffMessage == nil)
+    }
+
+    /// The lock engaging while the calendar permission prompt is up: granting
+    /// it afterwards writes nothing.
+    @Test func aHandoffWaitingOnPermissionStopsAtTheLock() async {
+        let locked = Box(false)
+        let calendar = FakeCalendarStore()
+        let subject = model(tracker: RsvpTracker(center: NotificationCenter()), calendar: calendar, locked: locked)
+        await load(subject)
+        let tap = Task { await subject.requestAdd(hostileLocationProtection: false) }
+        while !calendar.isWaiting { await Task.yield() }
+        locked.value = true
+        calendar.grant()
+        await tap.value
+        #expect(calendar.saves == 0)
+        #expect(subject.handoffMessage == nil)
+        #expect(!subject.isAdding)
+    }
+
     @Test func aCancelledInviteOffersNoAdd() async {
         let subject = model(tracker: RsvpTracker(center: NotificationCenter()))
         let data = invite(method: "CANCEL", request)
@@ -811,6 +894,13 @@ private func expectRelayAccepts(_ ics: String) {
         #expect(notices[2].contains("cancelled"))
         #expect(notices[3].contains("Narnia"))
         #expect(inviteNotices(parsed, senderEmail: "BOSS@example.com", phishing: false).count == 2)
+    }
+
+    /// An unresolved TZID is quoted in a notice, so it loses the bidi and
+    /// control characters every other shown field loses.
+    @Test func anUnknownZoneIsQuotedWithoutFormatCharacters() throws {
+        let parsed = try #require(parse(invite(["DTSTART;TZID=Nar\u{202E}nia\u{200B}:20261012T090000"])))
+        #expect(parsed.primary.unknownZone == "Narnia")
     }
 
     /// A time with neither `Z` nor TZID is read in the viewer's zone, and the
@@ -872,6 +962,10 @@ private func expectRelayAccepts(_ ics: String) {
         ("FREQ=WEEKLY;BYDAY=TU,SU;WKST=SU", true),
         ("FREQ=WEEKLY;INTERVAL=2;BYDAY=SU;WKST=SU", true),
         ("FREQ=WEEKLY;WKST=XX", false),
+        // BYSETPOS counts within the week, so it depends on the start too.
+        ("FREQ=WEEKLY;BYDAY=SU,MO;BYSETPOS=1;WKST=SU", false),
+        ("FREQ=WEEKLY;BYDAY=SU,MO;BYSETPOS=1", false),
+        ("FREQ=WEEKLY;BYDAY=TU,TH;BYSETPOS=1;WKST=SU", true),
     ])
     func onlyExpressibleRulesMapToEventKit(_ rrule: String, _ expressible: Bool) {
         #expect((RecurrenceSpec(rrule, zone: berlin) != nil) == expressible)
@@ -899,6 +993,13 @@ private func expectRelayAccepts(_ ics: String) {
         let outcome = await CalendarHandoff.add(event, store: calendar) { true }
         #expect(outcome == .added(calendar: "Home", repeatsDropped: true))
         #expect(calendar.saves == 1)
+
+        let positional = try #require(parse(invite([
+            "DTSTART;TZID=America/New_York:20261011T090000", "RRULE:FREQ=WEEKLY;BYDAY=SU,MO;BYSETPOS=1;WKST=SU",
+        ]))).primary
+        let other = FakeCalendarStore(authorization: .writeOnly)
+        #expect(await CalendarHandoff.add(positional, store: other) { true }
+                == .added(calendar: "Home", repeatsDropped: true))
     }
 
     /// A daily 09:00 New York series added from Berlin keeps New York's wall

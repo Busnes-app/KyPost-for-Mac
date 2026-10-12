@@ -59,6 +59,7 @@ final class InviteCardModel {
     private let send: @MainActor (CalendarReplyDraft, MailAccountBinding) async -> (result: RsvpResult, reason: String)?
     private let now: () -> Date
     private let calendarStore: @MainActor () -> any CalendarStoring
+    private let isLocked: @MainActor () -> Bool
 
     /// The defaults re-read `SingletonGraph.shared` on every call, so nothing
     /// here outlives a graph rebuild.
@@ -74,7 +75,8 @@ final class InviteCardModel {
             await SingletonGraph.shared.mailRepository.sendCalendarReply($0, as: $1)
         },
         now: @escaping () -> Date = Date.init,
-        calendarStore: @escaping @MainActor () -> any CalendarStoring = { EventKitCalendarStore() }
+        calendarStore: @escaping @MainActor () -> any CalendarStoring = { EventKitCalendarStore() },
+        isLocked: @escaping @MainActor () -> Bool = { SingletonGraph.shared.appLockManager.isLocked }
     ) {
         self.tracker = tracker
         self.accountAddresses = accountAddresses
@@ -82,6 +84,29 @@ final class InviteCardModel {
         self.send = send
         self.now = now
         self.calendarStore = calendarStore
+        self.isLocked = isLocked
+    }
+
+    // MARK: - Prompts
+
+    /// What the RSVP alert shows. The card's alerts render above the lock
+    /// cover on macOS, so a prompt is presented only while the app is
+    /// unlocked and the session it was raised in is still current.
+    var presentedRsvp: PendingRsvp? {
+        pendingRsvp.flatMap { tracker.isCurrent($0.session) && !isLocked() ? $0 : nil }
+    }
+
+    /// What the Hostile Location Protection alert shows; gated like
+    /// `presentedRsvp`.
+    var presentedHandoff: PendingHandoff? {
+        pendingHandoff.flatMap { tracker.isCurrent($0.session) && !isLocked() ? $0 : nil }
+    }
+
+    /// The lock engaged: withdraw both prompts. The RSVP revision is
+    /// released, so the user asks again after unlocking.
+    func lockEngaged() {
+        if let pending = pendingRsvp { cancelRsvp(pending) }
+        pendingHandoff = nil
     }
 
     /// Downloads and parses the listed invite part, if there is one. A
@@ -112,7 +137,7 @@ final class InviteCardModel {
     /// account are captured before the addresses are looked up, so a later
     /// pairing can never receive this account's reply.
     func requestRsvp(_ answer: Rsvp, senderEmail: String) async {
-        guard let invite, offersRsvp else { return }
+        guard let invite, offersRsvp, !isLocked() else { return }
         let event = invite.primary
         let key = rsvpKey(event)
         // Process-wide: two screens on the same invite cannot both answer.
@@ -122,6 +147,12 @@ final class InviteCardModel {
         let session = tracker.session
         let account = currentAccount()
         let addresses = await accountAddresses()
+        // Locked during the lookup: release quietly, nothing to say behind
+        // the cover.
+        if isLocked() {
+            tracker.cancel(key)
+            return
+        }
         guard tracker.isCurrent(session), let account, let addresses,
               let attendee = rsvpAttendee(event, accountAddresses: addresses)
         else {
@@ -177,6 +208,11 @@ final class InviteCardModel {
         guard !settled.contains(pending.id) else { return nil }
         settled.insert(pending.id)
         if pendingRsvp?.id == pending.id { pendingRsvp = nil }
+        // A prompt answered while locked sends nothing.
+        guard !isLocked() else {
+            tracker.cancel(pending.key)
+            return nil
+        }
         guard let draft = rsvpDraft(
             pending.event, attendee: pending.attendee, answer: pending.answer, now: now(), sendAs: pending.sendAs
         ) else {
@@ -209,7 +245,7 @@ final class InviteCardModel {
     /// The session is read at the tap, so a confirmation answered after a
     /// wipe or unpair writes nothing.
     func requestAdd(hostileLocationProtection: Bool) async {
-        guard let invite, invite.offersAdd else { return }
+        guard let invite, invite.offersAdd, !isLocked() else { return }
         let pending = PendingHandoff(event: invite.primary, session: tracker.session)
         if hostileLocationProtection {
             pendingHandoff = pending
@@ -220,12 +256,15 @@ final class InviteCardModel {
 
     func add(_ pending: PendingHandoff) async {
         if pendingHandoff?.id == pending.id { pendingHandoff = nil }
-        guard !isAdding, tracker.isCurrent(pending.session) else { return }
+        guard !isAdding, tracker.isCurrent(pending.session), !isLocked() else { return }
         isAdding = true
         defer { isAdding = false }
         let tracker = self.tracker
+        let isLocked = self.isLocked
+        // The lock engaging while the permission prompt is up also stops the
+        // save: the user asks again after unlocking.
         let outcome = await CalendarHandoff.add(pending.event, store: calendarStore()) {
-            tracker.isCurrent(pending.session)
+            tracker.isCurrent(pending.session) && !isLocked()
         }
         // An ended session says nothing either.
         guard outcome != .sessionEnded, tracker.isCurrent(pending.session) else { return }

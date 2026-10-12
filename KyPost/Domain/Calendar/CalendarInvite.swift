@@ -439,7 +439,7 @@ private nonisolated enum ICS {
                 at: $0,
                 zone: zone,
                 allDay: false,
-                unknownZone: !tzid.isEmpty && resolved == nil ? String(tzid.prefix(64)) : nil,
+                unknownZone: !tzid.isEmpty && resolved == nil ? shownZoneName(tzid) : nil,
                 declaredZone: resolved
             )
         }
@@ -574,6 +574,17 @@ private nonisolated enum ICS {
             }
         }
         return String(out).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// An unresolved TZID as the card quotes it: shortened, and without the
+    /// controls and format characters `text` strips from other fields.
+    static func shownZoneName(_ tzid: String) -> String {
+        var out = String.UnicodeScalarView()
+        for scalar in tzid.unicodeScalars.prefix(64) {
+            let category = scalar.properties.generalCategory
+            if category != .control && category != .format { out.append(scalar) }
+        }
+        return String(out)
     }
 
     static func mailtoAddress(_ value: String) -> String? {

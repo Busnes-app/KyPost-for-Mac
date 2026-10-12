@@ -92,8 +92,9 @@ nonisolated struct RecurrenceSpec: Equatable, Sendable {
         // BYHOUR, BYWEEKNO, BYYEARDAY and the rest have no EventKit form.
         guard parts.isEmpty else { return nil }
         // EventKit takes no week start, so a rule whose occurrences depend on
-        // it would be saved as a different series.
-        if frequency == .weekly, interval > 1,
+        // it would be saved as a different series. Both a multi-week interval
+        // and a position within the week's set count from the week start.
+        if frequency == .weekly, interval > 1 || !setPositions.isEmpty,
            !Self.weekGroupingHolds(Set(days.map(\.weekday)), weekStart: weekStart) {
             return nil
         }
