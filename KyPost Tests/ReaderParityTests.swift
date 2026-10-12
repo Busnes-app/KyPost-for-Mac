@@ -161,6 +161,36 @@ import Testing
         let open = #"<p>a</p><!-- <img src="cid:logo@x">"#
         #expect(InlineImages.inlineCidImages(html: open, attachments: [png]) == open)
     }
+
+    /// Raw-text and RCDATA contents are text to an HTML parser: an `<img>`
+    /// there stays as written and does not spend the visible image's budget.
+    @Test func rawTextElementContentsAreSkipped() {
+        let full = DecryptedAttachment(
+            name: "logo.png", mimeType: "image/png",
+            data: Data(count: InlineImages.byteBudget), contentId: "logo@x"
+        )
+        let resolved = #"<img src="data:image/png;base64,"# + full.data.base64EncodedString() + #"">"#
+        let img = #"<img src="cid:logo@x">"#
+        for name in ["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes"] {
+            let hidden = "<\(name) class=\"a>b\">\(img)</\(name.uppercased())\t>"
+            #expect(InlineImages.inlineCidImages(html: hidden + img, attachments: [full]) == hidden + resolved)
+        }
+    }
+
+    /// Only the element's own end tag closes it; an unclosed one, and
+    /// `<plaintext>`, run to the end of the input.
+    @Test func rawTextBoundariesFollowHTMLParsing() {
+        let data = #"<img src="data:image/png;base64,AQID">"#
+        let img = #"<img src="cid:logo@x">"#
+        // `</scripts>` and `</style>` do not end a script.
+        let inner = "<script>\(img)</scripts></style>\(img)</script>"
+        #expect(InlineImages.inlineCidImages(html: inner + img, attachments: [png]) == inner + data)
+        // `<scripts>` is not a script element.
+        #expect(InlineImages.inlineCidImages(html: "<scripts>\(img)", attachments: [png]) == "<scripts>\(data)")
+        for open in ["<title>\(img)", "<plaintext>\(img)</plaintext>\(img)"] {
+            #expect(InlineImages.inlineCidImages(html: open, attachments: [png]) == open)
+        }
+    }
 }
 
 // MARK: - Staged previews

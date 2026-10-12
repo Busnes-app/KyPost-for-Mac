@@ -7,11 +7,11 @@
 //  pgp/InlineImages.kt (#109).
 //
 //  Android rewrites a parsed jsoup document; Foundation has no HTML parser, so
-//  this scans `<img>` tags outside comments and rewrites only their `src`
-//  attribute. Anything it does not recognise is left exactly as it was — an
-//  unresolved `cid:` stays in place and simply never loads, because the reader
-//  fetches no subresource other than a `data:` image (see
-//  `EmailBodyWebView.makeConfiguration`).
+//  this scans `<img>` tags outside comments and raw-text elements, and
+//  rewrites only their `src` attribute. Anything it does not recognise is left
+//  exactly as it was — an unresolved `cid:` stays in place and simply never
+//  loads, because the reader fetches no subresource other than a `data:` image
+//  (see `EmailBodyWebView.makeConfiguration`).
 //
 
 import Foundation
@@ -47,10 +47,11 @@ nonisolated enum InlineImages {
         var cursor = 0
         var budget = byteBudget
 
-        for match in imgTagOrComment.matches(in: html, range: NSRange(location: 0, length: source.length)) {
-            // A comment is matched only so its contents are skipped: markup
-            // inside one is not an element and must not spend the budget.
-            let tag = match.range(at: 1)
+        for match in imgTagOrSkipped.matches(in: html, range: NSRange(location: 0, length: source.length)) {
+            // Comments and raw-text elements are matched only so their
+            // contents are skipped: markup inside them is text, not an
+            // element, and must not spend the budget.
+            let tag = match.range(at: 2)
             guard tag.location != NSNotFound, let src = srcAttribute(in: source, tag: tag) else { continue }
             let value = source.substring(with: src.value).trimmingCharacters(in: .whitespaces)
             guard value.count > 4, value.prefix(4).lowercased() == "cid:" else { continue }
@@ -72,12 +73,22 @@ nonisolated enum InlineImages {
         return output
     }
 
-    /// An HTML comment, or (capture group 1) an `<img …>` start tag whose
-    /// quoted attribute values may contain `>`. A comment ends at `-->` or
-    /// `--!>`, `<!-->` and `<!--->` close at once, and an unterminated one
-    /// runs to the end of the input, as in HTML parsing.
-    private static let imgTagOrComment = try! NSRegularExpression(
-        pattern: #"<!--(?:-?>|[\s\S]*?(?:--!?>|\z))|(<img\b(?:[^>"']|"[^"]*"|'[^']*')*>)"#,
+    /// Matches, in document order, one of:
+    /// - an HTML comment. It ends at `-->` or `--!>`, `<!-->` and `<!--->`
+    ///   close at once, and an unterminated one runs to the end of the input;
+    /// - `<plaintext>`, whose contents run to the end of the input;
+    /// - a raw-text or RCDATA element (group 1 is its name) with everything up
+    ///   to its matching end tag, compared case-insensitively, or to the end
+    ///   of the input when there is none;
+    /// - (group 2) an `<img …>` start tag; quoted attribute values may
+    ///   contain `>`.
+    /// This is how an HTML parser reads them: only the last is an element.
+    private static let imgTagOrSkipped = try! NSRegularExpression(
+        pattern: #"<!--(?:-?>|[\s\S]*?(?:--!?>|\z))"#
+            + #"|<plaintext(?=[\s/>])[\s\S]*"#
+            + #"|<(script|style|textarea|title|xmp|iframe|noembed|noframes)(?=[\s/>])"#
+            + #"(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?(?:</\1(?=[\s/>])[^>]*>|\z)"#
+            + #"|(<img\b(?:[^>"']|"[^"]*"|'[^']*')*>)"#,
         options: [.caseInsensitive]
     )
 
