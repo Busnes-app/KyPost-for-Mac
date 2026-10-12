@@ -22,7 +22,7 @@ import Gopenpgp
 /// leaks a `Gopenpgp` type. Errors from the library are deliberately not
 /// forwarded verbatim — the caller renders an exit-table row, and a Go error
 /// string is not that.
-nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting {
+nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspecting {
 
     /// gomobile's encoding selector. 0 is "detect", which accepts both the
     /// armored and the binary form; mail carries armored, and a stored draft
@@ -40,23 +40,15 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting {
 
     func decrypt(
         armoredCiphertext: String,
-        privateKey: Data,
+        privateKeys: [Data],
         signerKeys: [String]
     ) throws -> DecryptedMessage {
-        let armoredPrivate = String(decoding: privateKey, as: UTF8.self)
-        guard let key = CryptoKey(fromArmored: armoredPrivate) else {
-            throw PgpCryptoError.unusableKey
-        }
-        // The key came out of the device envelope already unwrapped. One that
-        // still wants a passphrase is not a key this device can use, and
-        // guessing an empty one would report "wrong key" for what is really a
-        // locked key.
-        var locked: ObjCBool = false
-        if (try? key.isLocked(&locked)) != nil, locked.boolValue {
-            throw PgpCryptoError.unusableKey
-        }
-
-        guard let decryptionKeys = CryptoKeyRing(key) else { throw PgpCryptoError.unusableKey }
+        // Every key held, current and retired, in one decryption ring: mail
+        // encrypted to a retired key, or to a hidden recipient whose key id is
+        // zeroed, can only be opened by trying them all. The library selects
+        // by key id and tries every key for a wildcard.
+        let decryptionKeys = try decryptionRing(fromArmored: privateKeys)
+        defer { decryptionKeys.clearPrivateParams() }
 
         // Only keys the address book bound to the displayed sender may verify.
         // The signer's public key travels inside signed mail often enough to
@@ -190,10 +182,7 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting {
         recipientKeys: [String],
         privateKey: Data
     ) throws -> String {
-        let armoredPrivate = String(decoding: privateKey, as: UTF8.self)
-        guard let signingKey = CryptoKey(fromArmored: armoredPrivate) else {
-            throw PgpCryptoError.unusableKey
-        }
+        let signingKey = try Self.signingKey(fromArmored: privateKey)
         let recipients = try keyRing(fromArmored: recipientKeys)
         guard recipients.countEntities() > 0 else {
             throw PgpCryptoError.cannotEncrypt("no usable recipient key")
@@ -222,17 +211,184 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting {
     }
 
     func ownPublicKey(privateKey: Data) throws -> String {
-        let armoredPrivate = String(decoding: privateKey, as: UTF8.self)
-        guard let key = CryptoKey(fromArmored: armoredPrivate) else {
-            throw PgpCryptoError.unusableKey
-        }
+        let key = try Self.signingKey(fromArmored: privateKey)
         var error: NSError?
         let armored = key.getArmoredPublicKey(&error)
         guard error == nil, !armored.isEmpty else { throw PgpCryptoError.unusableKey }
         return armored
     }
 
+    // MARK: - Inspecting
+
+    /// Armor type for a transferable secret key, as gopenpgp's constants name it.
+    private static let privateKeyBlock = "PGP PRIVATE KEY BLOCK"
+
+    /// The most keys one legacy collection may grow to by merging. Matches the
+    /// keyring's own primary-member cap, so history cannot grow unbounded
+    /// across re-enrollments.
+    static let maxLegacyKeys = 16
+
+    func inspectPrivateKey(armored: Data) -> PrivateKeyInventory? {
+        guard let text = String(data: armored, encoding: .utf8),
+              let binary = PgpFingerprint.dearmorSingleBlock(text, blockType: Self.privateKeyBlock),
+              let packets = PgpFingerprint.packets(in: binary),
+              packets.first?.tag == 5
+        else { return nil }
+
+        // One secret primary, then only its own subkeys and the packets a
+        // transferable key may carry. A public key or public subkey packet is
+        // material this device could not use, and a second primary is a
+        // second key in one member.
+        let allowedAfterPrimary: Set<UInt8> = [7, 2, 13, 17, 12, 21, 61]
+        guard packets.dropFirst().allSatisfy({ allowedAfterPrimary.contains($0.tag) }) else {
+            return nil
+        }
+        let secretBodies = packets.filter { $0.tag == 5 || $0.tag == 7 }.map(\.body)
+
+        var parseError: NSError?
+        guard let ring = CryptoNewKeyRingFromBinary(binary, &parseError), parseError == nil,
+              ring.countEntities() == 1,
+              let key = try? ring.getKey(0), key.isPrivate()
+        else { return nil }
+        defer { ring.clearPrivateParams() }
+
+        // The library's own public view of what it accepted. A subkey it
+        // dropped, or one it could not parse, leaves the counts unequal.
+        guard let publicBinary = try? key.getPublicKey(),
+              let publicPackets = PgpFingerprint.packets(in: publicBinary)
+        else { return nil }
+        let publicBodies = publicPackets.filter { $0.tag == 6 || $0.tag == 14 }
+        guard publicBodies.first?.tag == 6, publicBodies.count == secretBodies.count else {
+            return nil
+        }
+
+        var fingerprints: [String] = []
+        for (secret, publicPacket) in zip(secretBodies, publicBodies) {
+            let publicBody = publicPacket.body
+            // A secret-key packet is its public-key body followed by the S2K
+            // usage octet. Zero means the secret is stored in the clear; any
+            // other value is a passphrase-protected packet (refused before
+            // any password KDF could run) or a GNU dummy stub with no secret.
+            guard secret.count > publicBody.count,
+                  secret.starts(with: publicBody),
+                  secret[secret.startIndex + publicBody.count] == 0,
+                  let fingerprint = PgpFingerprint.fingerprint(ofKeyPacketBody: publicBody)
+            else { return nil }
+            fingerprints.append(fingerprint)
+        }
+        guard Set(fingerprints).count == fingerprints.count, let primary = fingerprints.first else {
+            return nil
+        }
+        return PrivateKeyInventory(primaryFingerprint: primary, keyFingerprints: fingerprints)
+    }
+
+    func legacyInventories(armored: Data) -> [PrivateKeyInventory]? {
+        let keys = Self.keys(inArmored: armored)
+        guard !keys.isEmpty else { return nil }
+        defer { keys.forEach { _ = $0.clearPrivateParams() } }
+        var inventories: [PrivateKeyInventory] = []
+        for key in keys {
+            guard let inventory = Self.publicInventory(of: key) else { return nil }
+            inventories.append(inventory)
+        }
+        return inventories
+    }
+
+    func mergeLegacy(current: Data, previous: Data) -> Data? {
+        let currentKeys = Self.keys(inArmored: current)
+        let previousKeys = Self.keys(inArmored: previous)
+        defer { (currentKeys + previousKeys).forEach { _ = $0.clearPrivateParams() } }
+        guard !currentKeys.isEmpty, !previousKeys.isEmpty else { return nil }
+
+        var currentInventories: [PrivateKeyInventory] = []
+        for key in currentKeys {
+            guard let inventory = Self.publicInventory(of: key) else { return nil }
+            currentInventories.append(inventory)
+        }
+
+        // Current first: signing and the Sent copy read the first key of a
+        // legacy collection, so the newest material must lead.
+        var kept = currentKeys
+        for key in previousKeys {
+            guard let inventory = Self.publicInventory(of: key) else { return nil }
+            let covered = currentInventories.contains { held in
+                held.primaryFingerprint == inventory.primaryFingerprint
+                    && Set(held.keyFingerprints).isSuperset(of: inventory.keyFingerprints)
+            }
+            // A retired key is kept whole. Where the account rotated a subkey
+            // under the same primary, the older entity rides behind the newer
+            // one: decryption tries both, signing only ever sees the first.
+            if !covered { kept.append(key) }
+        }
+        guard kept.count <= Self.maxLegacyKeys else { return nil }
+
+        var binary = Data()
+        defer { binary.resetBytes(in: 0..<binary.count) }
+        for key in kept {
+            guard let serialized = try? key.serialize() else { return nil }
+            binary.append(serialized)
+        }
+        var armorError: NSError?
+        let armored = ArmorArmorWithType(binary, Self.privateKeyBlock, &armorError)
+        guard armorError == nil, !armored.isEmpty else { return nil }
+        return Data(armored.utf8)
+    }
+
     // MARK: - Private
+
+    /// Every private, unlocked key in the given armored blobs. A blob that
+    /// does not parse, or a key still wanting a passphrase, only shrinks the
+    /// set; an empty set is `unusableKey`, because guessing an empty
+    /// passphrase would report "wrong key" for what is really a locked one.
+    private func decryptionRing(fromArmored blobs: [Data]) throws -> CryptoKeyRing {
+        guard let ring = CryptoKeyRing(nil) else { throw PgpCryptoError.unusableKey }
+        for blob in blobs {
+            for key in Self.keys(inArmored: blob) {
+                var locked: ObjCBool = false
+                guard key.isPrivate(),
+                      (try? key.isLocked(&locked)) != nil,
+                      !locked.boolValue
+                else { continue }
+                try? ring.add(key)
+            }
+        }
+        guard ring.countEntities() > 0 else { throw PgpCryptoError.unusableKey }
+        return ring
+    }
+
+    /// The key that signs: the first of the blob, which in a legacy
+    /// collection is the current one (merges keep it first) and in a
+    /// keyring member is the member itself. `CryptoKey(fromArmored:)` cannot
+    /// be used here — gopenpgp refuses armor holding more than one key, which
+    /// is exactly what a merged collection is.
+    private static func signingKey(fromArmored blob: Data) throws -> CryptoKey {
+        guard let key = keys(inArmored: blob).first, key.isPrivate() else {
+            throw PgpCryptoError.unusableKey
+        }
+        return key
+    }
+
+    /// Every key in one armored blob, which may be a legacy collection.
+    private static func keys(inArmored blob: Data) -> [CryptoKey] {
+        let text = String(decoding: blob, as: UTF8.self)
+        var error: NSError?
+        guard let binary = ArmorUnarmor(text, &error), error == nil, !binary.isEmpty,
+              let ring = CryptoNewKeyRingFromBinary(binary, &error), error == nil
+        else { return [] }
+        return (0..<ring.countEntities()).compactMap { try? ring.getKey($0) }
+    }
+
+    /// Fingerprints of a parsed key, from the key packets of its public view.
+    private static func publicInventory(of key: CryptoKey) -> PrivateKeyInventory? {
+        guard let publicBinary = try? key.getPublicKey(),
+              let packets = PgpFingerprint.packets(in: publicBinary)
+        else { return nil }
+        let fingerprints = packets
+            .filter { $0.tag == 6 || $0.tag == 14 }
+            .compactMap { PgpFingerprint.fingerprint(ofKeyPacketBody: $0.body) }
+        guard let primary = fingerprints.first else { return nil }
+        return PrivateKeyInventory(primaryFingerprint: primary, keyFingerprints: fingerprints)
+    }
 
     /// Collects armored public keys into one ring, skipping any that do not
     /// parse. A key that fails to parse only ever shrinks the candidate set.

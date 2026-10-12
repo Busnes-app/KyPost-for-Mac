@@ -49,6 +49,14 @@ nonisolated enum EnrollmentState: Equatable, Sendable {
     /// GCM authentication failed: hostile or stale, never a retry.
     case envelopeRejected
     case sealFailed(String)
+    /// The ring did not match what the server says it delivered, or storing
+    /// it would lose key material this device already holds. Nothing was
+    /// stored; the previous record is kept.
+    case keyringRejected
+    /// The server compared this device's acknowledgement with its delivery
+    /// record and refused it. Final — the same claim cannot become true by
+    /// repeating it. The record stays sealed; the user enrols again.
+    case acknowledgementRefused
     case cancelled
     case failed(String)
 }
@@ -62,7 +70,20 @@ protocol EnrollmentTransport: Sendable {
     func publish(publicKey: Data) async -> EnrollmentPublishResult
     /// The sealed envelope, or nil when the browser has not sealed one yet.
     func fetchEnvelope() async -> EnrollmentEnvelopeResult
-    func reportEnrolled(_ enrolled: Bool) async
+    /// Tells the server what this device now holds.
+    func report(_ report: EnrollmentReport) async -> EnrollmentReportResult
+}
+
+nonisolated enum EnrollmentReportResult: Equatable, Sendable {
+    case ok
+    /// 409: the server compared the claim with its record and refused. Never
+    /// retried.
+    case conflict
+    case unauthorized
+    /// 404: no device row left to correct.
+    case notFound
+    /// Transport failure, 429, 5xx — worth restating later.
+    case failed(String)
 }
 
 nonisolated enum EnrollmentPublishResult: Equatable, Sendable {
@@ -73,7 +94,9 @@ nonisolated enum EnrollmentPublishResult: Equatable, Sendable {
 }
 
 nonisolated enum EnrollmentEnvelopeResult: Equatable, Sendable {
-    case sealed(String)
+    /// `delivery` is nil only from a server too old to record deliveries; a
+    /// v3 envelope without it is refused rather than opened.
+    case sealed(String, delivery: DeliveryMetadata? = nil)
     /// 404 covers both "never sealed" and "expired" — indistinguishable by
     /// design, and both mean keep waiting or re-run. One case so a caller
     /// cannot accidentally split them.
@@ -86,8 +109,13 @@ nonisolated enum EnrollmentEnvelopeResult: Equatable, Sendable {
 /// ceremony takes no dependency on the Keychain or LocalAuthentication.
 protocol EnrollmentSealer: Sendable {
     func deviceRawPublicKey() throws -> Data
-    /// Opens and stores, or throws. Requires user presence.
-    func openAndStore(envelopeJSON: String, identityFingerprint: String) async throws
+    /// Opens, validates, stores durably and holds, or throws — and returns
+    /// what to acknowledge. Requires user presence.
+    func openAndStore(
+        envelopeJSON: String,
+        identityFingerprint: String,
+        delivery: DeliveryMetadata?
+    ) async throws -> EnrollmentReport
 }
 
 /// Drives enrollment and reports every transition.
@@ -104,6 +132,14 @@ actor EnrollmentCeremony {
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
     private let onState: @Sendable (EnrollmentState) -> Void
+    /// Records that the acknowledgement did not land, for the launch-time
+    /// reporter to restate. Android enqueues a WorkManager job here.
+    private let deferReport: @Sendable () -> Void
+    /// Records that it was settled — landed, or refused with a 409 — clearing
+    /// any earlier pending restatement. A refused claim left pending from an
+    /// earlier failed delivery would otherwise be repeated on the next
+    /// foreground, and a 409 is terminal.
+    private let reportSettled: @Sendable () -> Void
 
     /// Set once a keypair exists, so teardown knows whether there is anything
     /// to destroy and cannot report a deletion it never performed.
@@ -119,8 +155,12 @@ actor EnrollmentCeremony {
         sleep: @escaping @Sendable (TimeInterval) async -> Void = { seconds in
             try? await Task.sleep(for: .seconds(seconds))
         },
+        deferReport: @escaping @Sendable () -> Void = {},
+        reportSettled: @escaping @Sendable () -> Void = {},
         onState: @escaping @Sendable (EnrollmentState) -> Void
     ) {
+        self.deferReport = deferReport
+        self.reportSettled = reportSettled
         self.transport = transport
         self.sealer = sealer
         self.deviceId = deviceId
@@ -181,8 +221,8 @@ actor EnrollmentCeremony {
             emit(.showingCode(code: code, windowOpen: true))
 
             switch await transport.fetchEnvelope() {
-            case .sealed(let json):
-                return await finish(envelopeJSON: json, fingerprint: fingerprint)
+            case .sealed(let json, let delivery):
+                return await finish(envelopeJSON: json, fingerprint: fingerprint, delivery: delivery)
             case .notSealed:
                 await sleep(enrollmentPollInterval)
             case .unauthorized:
@@ -194,7 +234,11 @@ actor EnrollmentCeremony {
         return emit(.timedOut)
     }
 
-    private func finish(envelopeJSON: String, fingerprint: String) async -> EnrollmentState {
+    private func finish(
+        envelopeJSON: String,
+        fingerprint: String,
+        delivery: DeliveryMetadata?
+    ) async -> EnrollmentState {
         // Re-checked here, not only at the start: the user can turn Hostile
         // Location Protection on while the window is open, and storing an
         // envelope after that would leave the account's key on a device that
@@ -202,10 +246,12 @@ actor EnrollmentCeremony {
         if hostileLocationEnabled() { return emit(.hostileLocationEnabled) }
 
         emit(.opening)
+        let report: EnrollmentReport
         do {
-            try await sealer.openAndStore(
+            report = try await sealer.openAndStore(
                 envelopeJSON: envelopeJSON,
-                identityFingerprint: fingerprint
+                identityFingerprint: fingerprint,
+                delivery: delivery
             )
         } catch EnrollmentVaultError.cancelled {
             // Not an error: the user dismissed a prompt they raised. The
@@ -213,11 +259,25 @@ actor EnrollmentCeremony {
             return emit(.cancelled)
         } catch EnrollmentSealerError.envelopeRejected {
             return emit(.envelopeRejected)
+        } catch EnrollmentSealerError.keyringRejected {
+            return emit(.keyringRejected)
         } catch {
             return emit(.sealFailed("\(error)"))
         }
 
-        await transport.reportEnrolled(true)
+        // Only now, with the record durable: an acknowledgement for material
+        // that is not on disk would be a claim this device cannot back.
+        switch await transport.report(report) {
+        case .ok:
+            reportSettled()
+        case .conflict:
+            reportSettled()
+            return emit(.acknowledgementRefused)
+        case .unauthorized, .notFound, .failed:
+            // A dropped report is not a failed enrollment: the record is
+            // sealed, so the next launch or foreground restates it.
+            deferReport()
+        }
         return emit(.enrolled)
     }
 
@@ -237,4 +297,10 @@ nonisolated enum EnrollmentSealerError: Error, Equatable {
     /// The envelope did not parse at all: wrong version, wrong algorithm, or
     /// wrong-sized fields. Same conclusion — re-run the ceremony.
     case envelopeMalformed
+    /// The opened ring is not what the server delivered, or storing it would
+    /// lose key material already held. Nothing was stored.
+    case keyringRejected
+    /// The legacy merge with the previous record could not be built. Nothing
+    /// was stored; the previous record is kept.
+    case mergeFailed
 }

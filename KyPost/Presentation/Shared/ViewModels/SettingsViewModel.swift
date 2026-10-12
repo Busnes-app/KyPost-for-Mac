@@ -132,6 +132,9 @@ final class SettingsViewModel {
         // goes with it; destroying the sealed blob while an unsealed one sits
         // in this process would be theatre.
         enrollmentVault?.destroy()
+        // No device row is left to correct, and a pending marker must not
+        // speak for whatever device is paired next.
+        enrollmentVault?.forgetPendingReports()
         EnrollmentSession.shared.clear()
         statusMessage = "Pairing removed"
     }

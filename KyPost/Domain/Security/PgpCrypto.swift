@@ -38,9 +38,15 @@ nonisolated enum PgpCryptoError: Error, Equatable {
 protocol PgpDecrypting: Sendable {
     /// Decrypts and verifies in one pass. `signerKeys` are the candidate
     /// public keys, already narrowed to the sender by the server.
+    ///
+    /// `privateKeys` is **every** key this device holds, current and retired:
+    /// each element is one armored blob, which may itself be a legacy
+    /// collection of several keys. Mail encrypted to a retired key, or to a
+    /// hidden recipient, can only be opened by trying them all. A blob that
+    /// does not parse only shrinks the set; none parsing is `unusableKey`.
     func decrypt(
         armoredCiphertext: String,
-        privateKey: Data,
+        privateKeys: [Data],
         signerKeys: [String]
     ) throws -> DecryptedMessage
 
@@ -74,6 +80,52 @@ protocol PgpDecrypting: Sendable {
     func fingerprint(ofArmoredPublicKey key: String) -> String?
 }
 
+extension PgpDecrypting {
+    /// One armored key or legacy collection.
+    func decrypt(
+        armoredCiphertext: String,
+        privateKey: Data,
+        signerKeys: [String]
+    ) throws -> DecryptedMessage {
+        try decrypt(
+            armoredCiphertext: armoredCiphertext,
+            privateKeys: [privateKey],
+            signerKeys: signerKeys
+        )
+    }
+}
+
+/// What one private key's own packets say about it. Fingerprints are
+/// uppercase hex, computed from the key packets — never copied from a field
+/// beside them.
+nonisolated struct PrivateKeyInventory: Equatable, Sendable {
+    var primaryFingerprint: String
+    /// The primary and every subkey.
+    var keyFingerprints: [String]
+}
+
+/// Packet-level checks on private key material. Lives behind the crypto seam
+/// because only the library can say which packets it accepted.
+protocol PgpKeyInspecting: Sendable {
+    /// Exactly one complete, **unprotected** transferable secret key in one
+    /// armor block, or nil. Refused: public-only or missing secret packets
+    /// (including GNU dummy stubs), any passphrase-protected packet, a second
+    /// key, a subkey the library dropped, anything outside the armor block.
+    func inspectPrivateKey(armored: Data) -> PrivateKeyInventory?
+
+    /// Every key in a legacy armored collection, in order, or nil when it
+    /// does not parse. Used only to compare what a vault holds; it does not
+    /// apply the keyring rules above.
+    func legacyInventories(armored: Data) -> [PrivateKeyInventory]?
+
+    /// A legacy collection holding `current` first and every key of
+    /// `previous` that `current` does not already cover, so mail encrypted
+    /// to a retired key still opens after re-enrollment. Nil when either
+    /// side does not parse — the caller then keeps the previous record
+    /// rather than storing something that lost history.
+    func mergeLegacy(current: Data, previous: Data) -> Data?
+}
+
 /// Writing. Used only on the client-custody send path.
 protocol PgpEncrypting: Sendable {
     /// Encrypts to `recipientKeys` and signs with the device's key.
@@ -100,14 +152,18 @@ let maxDecompressedPlaintextBytes = 32 * 1024 * 1024
 /// returns nothing is indistinguishable from a client-protected message the
 /// user must open in webmail, and that is precisely the confusion the message
 /// states exist to avoid.
-struct UnavailablePgpCrypto: PgpDecrypting, PgpEncrypting {
+struct UnavailablePgpCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspecting {
     func decrypt(
         armoredCiphertext: String,
-        privateKey: Data,
+        privateKeys: [Data],
         signerKeys: [String]
     ) throws -> DecryptedMessage {
         throw PgpCryptoError.unavailable
     }
+
+    func inspectPrivateKey(armored: Data) -> PrivateKeyInventory? { nil }
+    func legacyInventories(armored: Data) -> [PrivateKeyInventory]? { nil }
+    func mergeLegacy(current: Data, previous: Data) -> Data? { nil }
 
     func verifyDetached(
         signedBytes: Data,

@@ -13,16 +13,42 @@
 import CryptoKit
 import Foundation
 
-/// Moves together with the version tag and the AAD prefix.
+/// The HKDF info string and AAD prefix, per version. Moves together with the
+/// version tag; changing either alone strands every device on that version.
 ///
 /// **v1 → v2:** the AAD stopped being pipe-delimited concatenation and became
 /// length-prefixed. See `deviceEnvelopeAAD`.
-let envelopeInfo = "kypost-device-envelope/v2"
-private let envelopeVersion = "2"
+/// **v2 → v3:** the plaintext became the complete `kypost-pgp-keyring-v1`
+/// ring rather than one armored key. Framing and AAD layout are unchanged;
+/// only the domain string differs, so a v3 envelope can never be opened as v2.
+nonisolated func envelopeDomain(version: Int) -> String {
+    "kypost-device-envelope/v\(version)"
+}
+
+/// One armored private key (or legacy collection), sealed by the browser's
+/// legacy path.
+nonisolated let envelopeVersionLegacy = 2
+/// The complete `kypost-pgp-keyring-v1` ring, for a converted account.
+nonisolated let envelopeVersionKeyring = 3
+/// What this build can open, and what it publishes as `envelopeVersions`.
+/// Publishing without the list resets the server's claim to `[2]`, and the
+/// browser then refuses to seal v3.
+nonisolated let supportedEnvelopeVersions = [envelopeVersionLegacy, envelopeVersionKeyring]
+
+/// The v2 domain, kept as a name because tests and the legacy path read it.
+nonisolated let envelopeInfo = envelopeDomain(version: envelopeVersionLegacy)
+
+/// Serialized v3 envelope bound, checked before any JSON or base64 work.
+nonisolated let maxDeviceEnvelopeV3Bytes = 128 * 1024
+
 private let envelopeAlgorithm = "ECDH-P256+HKDF-SHA256+A256GCM"
 private let gcmTagBytes = 16
+private let envelopeKeysV3: Set<String> = ["v", "alg", "epk", "iv", "ct"]
 
+/// The version is parsed once and travels with the fields, so the opener
+/// cannot be pointed at a different domain than the envelope declared.
 nonisolated struct DeviceEnvelopeFields: Equatable, Sendable {
+    var version: Int = envelopeVersionLegacy
     /// The browser's ephemeral public key, raw SEC1 (65 bytes, 0x04-prefixed).
     var epk: Data
     var iv: Data
@@ -37,22 +63,85 @@ nonisolated struct DeviceEnvelopeFields: Equatable, Sendable {
 /// compressed markers, the point at infinity and trailing junk here means the
 /// ECDH layer is not the only thing standing between an attacker-supplied blob
 /// and the key.
-nonisolated func parseDeviceEnvelope(_ json: String) -> DeviceEnvelopeFields? {
+///
+/// v3 is stricter, matching the server's own framing check and Android: the
+/// tag must be the JSON **number** 3, the object holds exactly the five
+/// fields, the whole envelope fits in 128 KiB, base64 is canonical and padded,
+/// and the ephemeral point must be on P-256. v2 keeps its historical leniency
+/// (a quoted `"2"` has always opened). A v3 envelope is never retried as v2.
+nonisolated func parseDeviceEnvelope(
+    _ json: String,
+    allowedVersions: Set<Int> = Set(supportedEnvelopeVersions)
+) -> DeviceEnvelopeFields? {
+    if allowedVersions.contains(envelopeVersionKeyring),
+       !allowedVersions.contains(envelopeVersionLegacy),
+       json.utf8.count > maxDeviceEnvelopeV3Bytes {
+        return nil
+    }
     guard let data = json.data(using: .utf8),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          jsonPrimitiveContent(object["v"]) == envelopeVersion,
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+
+    let version: Int
+    if jsonPrimitiveContent(object["v"]) == String(envelopeVersionLegacy) {
+        version = envelopeVersionLegacy
+    } else if let number = object["v"] as? NSNumber, isJSONInteger(number, equalTo: envelopeVersionKeyring) {
+        version = envelopeVersionKeyring
+    } else {
+        return nil
+    }
+    guard allowedVersions.contains(version),
           object["alg"] as? String == envelopeAlgorithm,
           let epkText = object["epk"] as? String,
           let ivText = object["iv"] as? String,
-          let ctText = object["ct"] as? String,
-          let epk = Data(base64Encoded: epkText),
-          let iv = Data(base64Encoded: ivText),
-          let ct = Data(base64Encoded: ctText)
+          let ctText = object["ct"] as? String
     else { return nil }
 
+    let epk, iv, ct: Data
+    if version == envelopeVersionKeyring {
+        guard Set(object.keys) == envelopeKeysV3,
+              data.count <= maxDeviceEnvelopeV3Bytes,
+              let strictEpk = strictBase64(epkText),
+              let strictIv = strictBase64(ivText),
+              let strictCt = strictBase64(ctText)
+        else { return nil }
+        epk = strictEpk; iv = strictIv; ct = strictCt
+    } else {
+        guard let looseEpk = Data(base64Encoded: epkText),
+              let looseIv = Data(base64Encoded: ivText),
+              let looseCt = Data(base64Encoded: ctText)
+        else { return nil }
+        epk = looseEpk; iv = looseIv; ct = looseCt
+    }
+
     guard epk.count == 65, epk.first == 0x04 else { return nil }
+    // On-curve and not the identity, checked here for v3 so the framing
+    // stands on its own before any ECDH layer sees the point. CryptoKit's
+    // import validates both.
+    if version == envelopeVersionKeyring,
+       (try? P256.KeyAgreement.PublicKey(x963Representation: epk)) == nil {
+        return nil
+    }
     guard iv.count == 12, ct.count > gcmTagBytes else { return nil }
-    return DeviceEnvelopeFields(epk: epk, iv: iv, ct: ct)
+    return DeviceEnvelopeFields(version: version, epk: epk, iv: iv, ct: ct)
+}
+
+/// Standard alphabet, padded, canonical. Foundation alone accepts encodings
+/// with non-zero trailing bits, which lets two strings name one ciphertext.
+nonisolated func strictBase64(_ text: String) -> Data? {
+    guard !text.isEmpty, text.count % 4 == 0,
+          let data = Data(base64Encoded: text),
+          data.base64EncodedString() == text
+    else { return nil }
+    return data
+}
+
+/// A JSON integer token (not a boolean, not `3.0`) equal to `value`.
+private nonisolated func isJSONInteger(_ number: NSNumber, equalTo value: Int) -> Bool {
+    guard CFGetTypeID(number) != CFBooleanGetTypeID(),
+          !CFNumberIsFloatType(number as CFNumber)
+    else { return false }
+    return number.intValue == value
 }
 
 /// The textual content of a JSON primitive, whether it arrived as a string or
@@ -79,6 +168,8 @@ enum DeviceEnvelopeError: Error, Equatable {
     /// than trusting the caller.
     case malformedFingerprint
     case fieldTooLongToLengthPrefix
+    case unsupportedVersion
+    case emptyDeviceId
 }
 
 /// Binds the sealing to this device and this identity, as **length-prefixed**
@@ -107,16 +198,31 @@ enum DeviceEnvelopeError: Error, Equatable {
 /// formatting bug arriving as a substituted-key alarm trains users to dismiss
 /// the one alarm this feature has. A doc comment is not a contract across
 /// three implementations.
+///
+/// The domain is the version's: v3 additionally requires a non-empty device
+/// id and a full 40- or 64-digit fingerprint, the only lengths a validated
+/// active key can have. The device id goes in unchanged — no trimming,
+/// normalisation or case folding.
 nonisolated func deviceEnvelopeAAD(
+    version: Int = envelopeVersionLegacy,
     deviceId: String,
     pgpFingerprint: String
 ) throws -> Data {
+    guard version == envelopeVersionLegacy || version == envelopeVersionKeyring else {
+        throw DeviceEnvelopeError.unsupportedVersion
+    }
     let fingerprint = pgpFingerprint.uppercased().filter { !$0.isWhitespace }
     guard !fingerprint.isEmpty,
           fingerprint.allSatisfy({ $0.isHexDigit && $0.isASCII && !$0.isLowercase })
     else { throw DeviceEnvelopeError.malformedFingerprint }
+    if version == envelopeVersionKeyring {
+        guard !deviceId.isEmpty else { throw DeviceEnvelopeError.emptyDeviceId }
+        guard fingerprint.count == 40 || fingerprint.count == 64 else {
+            throw DeviceEnvelopeError.malformedFingerprint
+        }
+    }
 
-    let info = Data(envelopeInfo.utf8)
+    let info = Data(envelopeDomain(version: version).utf8)
     let id = Data(deviceId.utf8)
     let fp = Data(fingerprint.utf8)
     guard id.count <= 0xFFFF, fp.count <= 0xFFFF else {
@@ -155,7 +261,7 @@ nonisolated func openDeviceEnvelope(
     let key = sharedSecret.hkdfDerivedSymmetricKey(
         using: SHA256.self,
         salt: ownRawPublicKey,
-        sharedInfo: Data(envelopeInfo.utf8),
+        sharedInfo: Data(envelopeDomain(version: fields.version).utf8),
         outputByteCount: 32
     )
     guard let box = try? AES.GCM.SealedBox(

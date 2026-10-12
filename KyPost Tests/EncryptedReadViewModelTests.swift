@@ -26,7 +26,7 @@ private struct StubCrypto: PgpDecrypting {
     var error: PgpCryptoError?
     func decrypt(
         armoredCiphertext: String,
-        privateKey: Data,
+        privateKeys: [Data],
         signerKeys: [String]
     ) throws -> DecryptedMessage {
         if let error { throw error }

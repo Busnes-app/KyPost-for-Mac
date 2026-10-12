@@ -26,6 +26,16 @@ private struct RelayClientEncryptedRequest: Encodable {
     var deliveries: [RelayDeliveryDTO]
     var sentCopy: String
     var sentCopyEncrypted: Bool
+    /// Omitted when nil (synthesised `encodeIfPresent`): a legacy account must
+    /// not see a made-up generation.
+    var materialGeneration: UInt64?
+}
+
+/// The two converted-account refusals of KyPost-Server #210, told apart by
+/// JSON field — never by the prose, which is user-facing copy and may change.
+private struct GenerationConflictBody: Decodable {
+    var reenrollmentRequired: Bool?
+    var pgpStateChanged: Bool?
 }
 
 final class ClientEncryptedSendClient: ClientEncryptedTransport {
@@ -60,7 +70,8 @@ final class ClientEncryptedSendClient: ClientEncryptedTransport {
                 RelayDeliveryDTO(recipients: $0.recipients, ciphertext: $0.ciphertext)
             },
             sentCopy: message.sentCopy,
-            sentCopyEncrypted: true
+            sentCopyEncrypted: true,
+            materialGeneration: message.materialGeneration
         )
 
         do {
@@ -75,8 +86,19 @@ final class ClientEncryptedSendClient: ClientEncryptedTransport {
                 warning: response.warning ?? ""
             ))
         } catch {
-            return .failure(MailSendFailure(message: Self.message(for: error)))
+            return .failure(MailSendFailure(message: Self.message(for: error), kind: Self.kind(for: error)))
         }
+    }
+
+    /// `reenrollmentRequired` is checked first: it is the more specific of the
+    /// two, and the server never sets both.
+    static func kind(for error: Error) -> MailSendFailure.Kind {
+        guard case let NetworkError.conflict(body) = error,
+              let parsed = try? JSONDecoder().decode(GenerationConflictBody.self, from: Data(body.utf8))
+        else { return .other }
+        if parsed.reenrollmentRequired == true { return .reenrollmentRequired }
+        if parsed.pgpStateChanged == true { return .pgpStateChanged }
+        return .other
     }
 
     /// Sentences rather than a forwarded status code.

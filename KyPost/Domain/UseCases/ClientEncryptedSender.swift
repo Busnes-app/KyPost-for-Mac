@@ -57,6 +57,10 @@ nonisolated struct ClientEncryptedMessage: Equatable, Sendable {
     var deliveries: [ClientEncryptedDelivery]
     var sentCopy: String
     var mode: String
+    /// The held keyring's generation; nil for legacy armor. A converted
+    /// account refuses a send that does not name its current generation
+    /// (KyPost-Server #210), and a legacy account must never see a made-up one.
+    var materialGeneration: UInt64? = nil
 }
 
 nonisolated struct ClientSendResult: Equatable, Sendable {
@@ -72,7 +76,19 @@ protocol ClientEncryptedTransport: Sendable {
 /// Carries the relay's refusal without this file depending on how it was
 /// spelled.
 nonisolated struct MailSendFailure: Equatable, Sendable, Error {
+    /// The refusals the sender turns into their own exit-table rows.
+    nonisolated enum Kind: Equatable, Sendable {
+        case other
+        /// 409 `reenrollmentRequired`: this device is not enrolled at the
+        /// account's current generation.
+        case reenrollmentRequired
+        /// 409 `pgpStateChanged`: the account's key material moved since this
+        /// device's keys were delivered.
+        case pgpStateChanged
+    }
+
     var message: String
+    var kind: Kind = .other
 }
 
 /// Everything the sender needs from a draft, so this file does not depend on
@@ -111,6 +127,12 @@ nonisolated enum ClientSendOutcome: Equatable, Sendable {
     case resolveFailed(String)
     case encryptFailed(String)
     case sendFailed(String)
+    /// The relay refused: this device holds key material from before the
+    /// account's current generation. Set up encryption on this device again.
+    case reenrollmentRequired
+    /// The relay refused: the account's keys changed after this device's were
+    /// delivered. Set up encryption on this device again.
+    case pgpStateChanged
 }
 
 nonisolated struct ClientEncryptedSender: Sendable {
@@ -195,8 +217,8 @@ nonisolated struct ClientEncryptedSender: Sendable {
 
         if !session.isHeld {
             switch await opener.open() {
-            case .opened(let privateKey):
-                session.put(armoredKey: String(decoding: privateKey, as: UTF8.self))
+            case .opened(let material):
+                session.install(material)
             case .cancelled: return .cancelled
             case .notEnrolled: return .notEnrolled
             case .noSecureLockScreen: return .noSecureLockScreen
@@ -240,8 +262,12 @@ nonisolated struct ClientEncryptedSender: Sendable {
             case stop(ClientSendOutcome)
         }
 
-        let prepared: Prepared = session.withKey { key in
-            guard let privateKey = key else { return .stop(.notEnrolled) }
+        // Signing and the Sent copy use the explicit active key only; a
+        // retired key is never a fallback. The generation rides on the
+        // message so the relay can refuse a send prepared under stale keys.
+        let prepared: Prepared = session.withMaterial { material in
+            guard let material else { return .stop(.notEnrolled) }
+            let privateKey = material.signingKey
 
             var deliveries: [ClientEncryptedDelivery] = []
             for recipients in groups {
@@ -287,7 +313,8 @@ nonisolated struct ClientEncryptedSender: Sendable {
                     bcc: fields.bcc,
                     deliveries: deliveries,
                     sentCopy: sentCopy,
-                    mode: draft.mode.isEmpty ? "html" : draft.mode
+                    mode: draft.mode.isEmpty ? "html" : draft.mode,
+                    materialGeneration: material.materialGeneration
                 ))
             } catch {
                 return .stop(.encryptFailed(Self.message(for: error)))
@@ -304,7 +331,11 @@ nonisolated struct ClientEncryptedSender: Sendable {
         case .success(let result):
             return .sent(sentSaved: result.sentSaved, warning: result.warning)
         case .failure(let failure):
-            return .sendFailed(failure.message)
+            switch failure.kind {
+            case .reenrollmentRequired: return .reenrollmentRequired
+            case .pgpStateChanged: return .pgpStateChanged
+            case .other: return .sendFailed(failure.message)
+            }
         }
     }
 

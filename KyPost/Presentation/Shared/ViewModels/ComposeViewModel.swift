@@ -652,6 +652,13 @@ final class ComposeViewModel {
             errorMessage = "Couldn't encrypt this message: \(message)"
         case .sendFailed(let message):
             errorMessage = "Couldn't send this message: \(message)"
+        // Both converted-account refusals mean the keys on this device are no
+        // longer the account's current ones; each says why, and both name the
+        // only remedy. Not retryable as-is.
+        case .reenrollmentRequired:
+            errorMessage = "This device holds older encryption keys. Set up encryption on this device again in Settings, then send."
+        case .pgpStateChanged:
+            errorMessage = "Your account's encryption keys changed since this device was set up. Set up encryption on this device again in Settings, then send."
         }
     }
 

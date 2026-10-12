@@ -126,7 +126,7 @@ final class SingletonGraph {
     func makeEncryptedMessageReader() -> EncryptedMessageReader? {
         guard let pairing = try? securePairingStore.loadPairing() else { return nil }
         return EncryptedMessageReader(
-            opener: DeviceVaultOpener(vault: enrollmentVault),
+            opener: DeviceVaultOpener(vault: enrollmentVault, inspector: pgpCrypto),
             payloads: PgpPayloadClient(
                 httpClient: httpClient,
                 serverUrl: pairing.srv,
@@ -144,7 +144,7 @@ final class SingletonGraph {
         guard let pairing = try? securePairingStore.loadPairing() else { return nil }
         let auth = RelayAuth(pairing: pairing)
         return ClientEncryptedSender(
-            opener: DeviceVaultOpener(vault: enrollmentVault),
+            opener: DeviceVaultOpener(vault: enrollmentVault, inspector: pgpCrypto),
             resolver: RecipientResolveClient(
                 httpClient: httpClient, serverUrl: pairing.srv, auth: auth
             ),
@@ -175,12 +175,30 @@ final class SingletonGraph {
                 serverUrl: pairing.srv,
                 auth: auth
             ),
-            sealer: VaultSealer(vault: vault, deviceId: deviceId),
+            sealer: VaultSealer(vault: vault, deviceId: deviceId, inspector: pgpCrypto),
             deviceId: deviceId,
             hostileLocationEnabled: { hostileStore.enabled },
             hasDeviceCredential: { vault.hasDeviceCredential },
+            deferReport: { vault.markReportPending() },
+            reportSettled: { vault.clearReportPending() },
             onState: onState
         )
+    }
+
+    /// Restates enrollment to the server when an acknowledgement did not land
+    /// or a teardown has not been reported; nil when unpaired, because with no
+    /// pairing there is no device row to correct.
+    func makeEnrollmentStateReporter() -> EnrollmentStateReporter? {
+        guard let pairing = try? securePairingStore.loadPairing() else { return nil }
+        let client = EnrollmentClient(
+            httpClient: httpClient,
+            bootstrapClient: pgpSendClient,
+            serverUrl: pairing.srv,
+            auth: RelayAuth(pairing: pairing)
+        )
+        return EnrollmentStateReporter(store: enrollmentVault) { report in
+            await client.report(report)
+        }
     }
     lazy var mailCursorStore = MailCursorStore(
         defaults: userDefaults,

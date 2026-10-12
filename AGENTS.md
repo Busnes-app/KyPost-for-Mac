@@ -210,6 +210,15 @@ Each rule below is a defect someone already found once.
 - `sanitizeHeaderValue` **must iterate `unicodeScalars`.** In Swift `"\r\n"` is
   a single `Character` equal to neither `"\r"` nor `"\n"`, so a `Character`
   loop lets CRLF through and header injection works.
+- **Sign with `HeldKeyMaterial.signingKey` only** — a keyring's explicit active
+  member, or the first key of a legacy collection. A retired key is never a
+  fallback. gopenpgp's `CryptoKey(fromArmored:)` refuses a multi-key armor, so
+  `GopenPGPCrypto` takes the collection's first key itself.
+- **`materialGeneration` rides on `/api/mail/send-pgp`** when a keyring is held
+  and is **omitted** (never null, never invented) for legacy armor. The two
+  converted-account 409s are told apart by JSON field — `reenrollmentRequired`
+  checked first, then `pgpStateChanged` — and are their own `ClientSendOutcome`
+  rows, each with its own sentence naming re-enrollment. Never by prose.
 
 ### Reading client-protected mail (`Domain/UseCases/EncryptedMessageReader.swift`)
 
@@ -243,10 +252,15 @@ Each rule below is a defect someone already found once.
   If the key needs unlocking, opening the message shows Decrypt without
   prompting; that deliberate action raises the unlock prompt. Cancelling is a
   non-error and leaves Decrypt available for another attempt.
-- `EnrollmentSession` holds the key as bytes it can zero, and every session
-  boundary must clear it: app lock, backgrounding, memory pressure, security
-  wipe, unpair. Android's equivalent was missed by the wipe path, which then
-  reported "Complete" with the private key still in the process heap.
+- `EnrollmentSession` holds the key material as bytes it can zero — **every**
+  member of a held keyring and its original bytes, not just the active key —
+  and every session boundary must clear it: app lock, backgrounding, memory
+  pressure, security wipe, unpair. Android's equivalent was missed by the wipe
+  path, which then reported "Complete" with the private key still in the
+  process heap. Its storage is plain stored fields, not an enum payload:
+  zeroing a bound payload copy triggers copy-on-write and misses the original.
+- **Decrypt with every held key** (`HeldKeyMaterial.decryptionKeys`): mail
+  encrypted to a retired key, or to a hidden recipient, only opens that way.
 
 ### Signature attribution is entity-level (`Domain/Security/GopenPGPCrypto.swift`)
 
@@ -309,6 +323,55 @@ is not testing which keys are trusted.
 - The ceremony takes no platform types. That is what makes its whole exit table
   a plain unit test; if a port of it needs a host app to test, the port went
   wrong.
+
+Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
+
+- **Publish `envelopeVersions: [2, 3]`** (`supportedEnvelopeVersions`). Omitting
+  it resets the server's claim to `[2]` and the browser refuses to seal v3.
+- **The version picks the HKDF info and AAD domain** (`envelopeDomain`); a v3
+  envelope is never retried as v2. v3 framing is strict where v2 stays lenient:
+  numeric `v`, exactly five fields, 128 KiB, canonical padded base64, an
+  on-curve point; its AAD needs a non-empty device id and a 40/64-hex
+  fingerprint.
+- **A v3 envelope is opened only with the delivery metadata** from
+  `GET /api/pgp/device/envelope` (`version`, `materialGeneration`, `keyring`).
+  The opened `kypost-pgp-keyring-v1` ring (`PgpKeyring.swift`) must name the
+  AAD's fingerprint as active and match the delivery exactly — generation,
+  primary set, full inventory — else `keyringRejected` and nothing is touched.
+- **Every member's fingerprints come from its own packets** via
+  `PgpKeyInspecting`: one unprotected secret key per member (S2K usage octet
+  zero after the library's own public body), no public-only or dummy packets,
+  no subkey the library dropped. Subkey **binding signatures are not verified**
+  — gomobile exposes no API for it (Android checks them; a known gap).
+- **History is never overwritten** (`KeyringImport.swift`). A v2 re-enrollment
+  merges with the sealed legacy collection, current key first. A keyring
+  replaces a previous record only if it is the identical bytes (replay, nothing
+  rewritten) or a newer generation whose inventory contains every key held —
+  deliberately more permissive than Android's refuse-all-incomparable, and
+  equally lossless. Anything else keeps the previous record.
+- **The vault is one Keychain item** (`VaultRecord`: kind, generation,
+  fingerprint, material), so replacement is atomic and a failed write leaves
+  the old record. The earlier two-item layout is still read and retired on the
+  next store. A record that will not decode throws; it is never sealed over.
+- **Order: validate → store durably → hold → acknowledge.** No session install
+  and no acknowledgement for material not on disk.
+- **Acknowledge with metadata.** A keyring is confirmed as
+  `{encryptionEnrolled, envelopeVersion: 3, materialGeneration, fingerprint}`,
+  never the bare boolean. A 409 is `acknowledgementRefused`, terminal, never
+  retried — and it clears any pending marker an earlier failed delivery left.
+  A transient failure sets a pending marker that `EnrollmentStateReporter`
+  restates on the next unlocked foreground (Android: WorkManager), up to
+  `maxEnrollmentReportAttempts`.
+- **Each pending marker carries a revision** minted per delivery. The reporter
+  clears or advances it only via `replacePendingReport(ifRevision:)` with the
+  revision it read before sending, so a request that finishes after a
+  re-enrollment cannot erase or rewind the newer marker.
+- **Teardown marker (Android `b0786ee8`).** Enabling Hostile Location
+  Protection destroys the vault *then* marks it, so the reporter tells the
+  server `encryptionEnrolled: false`. `destroy` leaves the marker; `store`
+  clears it; dropping the pairing (unpair, reset, security wipe) clears both
+  markers, because no device row is left to correct. `notEnrolled` is sent
+  only on that proven loss, never because a probe found nothing.
 
 ### PGP signature trust (`Domain/Models/PgpSignatureState.swift`)
 

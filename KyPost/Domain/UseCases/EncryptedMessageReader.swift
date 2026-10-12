@@ -25,11 +25,19 @@ protocol PgpPayloadSource: Sendable {
 
 /// How unsealing the vault ended.
 nonisolated enum VaultOpenOutcome: Equatable, Sendable {
-    case opened(privateKey: Data)
+    /// The opened material, for the caller to hold in `EnrollmentSession`.
+    case opened(VaultMaterial)
     case cancelled
     case notEnrolled
     case noSecureLockScreen
     case failed(String)
+}
+
+extension VaultOpenOutcome {
+    /// Legacy armor — one key, or a current-first collection.
+    static func opened(privateKey: Data) -> VaultOpenOutcome {
+        .opened(.legacyArmor(privateKey))
+    }
 }
 
 /// Unseals the device's stored key, prompting for presence.
@@ -80,8 +88,8 @@ nonisolated struct EncryptedMessageReader: Sendable {
         if !session.isHeld {
             guard unlockIfNeeded else { return .needsUnlock }
             switch await opener.open() {
-            case .opened(let privateKey):
-                session.put(armoredKey: String(decoding: privateKey, as: UTF8.self))
+            case .opened(let material):
+                session.install(material)
             case .cancelled: return .cancelled
             case .notEnrolled: return .notEnrolled
             case .noSecureLockScreen: return .noSecureLockScreen
@@ -122,11 +130,13 @@ nonisolated struct EncryptedMessageReader: Sendable {
 
         let decrypted: DecryptedMessage
         do {
-            decrypted = try session.withKey { key in
-                guard let key else { throw PgpCryptoError.unavailable }
+            // Every held key, current and retired: mail encrypted to a key the
+            // account has since rotated away from must still open.
+            decrypted = try session.withMaterial { material in
+                guard let material else { throw PgpCryptoError.unavailable }
                 return try crypto.decrypt(
                     armoredCiphertext: payload.encryptedPayload,
-                    privateKey: key,
+                    privateKeys: material.decryptionKeys,
                     signerKeys: offeredKeys
                 )
             }

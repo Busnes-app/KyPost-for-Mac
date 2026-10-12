@@ -11,14 +11,72 @@ import os
 
 private struct PublishEnrollmentKeyRequest: Encodable {
     var publicKey: String
+    /// Omitting the list resets the server's claim to `[2]`, and the browser
+    /// then refuses to seal v3.
+    var envelopeVersions: [Int]
 }
 
+/// The three metadata fields go together: absent for the legacy boolean, all
+/// present for a keyring acknowledgement. The server answers 400 to any other
+/// combination. Optionals encode as absent, never as null.
 private struct EnrollmentStateRequest: Encodable {
     var encryptionEnrolled: Bool
+    var envelopeVersion: Int?
+    var materialGeneration: UInt64?
+    var fingerprint: String?
+
+    init(_ report: EnrollmentReport) {
+        switch report {
+        case .notEnrolled:
+            encryptionEnrolled = false
+        case .legacy:
+            encryptionEnrolled = true
+        case let .keyring(generation, fingerprint):
+            encryptionEnrolled = true
+            envelopeVersion = envelopeVersionKeyring
+            materialGeneration = generation
+            self.fingerprint = fingerprint
+        }
+    }
 }
 
+private struct KeyringStateDTO: Decodable {
+    var primaryFingerprints: [String]?
+    var keyFingerprints: [String]?
+}
+
+/// Every field beside `envelope` arrived with KyPost-Server #210 and is absent
+/// from older servers, hence `decodeIfPresent` throughout.
 private struct DeviceEnvelopeResponse: Decodable {
     var envelope: String?
+    var version: Int?
+    var fingerprint: String?
+    var materialGeneration: UInt64?
+    var keyring: KeyringStateDTO?
+
+    private enum CodingKeys: String, CodingKey {
+        case envelope, version, fingerprint, materialGeneration, keyring
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        envelope = try container.decodeIfPresent(String.self, forKey: .envelope)
+        version = try? container.decodeIfPresent(Int.self, forKey: .version)
+        fingerprint = try? container.decodeIfPresent(String.self, forKey: .fingerprint)
+        materialGeneration = try? container.decodeIfPresent(UInt64.self, forKey: .materialGeneration)
+        keyring = try? container.decodeIfPresent(KeyringStateDTO.self, forKey: .keyring)
+    }
+
+    var delivery: DeliveryMetadata? {
+        guard let version, let fingerprint else { return nil }
+        return DeliveryMetadata(
+            version: version,
+            fingerprint: fingerprint,
+            materialGeneration: materialGeneration,
+            primaryFingerprints: keyring?.primaryFingerprints,
+            keyFingerprints: keyring?.keyFingerprints
+        )
+    }
 }
 
 /// Talks to `/api/pgp/device/{enrollment-key,envelope,enrollment-state}`.
@@ -70,7 +128,8 @@ struct EnrollmentClient: EnrollmentTransport {
                 url: try endpoint("api/pgp/device/enrollment-key"),
                 headers: auth.headerFields,
                 jsonBody: PublishEnrollmentKeyRequest(
-                    publicKey: publicKey.base64EncodedString()
+                    publicKey: publicKey.base64EncodedString(),
+                    envelopeVersions: supportedEnvelopeVersions
                 )
             )
             return .ok
@@ -96,7 +155,7 @@ struct EnrollmentClient: EnrollmentTransport {
             guard let envelope = response.envelope, !envelope.isEmpty else {
                 return .failed("The server sent an envelope this app couldn't read.")
             }
-            return .sealed(envelope)
+            return .sealed(envelope, delivery: response.delivery)
         } catch NetworkError.unauthorized {
             return .unauthorized
         } catch NetworkError.server(statusCode: 404) {
@@ -110,19 +169,24 @@ struct EnrollmentClient: EnrollmentTransport {
 
     /// Always written explicitly: this route requires the field, so an absent
     /// value is a 400 rather than "no opinion".
-    func reportEnrolled(_ enrolled: Bool) async {
+    func report(_ report: EnrollmentReport) async -> EnrollmentReportResult {
         do {
             _ = try await httpClient.post(
                 RelayActionResponse.self,
                 url: try endpoint("api/pgp/device/enrollment-state"),
                 headers: auth.headerFields,
-                jsonBody: EnrollmentStateRequest(encryptionEnrolled: enrolled)
+                jsonBody: EnrollmentStateRequest(report)
             )
+            return .ok
+        } catch NetworkError.conflict {
+            return .conflict
+        } catch NetworkError.unauthorized {
+            return .unauthorized
+        } catch NetworkError.server(statusCode: 404) {
+            return .notFound
         } catch {
-            // Best-effort: the envelope is already open and stored, so failing
-            // to tell the server changes nothing this device can do. The next
-            // ceremony reports it again.
             Log.app.error("Reporting enrollment state failed: \(error.localizedDescription)")
+            return .failed(MailOutcome.message(for: networkError(error)))
         }
     }
 

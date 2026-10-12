@@ -39,6 +39,7 @@ private final class RecordingTransport: ClientEncryptedTransport, @unchecked Sen
 /// BCC isolation rule is checked.
 private final class RecordingCrypto: PgpEncrypting, @unchecked Sendable {
     var encryptCalls: [[String]] = []
+    var signingKeys: [Data] = []
     var error: PgpCryptoError?
     var ownKey = "OWN-PUBLIC-KEY"
 
@@ -49,6 +50,7 @@ private final class RecordingCrypto: PgpEncrypting, @unchecked Sendable {
     ) throws -> String {
         if let error { throw error }
         encryptCalls.append(recipientKeys)
+        signingKeys.append(privateKey)
         return "-----BEGIN PGP MESSAGE-----\n\(recipientKeys.joined(separator: ","))\n-----END PGP MESSAGE-----"
     }
 
@@ -298,5 +300,105 @@ private func makeSender(
         #expect(crypto.encryptCalls.last == ["OWN-PUBLIC-KEY"])
         let message = try #require(transport.sent)
         #expect(message.sentCopy.contains("OWN-PUBLIC-KEY"))
+    }
+}
+
+// MARK: - Device-envelope v3: generation and the converted-account refusals
+
+@Suite(.serialized) struct ClientEncryptedSendGenerationTests {
+    private var ring: PgpKeyring {
+        parsePgpKeyring(
+            V3Fixtures.ringBytes,
+            expectedActiveFingerprint: V3Fixtures.active,
+            inspector: GopenPGPCrypto()
+        )!
+    }
+
+    /// The held generation rides on the send; signing and the Sent copy use
+    /// the explicit active member, never a retired one.
+    @Test func aHeldKeyringSendsItsGenerationAndSignsWithTheActiveKey() async throws {
+        let session = EnrollmentSession()
+        let ring = ring
+        session.put(keyring: ring)
+        let transport = RecordingTransport()
+        let crypto = RecordingCrypto()
+        let outcome = await makeSender(
+            resolve: .success([usable("a@b.com")]),
+            transport: transport,
+            crypto: crypto,
+            session: session
+        ).send(draft: ClientSendDraft(to: "a@b.com"))
+        #expect(outcome == .sent(sentSaved: true, warning: ""))
+        #expect(transport.sent?.materialGeneration == 2)
+        #expect(!crypto.signingKeys.isEmpty)
+        #expect(crypto.signingKeys.allSatisfy { $0 == ring.active.armor })
+    }
+
+    /// A legacy account must never see a made-up generation.
+    @Test func legacyArmorSendsNoGeneration() async {
+        let transport = RecordingTransport()
+        _ = await makeSender(resolve: .success([usable("a@b.com")]), transport: transport)
+            .send(draft: ClientSendDraft(to: "a@b.com"))
+        #expect(transport.sent != nil)
+        #expect(transport.sent?.materialGeneration == nil)
+    }
+
+    @Test func bothConvertedAccountRefusalsAreTheirOwnRows() async {
+        for (kind, expected) in [
+            (MailSendFailure.Kind.reenrollmentRequired, ClientSendOutcome.reenrollmentRequired),
+            (.pgpStateChanged, .pgpStateChanged),
+        ] {
+            let transport = RecordingTransport()
+            transport.result = .failure(MailSendFailure(message: "refused", kind: kind))
+            let outcome = await makeSender(resolve: .success([usable("a@b.com")]), transport: transport)
+                .send(draft: ClientSendDraft(to: "a@b.com"))
+            #expect(outcome == expected)
+        }
+    }
+
+    private func relay(status: Int, json: String, captured: Box<URLRequest?>) -> ClientEncryptedSendClient {
+        ClientEncryptedSendClient(
+            httpClient: stubClient(status: status, json: json) { captured.value = $0 },
+            serverUrl: server,
+            auth: RelayAuth(deviceId: "d", deviceSecret: "s")
+        )
+    }
+
+    private let message = ClientEncryptedMessage(
+        from: "me@example.com", to: ["a@b.com"], cc: [], bcc: [],
+        deliveries: [ClientEncryptedDelivery(recipients: ["a@b.com"], ciphertext: "CT")],
+        sentCopy: "SC", mode: "html"
+    )
+
+    /// On the wire: present when held, absent — not null — otherwise.
+    @Test func theGenerationIsOnTheWireOnlyWhenHeld() async throws {
+        let captured = Box<URLRequest?>(nil)
+        var withGeneration = message
+        withGeneration.materialGeneration = 2
+        _ = await relay(status: 200, json: #"{"ok":true}"#, captured: captured).send(withGeneration)
+        let sent = try #require(captured.value?.httpBody)
+        let object = try #require(try JSONSerialization.jsonObject(with: sent) as? [String: Any])
+        #expect(object["materialGeneration"] as? Int == 2)
+
+        _ = await relay(status: 200, json: #"{"ok":true}"#, captured: captured).send(message)
+        let legacy = try #require(captured.value?.httpBody)
+        #expect(!String(decoding: legacy, as: UTF8.self).contains("materialGeneration"))
+    }
+
+    /// Told apart by JSON field, never by the prose.
+    @Test func the409sAreMappedByTheirJsonField() async {
+        let captured = Box<URLRequest?>(nil)
+        let cases: [(String, MailSendFailure.Kind)] = [
+            (#"{"error":"this device holds retired key material; enroll it again before sending","reenrollmentRequired":true,"materialGeneration":3}"#, .reenrollmentRequired),
+            (#"{"error":"the account's key material changed; reload and send again","pgpStateChanged":true,"materialGeneration":3}"#, .pgpStateChanged),
+            (#"{"error":"something else"}"#, .other),
+        ]
+        for (json, kind) in cases {
+            let result = await relay(status: 409, json: json, captured: captured).send(message)
+            guard case .failure(let failure) = result else {
+                Issue.record("expected a failure"); continue
+            }
+            #expect(failure.kind == kind)
+        }
     }
 }
