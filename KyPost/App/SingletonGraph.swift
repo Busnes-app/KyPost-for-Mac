@@ -223,6 +223,18 @@ final class SingletonGraph {
 #endif
     }
 
+    /// What the screenshot build's Settings → Connection shows: a paired
+    /// account, as display text only. The demo graph stores no pairing, so
+    /// registration, pulls and mail requests still read "not paired"; nil in
+    /// every other build.
+    var pairingDisplayOverride: PairingDisplay? {
+#if DEBUG
+        isDemo ? DemoContent.pairingDisplay : nil
+#else
+        nil
+#endif
+    }
+
     /// True only when the DEBUG process was launched with `-KyPostDemo`.
     /// The launch default for `init(isDemo:)`; read `isDemo` on a graph.
     nonisolated static var launchIsDemo: Bool {

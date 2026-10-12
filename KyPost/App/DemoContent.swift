@@ -84,6 +84,15 @@ enum DemoContent {
 
     static let accountAddress = "avery.lang@kypost.example"
 
+    /// Settings → Connection for the screenshots. Display text only: the
+    /// demo graph stores no pairing, so nothing that registers, pulls or
+    /// fetches mail can read this.
+    static let pairingDisplay = PairingDisplay(
+        serverHost: "kypost.example",
+        deviceId: "7C3E9A41-2B6D-4F80-9E15-D0A8B47C6F22",
+        account: accountAddress
+    )
+
     static let emails: [Email] = [
         Email(
             serverId: "demo-1",

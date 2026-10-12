@@ -29,7 +29,8 @@ struct MacPreferencesView: View {
         pushRepository: SingletonGraph.shared.pushRepository,
         recipientPinStore: SingletonGraph.shared.recipientPinStore,
         mailSignatureStore: SingletonGraph.shared.mailSignatureStore,
-        onUnpaired: { SingletonGraph.shared.inboxViewModel.forgetAccount() }
+        onUnpaired: { SingletonGraph.shared.inboxViewModel.forgetAccount() },
+        pairingDisplayOverride: SingletonGraph.shared.pairingDisplayOverride
     )
 
     var body: some View {
@@ -78,13 +79,20 @@ private struct ConnectionPane: View {
             Section {
                 LabeledContent("Status") {
                     StatusBadgeView(
-                        label: viewModel.isPaired ? "Paired" : "Not paired",
-                        isActive: viewModel.isPaired
+                        label: viewModel.pairingDisplay != nil ? "Paired" : "Not paired",
+                        isActive: viewModel.pairingDisplay != nil
                     )
                 }
-                if viewModel.isPaired {
-                    LabeledContent("Server", value: viewModel.pairedServerHost ?? "—")
-                    if let deviceId = viewModel.pairedDeviceId {
+                if let pairing = viewModel.pairingDisplay {
+                    LabeledContent("Server", value: pairing.serverHost)
+                    if let account = pairing.account {
+                        LabeledContent("Account") {
+                            Text(account)
+                                .font(AppFont.mono(11))
+                                .textSelection(.enabled)
+                        }
+                    }
+                    if let deviceId = pairing.deviceId {
                         LabeledContent("Device ID") {
                             Text(deviceId)
                                 .font(AppFont.mono(11))
@@ -101,7 +109,7 @@ private struct ConnectionPane: View {
 
             Section {
                 HStack {
-                    if viewModel.isPaired {
+                    if viewModel.pairingDisplay != nil {
                         Button("Test Connection") {
                             Task { await viewModel.testConnection() }
                         }

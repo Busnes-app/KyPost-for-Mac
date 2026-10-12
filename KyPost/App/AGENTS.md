@@ -273,9 +273,11 @@ and `PullHeartbeatPolicy.decide` says whether a tick touches the network:
 launched with `-KyPostDemo`. It exists so App Store screenshots can be taken
 without photographing the developer's own mail, and without a pairing or a
 network. `scripts/capture-screenshots.sh` drives it through
-`KyPost UITests/ScreenshotTests`.
+`KyPost UITests/ScreenshotTests`: `ios` (6.9" iPhone → `iOS/`), `ipad` (13"
+iPad, preferring iPad Pro 13-inch (M5) → `iPad/`), `macos`, or `all`. Both
+simulators get the 9:41 status bar and share one derived-data build.
 
-Three seams carry it, and each one defaults to the real path:
+Four seams carry it, and each one defaults to the real path:
 
 - `MailRepository(overrideSource:)` — serves `DemoMailSource` and **skips the
   pairing guard in `refreshFolder`**. Without it an unpaired build paints
@@ -283,6 +285,14 @@ Three seams carry it, and each one defaults to the real path:
 - `PgpSendService.preload(hasIdentity:protection:accountAddress:)` — installs
   a bootstrap answer so compose offers Encrypt/Sign. Nothing in a shipping
   build may decide custody locally; this is the only caller.
+- `SettingsViewModel(pairingDisplayOverride:)`, fed by
+  `SingletonGraph.pairingDisplayOverride` (`DemoContent.pairingDisplay`) —
+  Settings → Connection reads as paired (`kypost.example`,
+  `avery.lang@kypost.example`). **Display text only:** the views render
+  `pairingDisplay`, while `isPaired`, unpair, Fix Notifications and every
+  registration, pull and mail path keep reading `SecurePairingStore`, which
+  holds no pairing. Never satisfy a screenshot by storing a pairing, in any
+  Keychain, isolated or not.
 - `SingletonGraph.isDemo` (init default `launchIsDemo`) — one switch read by
   the stores, the database and photo cache (in-memory, so a demo mailbox never
   lands on disk beside real mail), the mail source, the Contacts adapter, the
@@ -306,6 +316,11 @@ Rules:
 - `-KyPostDemoScreen` is read only together with `-KyPostDemo`.
 - `ScreenshotTests.capture` attaches the app's own window or nothing. Never
   add a whole-display fallback on macOS: the display carries other apps.
+- `ScreenshotTests` runs one iOS flow on iPhone and iPad. Root tabs go
+  through `tab(_:_:)` (iPadOS draws the `TabView` as a floating top bar),
+  keyword chips through `keywordChip(_:_:)` (a row's label carries its own
+  tags, so a label match can land on a message), and iPad hides its
+  half-screen keyboard before the compose shot.
 - `-KyPostDemoScreen mfa` exists because MFA approval arrives by push and has
   no navigable route. Add a case there rather than a new launch argument.
 - The fixtures are invented. Keep them invented, and keep the addresses on

@@ -135,6 +135,27 @@ final class ScreenshotTests: XCTestCase {
 
 #if os(iOS)
 
+    /// A root tab. The iPhone's tab bar is a `tabBars` element; iPadOS draws
+    /// the same `TabView` as a floating bar at the top, which may surface as
+    /// plain buttons instead, so fall back to a button with that exact label.
+    private func tab(_ app: XCUIApplication, _ name: String) -> XCUIElement {
+        let barButton = app.tabBars.buttons[name]
+        return barButton.waitForExistence(timeout: 2) ? barButton : app.buttons[name].firstMatch
+    }
+
+    /// A keyword chip above the list. Rows are buttons too, and a row's label
+    /// carries its own keyword tags ("…, Finance"), so `row(containing:)`
+    /// can land on a message instead — it does on iPad. The chip's label
+    /// starts with the keyword; take the topmost such button.
+    private func keywordChip(_ app: XCUIApplication, _ name: String) -> XCUIElement {
+        let predicate = NSPredicate(format: "label BEGINSWITH[c] %@", name)
+        let chips = app.buttons.matching(predicate).allElementsBoundByIndex
+            .filter { $0.exists && $0.isHittable }
+        return chips.min { $0.frame.minY < $1.frame.minY } ?? row(in: app, containing: name)
+    }
+
+    private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
     @MainActor
     func testCaptureScreenshots() throws {
         let app = launchDemo()
@@ -145,9 +166,9 @@ final class ScreenshotTests: XCTestCase {
         // 2. Organize mail with custom tabs — the keyword chips above the list.
         // Chips are alphabetical, so Finance is on screen without scrolling.
         // The chip's label carries its count ("Finance, 2"), so match loosely.
-        if tapIfPresent(row(in: app, containing: "Finance")) {
+        if tapIfPresent(keywordChip(app, "Finance")) {
             capture(app, "02-keyword-tabs")
-            tapIfPresent(row(in: app, containing: "All"))
+            tapIfPresent(keywordChip(app, "All"))
         }
 
         // 3. Read messages in a focused view — the rail ticket, which carries
@@ -169,18 +190,23 @@ final class ScreenshotTests: XCTestCase {
         // 4. Compose with encryption and signing
         if tapIfPresent(app.buttons["Compose"]) {
             fillCompose(app)
+            // The iPad's full-width keyboard covers half the screen and none
+            // of the compose sheet's point; the iPhone's is part of the shot.
+            if isPad {
+                tapIfPresent(app.keyboards.buttons["Hide keyboard"], timeout: 2)
+            }
             capture(app, "04-compose")
             tapIfPresent(app.buttons["Cancel"])
             tapIfPresent(app.buttons["Discard"], timeout: 2)
         }
 
         // 6. Keep contacts synchronized
-        if tapIfPresent(app.tabBars.buttons["Contacts"]) {
+        if tapIfPresent(tab(app, "Contacts")) {
             capture(app, "06-contacts")
         }
 
         // 8. Make KyPost yours with 17 themes
-        if tapIfPresent(app.tabBars.buttons["Settings"]) {
+        if tapIfPresent(tab(app, "Settings")) {
             capture(app, "07-settings")
             if tapIfPresent(row(in: app, containing: "Theme")) {
                 capture(app, "08-themes")
