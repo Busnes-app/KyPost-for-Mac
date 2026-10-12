@@ -46,6 +46,11 @@ router, and `scenePhase == .active` makes it check for KyAuth's response.
   Anything new that erases the pairing posts it, and any new App-level state
   that could present or re-pair observes it (`NotificationObservation`).
 
+`AppEnvironment.eraseHostileLocationDefaults` runs when Hostile Location
+Protection turns on and at every launch while it is on (`PushLifecycle.onLaunch`).
+A `UserDefaults`-backed store that goes memory-only under the mode erases its
+persisted copy there; switching reads to memory does not remove it.
+
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.
 It is installed once, from the platform delegate

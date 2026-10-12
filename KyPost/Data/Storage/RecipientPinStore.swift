@@ -94,6 +94,15 @@ final class RecipientPinStore: @unchecked Sendable {
         defaults.removeObject(forKey: Self.key)
     }
 
+    /// Erases the on-disk copy and keeps the in-memory one. Under Hostile
+    /// Location Protection reads switch to memory but nothing else removes
+    /// what was written before, so this runs when the mode is turned on and
+    /// at every launch while it is on (`AppEnvironment.eraseHostileLocationDefaults`).
+    func clearPersisted() {
+        lock.lock(); defer { lock.unlock() }
+        defaults.removeObject(forKey: Self.key)
+    }
+
     /// What the reader and sender consume: each pin resolved once to intact,
     /// revoked or broken. A value, so they can carry it off the main actor.
     func snapshot(revocation: any PgpKeyRevocation) -> RecipientPinSnapshot {

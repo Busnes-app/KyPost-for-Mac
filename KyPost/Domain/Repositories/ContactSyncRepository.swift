@@ -107,6 +107,7 @@ final class ContactSyncRepository {
             recordRevocations(for: dirty.emails.map(\.value), syncedKey: dirty.pgpKey)
         }
         await systemContactsExporter?.exportUpsert(dirty)
+        await refreshPendingSummary()
     }
 
     /// The one thing a non-QR copy of a key may do to a pin: revoke it. For
@@ -160,6 +161,7 @@ final class ContactSyncRepository {
             try await contactDAO.deleteLocal(localId: contact.localId)
         }
         await systemContactsExporter?.exportDelete(localId: contact.localId)
+        await refreshPendingSummary()
     }
 
     // MARK: - Sync
@@ -185,14 +187,18 @@ final class ContactSyncRepository {
         do {
             let summary = try await task.value
             health.recordSuccess()
+            await refreshPendingSummary()
             return summary
         } catch ContactSyncError.notPaired {
             // Not paired is a state, not a failure: nothing was tried.
+            await refreshPendingSummary()
             throw ContactSyncError.notPaired
         } catch is CancellationError {
+            await refreshPendingSummary()
             throw CancellationError()
         } catch {
             health.recordFailure(reason: Self.failureReason(error))
+            await refreshPendingSummary()
             throw error
         }
     }
@@ -202,6 +208,11 @@ final class ContactSyncRepository {
         switch error {
         case NetworkError.unauthorized:
             String(localized: "Device pairing expired or invalid — re-pair this device in Settings.")
+        // These carry their explanation as a value and have no
+        // `errorDescription`, so `localizedDescription` would be Foundation's
+        // generic domain-and-code sentence.
+        case NetworkError.transport(let description), NetworkError.decoding(let description):
+            description
         default:
             error.localizedDescription
         }
@@ -211,6 +222,12 @@ final class ContactSyncRepository {
     /// and queued delete tombstones. A nameless contact is excluded — it is
     /// held back on purpose until it has a name (see `performSync`), so it is
     /// not "waiting to sync" and Retry could never clear it.
+    /// Recounts the outbox into `health.pending`, which the contacts list
+    /// reads. Run after every write and every sync, whoever started it.
+    func refreshPendingSummary() async {
+        health.recordPending(await pendingSummary())
+    }
+
     func pendingSummary() async -> ContactPendingSummary {
         let pending = ((try? await contactDAO.listPendingSync()) ?? []).filter {
             !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

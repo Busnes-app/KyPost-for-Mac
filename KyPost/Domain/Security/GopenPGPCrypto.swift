@@ -336,15 +336,15 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
 
     // MARK: - Pinned-key revocation
 
-    /// GopenPGP exposes no way to verify one certification packet, so each
-    /// candidate is checked by what it **does** to a key: a primary
-    /// revocation must make the pinned key read revoked (`IsRevoked` verifies
-    /// against the primary), and a subkey revocation must take away an
-    /// ability — encrypt or verify — from a copy of the pin holding only that
-    /// subkey. A signature that changes nothing is not taken. That is
-    /// conservative: a genuine revocation of a signing subkey whose role the
-    /// primary also fills cannot be told apart from a forged one this way, so
-    /// it is not taken either.
+    /// GopenPGP exposes no way to verify one certification packet. A primary
+    /// revocation is taken when it makes the pinned key read revoked
+    /// (`IsRevoked` verifies against the primary). A subkey revocation is
+    /// taken when its signature verifies against the pinned primary over that
+    /// subkey (`OpenPgpRevocationSignature`), or — for what that check does not
+    /// support — when it takes away an ability, encrypt or verify, from a copy
+    /// of the pin holding only that subkey. The capability check alone cannot
+    /// see every genuine subkey revocation. Either way the library re-verifies
+    /// every revocation in the pin whenever the key is used.
     func withVerifiedRevocation(pinned: String, synced: String) -> String? {
         guard let pinnedSections = OpenPgpKeySections(armored: pinned),
               let syncedSections = OpenPgpKeySections(armored: synced),
@@ -372,9 +372,14 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
                 guard let before = Self.key(isolated),
                       let after = Self.key(isolated.adding([moved]))
                 else { continue }
+                let verified = OpenPgpRevocationSignature.verifies(
+                    signature: candidate.signature.body,
+                    signerKeyBody: pinnedSections.primaryKeyBody,
+                    over: [pinnedSections.primaryKeyBody, pinnedSections.subkeys[index][0].body]
+                )
                 let lostEncrypt = before.canEncrypt(now) && !after.canEncrypt(now)
                 let lostVerify = before.canVerify(now) && !after.canVerify(now)
-                guard lostEncrypt || lostVerify else { continue }
+                guard verified || lostEncrypt || lostVerify else { continue }
                 taken.append(candidate)
             }
         }

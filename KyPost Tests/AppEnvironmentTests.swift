@@ -63,4 +63,26 @@ import Testing
     @Test func sharedAliasTracksTheCurrentGraph() {
         #expect(SingletonGraph.shared === AppEnvironment.shared.graph)
     }
+
+    /// Turning Hostile Location Protection on, or launching with it on,
+    /// leaves no pinned keys in defaults; pins made afterwards stay in memory.
+    @Test func hostileLocationErasesPersistedPinsAndKeepsLaterOnesInMemory() throws {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let graph = try SingletonGraph(
+            userDefaults: defaults,
+            keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)"),
+            database: AppDatabase(inMemory: true)
+        )
+        graph.recipientPinStore.pin(addresses: ["a@example.invalid"], publicKey: PinnedKeyFixtures.alicePinned)
+        #expect(defaults.data(forKey: "contacts.recipientPins") != nil)
+
+        AppEnvironment.eraseHostileLocationDefaults(in: graph)
+        #expect(defaults.data(forKey: "contacts.recipientPins") == nil)
+
+        graph.hostileLocationProtectionStore.enabled = true
+        graph.recipientPinStore.pin(addresses: ["b@example.invalid"], publicKey: PinnedKeyFixtures.alicePinned)
+        AppEnvironment.eraseHostileLocationDefaults(in: graph)
+        #expect(defaults.data(forKey: "contacts.recipientPins") == nil)
+        #expect(graph.recipientPinStore.pin(for: "b@example.invalid") != nil)
+    }
 }

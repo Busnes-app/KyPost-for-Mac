@@ -237,14 +237,20 @@ is the server's pin, not this device's.
   the pinned primary or of a subkey the pin holds, from a copy of the same
   primary, each verified against the pinned primary; nothing else crosses.
   `OpenPgpKeySections` moves packets and decides nothing. GopenPGP cannot
-  verify a lone certification, so a candidate is kept only if it observably
-  revokes (primary: `isRevoked`; subkey: a single-subkey copy loses encrypt or
-  verify). A signing-subkey revocation whose role the primary also fills is
-  therefore not taken — conservative, and recorded here as the known gap.
+  verify a lone certification, so a primary revocation is kept when the key
+  then reads `isRevoked`, and a subkey revocation when
+  `OpenPgpRevocationSignature` verifies it against the pinned primary over
+  that subkey (v4; RSA, ECDSA P-256/384/521, Ed25519) or, failing that, a
+  single-subkey copy loses encrypt or verify. **Never gate a verified
+  revocation on a capability change**: a genuine one need not change what the
+  whole key can do. That Swift check only decides what is stored; the library
+  re-verifies every revocation in the pin whenever the key is used.
 - **Reader:** where the resolved sender is pinned, the pin replaces the relay's
   `signerKeys` (`EncryptedMessageReader.signerKeys`) — intact is the only key
   and reads `verifiedConfirmed`; revoked or broken is a conflict, so a signed
   message reads `keyChanged`. Keyed on `resolvedSender`, never a parsed `From`.
+  The reader takes a pin provider, not a snapshot, and reads it on every
+  attempt: a reader lives as long as its screen.
 - **Sender:** `ClientEncryptedSender.applyPins` runs after resolve and before
   the vault opens. Revoked → `recipientKeyRevoked` ("verify the new key by
   QR"); broken, or a relay key whose bytes fingerprint differently →
@@ -252,8 +258,10 @@ is the server's pin, not this device's.
 - A pin is trusted only while its bytes fingerprint to the stored fingerprint
   (`broken` otherwise, never "absent"). Pins are a `RecipientPinSnapshot`
   value taken per reader/sender; `pins:` is deliberately not defaulted on
-  either. Memory-only under Hostile Location Protection, swept by the wipe,
-  cleared on unpair.
+  either. Memory-only under Hostile Location Protection — and erased from
+  defaults when the mode turns on and at every launch while it is on
+  (`AppEnvironment.eraseHostileLocationDefaults`) — swept by the wipe, cleared
+  on unpair.
 
 ### Contacts: sync status and vCard export
 
@@ -263,7 +271,10 @@ is the server's pin, not this device's.
   contacts are held back on purpose and are not counted. The failure count
   lives in `ContactSyncRepository.health`, **in memory only**; not paired is
   not a failure. The reason shown is the newest failure's first line, at most
-  200 characters.
+  200 characters — for `NetworkError.transport`/`.decoding`, their own
+  description, which `localizedDescription` would drop. The outbox count also
+  lives in `health.pending`, recounted by the repository after every write and
+  every sync, so syncs the change monitor runs reach the banner.
 - **vCard** (`Utilities/VCard.swift`, Android #184): 4.0 or 3.0; every value
   escaped and stripped of control characters by **unicode scalar** (C0, DEL,
   C1, U+2028/2029 — wider than Android), so no field can start a property or a

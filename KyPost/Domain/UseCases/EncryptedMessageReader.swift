@@ -51,16 +51,18 @@ nonisolated struct EncryptedMessageReader: Sendable {
     private let crypto: any PgpDecrypting
     private let session: EnrollmentSession
     private let mime: @Sendable (Data) -> DecryptedBody?
-    /// Keys verified on this device. Deliberately not defaulted: an empty
-    /// snapshot is "no pins", and a caller that forgot to pass them would
-    /// silently let the relay's key stand in for one the user verified.
-    private let pins: RecipientPinSnapshot
+    /// Keys verified on this device, read afresh on every attempt: a reader
+    /// lives as long as its screen, and a pin revoked by a sync meanwhile
+    /// must count from the next attempt on. Deliberately not defaulted: an
+    /// empty snapshot is "no pins", and a caller that forgot to pass them
+    /// would silently let the relay's key stand in for one the user verified.
+    private let pins: @MainActor @Sendable () -> RecipientPinSnapshot
 
     init(
         opener: any VaultOpening,
         payloads: any PgpPayloadSource,
         crypto: any PgpDecrypting,
-        pins: RecipientPinSnapshot,
+        pins: @escaping @MainActor @Sendable () -> RecipientPinSnapshot,
         session: EnrollmentSession = .shared,
         mime: @escaping @Sendable (Data) -> DecryptedBody? = { PgpMimeReader.read($0) }
     ) {
@@ -139,8 +141,9 @@ nonisolated struct EncryptedMessageReader: Sendable {
             return .fetchFailed(error.localizedDescription)
         }
 
+        let pinSnapshot = await pins()
         payload.signerKeys = Self.signerKeys(
-            payload.signerKeys, resolvedSender: payload.resolvedSender, pins: pins
+            payload.signerKeys, resolvedSender: payload.resolvedSender, pins: pinSnapshot
         )
 
         guard !payload.encryptedPayload.isEmpty else {

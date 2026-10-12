@@ -74,7 +74,7 @@ private func makeReader(
         opener: FakeOpener(outcome: opener),
         payloads: FakePayloads(result: payload, thrown: thrown),
         crypto: crypto,
-        pins: pins,
+        pins: { pins },
         session: session
     )
 }
@@ -428,7 +428,7 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
             opener: FakeOpener(outcome: .notEnrolled),
             payloads: FakePayloads(result: .success(PgpPayload(encryptedPayload: ciphertext)), thrown: nil),
             crypto: GopenPGPCrypto(),
-            pins: .none,
+            pins: { .none },
             session: session,
             mime: { DecryptedBody(html: nil, plain: String(decoding: $0, as: UTF8.self), protectedSubject: nil) }
         )

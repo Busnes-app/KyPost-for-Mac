@@ -133,7 +133,7 @@ final class SingletonGraph {
                 auth: RelayAuth(pairing: pairing)
             ),
             crypto: pgpCrypto,
-            pins: recipientPinStore.snapshot(revocation: pgpCrypto)
+            pins: { [recipientPinStore, pgpCrypto] in recipientPinStore.snapshot(revocation: pgpCrypto) }
         )
     }
 

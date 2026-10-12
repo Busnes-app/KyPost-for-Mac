@@ -63,13 +63,19 @@ nonisolated enum ContactSyncStatus: Equatable, Sendable {
 }
 
 /// Consecutive sync failures, **in memory only**: a relaunch forgets them, and
-/// the outbox age still catches a change that never leaves. Observable so the
-/// contacts list follows syncs started anywhere (the change monitor, the
-/// foreground trigger), not only its own button.
+/// the outbox age still catches a change that never leaves. Also the last
+/// counted outbox, which the repository refreshes after every write and sync.
+/// Observable so the contacts list follows syncs started anywhere (the change
+/// monitor, the foreground trigger), not only its own button.
 @Observable
 @MainActor
 final class ContactSyncHealth {
     private(set) var failures = ContactSyncFailures()
+    private(set) var pending = ContactPendingSummary()
+
+    func recordPending(_ summary: ContactPendingSummary) {
+        pending = summary
+    }
 
     func recordSuccess() {
         failures = ContactSyncFailures()

@@ -55,13 +55,14 @@ final class ContactsViewModel {
     func load() async {
         contacts = (try? await repository.contacts()) ?? []
         searchIndex = ContactSearchIndex(contacts: contacts)
-        pendingSummary = await repository.pendingSummary()
+        await repository.refreshPendingSummary()
     }
 
     // MARK: - Sync status
 
-    /// Refreshed by `load()`, which every local change and sync ends in.
-    private(set) var pendingSummary = ContactPendingSummary()
+    /// The repository's count, refreshed after every write and sync —
+    /// including the ones the change monitor runs without this view model.
+    var pendingSummary: ContactPendingSummary { repository.health.pending }
 
     /// The banner's state at `now`. Time-dependent (a change becomes "stuck"
     /// after an hour), so the view re-asks on a timer rather than caching it.
@@ -125,8 +126,6 @@ final class ContactsViewModel {
             statusMessage = "Pair this device to sync contacts."
         } catch {
             statusMessage = "Sync failed: \(error.localizedDescription)"
-            // The outbox did not move; refresh what the banner counts.
-            pendingSummary = await repository.pendingSummary()
         }
     }
 
