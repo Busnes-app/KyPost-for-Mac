@@ -27,7 +27,4 @@ enum Config {
     /// Must match BGTaskSchedulerPermittedIdentifiers in Info.plist.
     static let backgroundPullTaskId = "org.kysecurity.mail.pull"
     static let backgroundPullInterval: TimeInterval = 15 * 60
-
-    // Binding contract: theme names match web theme.ts / Android AppTheme.kt.
-    static let defaultThemeName = "Dark Matter"
 }

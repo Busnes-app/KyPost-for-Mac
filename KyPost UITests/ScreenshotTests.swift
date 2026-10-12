@@ -108,7 +108,7 @@ final class ScreenshotTests: XCTestCase {
     }
 
     /// First button or cell whose label contains `text` — List rows read as
-    /// "Theme, Dark Matter", so an exact-match query never finds them.
+    /// "Theme, Busnes Light", so an exact-match query never finds them.
     private func row(in app: XCUIApplication, containing text: String) -> XCUIElement {
         let predicate = NSPredicate(format: "label CONTAINS[c] %@", text)
         let button = app.buttons.matching(predicate).firstMatch
@@ -179,7 +179,7 @@ final class ScreenshotTests: XCTestCase {
             capture(app, "06-contacts")
         }
 
-        // 8. Make KyPost yours with 15 themes
+        // 8. Make KyPost yours with 17 themes
         if tapIfPresent(app.tabBars.buttons["Settings"]) {
             capture(app, "07-settings")
             if tapIfPresent(row(in: app, containing: "Theme")) {
@@ -244,7 +244,7 @@ final class ScreenshotTests: XCTestCase {
             capture(app, "06-contacts")
         }
 
-        // 8. Make KyPost yours with 15 themes — Preferences ⌘, → Appearance
+        // 8. Make KyPost yours with 17 themes — Preferences ⌘, → Appearance
         app.typeKey(",", modifierFlags: .command)
         settle(2)
         let preferences = app.windows.element(boundBy: 1)
