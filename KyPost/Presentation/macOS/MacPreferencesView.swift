@@ -25,7 +25,8 @@ struct MacPreferencesView: View {
         deregisterDeviceUseCase: SingletonGraph.shared.deregisterDeviceUseCase,
         pushNotificationDispatcher: SingletonGraph.shared.pushNotificationDispatcher,
         enrollmentVault: SingletonGraph.shared.enrollmentVault,
-        appLockManager: SingletonGraph.shared.appLockManager
+        appLockManager: SingletonGraph.shared.appLockManager,
+        pushRepository: SingletonGraph.shared.pushRepository
     )
 
     var body: some View {
@@ -330,6 +331,10 @@ private struct ContactsPane: View {
 
 private struct NotificationsPane: View {
     @Bindable var viewModel: SettingsViewModel
+    @State private var history = NotificationHistoryViewModel(
+        repository: SingletonGraph.shared.pushRepository,
+        pushSettingsStore: SingletonGraph.shared.pushSettingsStore
+    )
 
     var body: some View {
         Form {
@@ -337,7 +342,7 @@ private struct NotificationsPane: View {
                 Toggle("Show system notifications", isOn: $viewModel.systemNotificationsEnabled)
                 LabeledContent("Delivery Mode", value: viewModel.deliveryMode)
             } footer: {
-                Text("In Pull mode this Mac checks for notifications every 90 seconds while running.")
+                Text("In Pull mode this Mac checks for notifications every 90 seconds while running. In Push mode it checks the server itself if no push has arrived for three hours.")
             }
 
             Section {
@@ -358,8 +363,11 @@ private struct NotificationsPane: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            NotificationHistorySections(viewModel: history)
         }
         .formStyle(.grouped)
+        .task { await history.load() }
     }
 }
 #endif

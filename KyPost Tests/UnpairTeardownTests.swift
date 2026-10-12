@@ -49,7 +49,8 @@ import Testing
             deviceRegistrationService: graph.deviceRegistrationService,
             deregisterDeviceUseCase: graph.deregisterDeviceUseCase,
             pushNotificationDispatcher: graph.pushNotificationDispatcher,
-            enrollmentVault: graph.enrollmentVault
+            enrollmentVault: graph.enrollmentVault,
+            pushRepository: graph.pushRepository
         )
     }
 
@@ -77,5 +78,19 @@ import Testing
 
         await makeViewModel(graph).unpair()
         #expect(!EnrollmentSession.shared.isHeld)
+    }
+
+    /// Notification history is the account's sender and subject lines; the
+    /// pull cursor is a position in that account's queue.
+    @Test func unpairingClearsNotificationHistoryAndTheCursor() async throws {
+        let graph = try makeGraph()
+        try await graph.pushRepository.recordPushArrival(
+            MailPushPayload(messageId: "m-1", senderName: "Ada", emailSubject: "Hi", keywords: [])
+        )
+        graph.notificationCursorStore.advance(to: 9)
+
+        await makeViewModel(graph).unpair()
+        #expect(try await graph.pushRepository.history().isEmpty)
+        #expect(graph.notificationCursorStore.lastCursor == 0)
     }
 }

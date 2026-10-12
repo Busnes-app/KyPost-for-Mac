@@ -15,6 +15,10 @@ final class PushSettingsStore {
         static let pullEndpoint = "push.pullEndpoint"
         static let systemNotificationsEnabled = "push.systemNotificationsEnabled"
         static let lastDeviceToken = "push.lastDeviceToken"
+        static let lastPushReceivedAt = "push.lastPushReceivedAt"
+        static let lastRegisteredAt = "push.lastRegisteredAt"
+        static let lastPulledAt = "push.lastPulledAt"
+        static let lastHeartbeatAttemptAt = "push.lastHeartbeatAttemptAt"
     }
 
     private let defaults: UserDefaults
@@ -44,6 +48,52 @@ final class PushSettingsStore {
     var systemNotificationsEnabled: Bool {
         get { defaults.object(forKey: Key.systemNotificationsEnabled) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Key.systemNotificationsEnabled) }
+    }
+
+    // MARK: - Heartbeat clock (PullHeartbeatPolicy)
+
+    /// The newest moment a push is known to have arrived over APNs. Only ever
+    /// moves forward: the evidence comes from several places (a payload the
+    /// app handled, a banner still in Notification Center) and an older one
+    /// must not rewind the quiet clock.
+    var lastPushReceivedAt: Date? {
+        defaults.object(forKey: Key.lastPushReceivedAt) as? Date
+    }
+
+    func markPushReceived(at date: Date) {
+        if let current = lastPushReceivedAt, current >= date { return }
+        defaults.set(date, forKey: Key.lastPushReceivedAt)
+    }
+
+    /// Last successful registration with the server: the last moment the
+    /// relay path was proven reachable, used as the quiet clock's start when
+    /// no push has ever arrived.
+    var lastRegisteredAt: Date? {
+        get { defaults.object(forKey: Key.lastRegisteredAt) as? Date }
+        set { defaults.set(newValue, forKey: Key.lastRegisteredAt) }
+    }
+
+    /// Last successful pull, either mode. Spaces heartbeat polls out.
+    var lastPulledAt: Date? {
+        get { defaults.object(forKey: Key.lastPulledAt) as? Date }
+        set { defaults.set(newValue, forKey: Key.lastPulledAt) }
+    }
+
+    /// When the last heartbeat request was *started*, whether or not it
+    /// succeeded. Stamped before the request, so a failing relay is retried
+    /// on the heartbeat spacing rather than on every 90-second tick.
+    var lastHeartbeatAttemptAt: Date? {
+        get { defaults.object(forKey: Key.lastHeartbeatAttemptAt) as? Date }
+        set { defaults.set(newValue, forKey: Key.lastHeartbeatAttemptAt) }
+    }
+
+    /// Forgets the heartbeat clock; unpair calls this so a new pairing starts
+    /// counting from its own registration.
+    func clearHeartbeatState() {
+        defaults.removeObject(forKey: Key.lastPushReceivedAt)
+        defaults.removeObject(forKey: Key.lastRegisteredAt)
+        defaults.removeObject(forKey: Key.lastPulledAt)
+        defaults.removeObject(forKey: Key.lastHeartbeatAttemptAt)
     }
 
     /// Latest APNs token, kept for re-registration on foreground/pairing.

@@ -220,6 +220,8 @@ private let validPairingLink = URL(
         #expect(response.deliveryMode == .push)
     }
 
+    /// The legacy top-level shape is still accepted (current servers nest it
+    /// in `data`; see PullWireShapeTests).
     @Test func pullResponseDecodesCapitalKKeywords() async throws {
         let json = """
         {
@@ -245,7 +247,10 @@ private let validPairingLink = URL(
         let dto = try #require(response.notifications.first)
         #expect(dto.keywords == ["Important", "Work"])
 
-        let domain = dto.toDomain()
+        guard case .mail(let domain) = dto.routed() else {
+            Issue.record("expected mail")
+            return
+        }
         #expect(domain.seq == 7)
         #expect(domain.messageId == "m-7")
         #expect(domain.keywords == ["Important", "Work"])

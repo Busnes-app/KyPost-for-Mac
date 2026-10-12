@@ -256,8 +256,13 @@ private func makeEmail(
         )
         try await dao.insert(notification: notification)
         try await dao.insert(notification: notification) // duplicate seq: skipped
+        var sameMessage = notification
+        sameMessage.seq = 99
+        // Same message, new seq (push then pull): one entry, not two.
+        #expect(try await !dao.insert(notification: sameMessage))
         var second = notification
         second.seq = 2
+        second.messageId = "m-2"
         try await dao.insert(notification: second)
 
         let history = try await dao.listHistory(limit: 10)

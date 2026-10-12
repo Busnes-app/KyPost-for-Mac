@@ -27,4 +27,11 @@ final class NotificationCursorStore {
         guard cursor > lastCursor else { return }
         defaults.set(cursor, forKey: Self.key)
     }
+
+    /// The only way the cursor moves backwards: unpair. Server seqs are per
+    /// account, so a cursor carried into a different account's pairing would
+    /// silently skip every notification below it.
+    func reset() {
+        defaults.removeObject(forKey: Self.key)
+    }
 }

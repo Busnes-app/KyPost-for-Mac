@@ -8,6 +8,7 @@
 
 import Foundation
 import Observation
+import os
 import SwiftUI
 #if os(macOS)
 import AppKit
@@ -36,6 +37,7 @@ final class SettingsViewModel {
     /// so existing call sites and tests that don't exercise the lock keep
     /// working; nil means "no lock configured", i.e. proceed.
     private let appLockManager: AppLockManager?
+    private let pushRepository: PushRepository?
 
     var systemNotificationsEnabled: Bool {
         didSet { pushSettingsStore.systemNotificationsEnabled = systemNotificationsEnabled }
@@ -70,7 +72,8 @@ final class SettingsViewModel {
         deregisterDeviceUseCase: DeregisterDeviceUseCase,
         pushNotificationDispatcher: PushNotificationDispatcher,
         enrollmentVault: EnrollmentVault? = nil,
-        appLockManager: AppLockManager? = nil
+        appLockManager: AppLockManager? = nil,
+        pushRepository: PushRepository? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
@@ -84,6 +87,7 @@ final class SettingsViewModel {
         self.pushNotificationDispatcher = pushNotificationDispatcher
         self.enrollmentVault = enrollmentVault
         self.appLockManager = appLockManager
+        self.pushRepository = pushRepository
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.exportToSystemContactsEnabled
     }
@@ -136,6 +140,13 @@ final class SettingsViewModel {
         // speak for whatever device is paired next.
         enrollmentVault?.forgetPendingReports()
         EnrollmentSession.shared.clear()
+        // Notification history is the account's sender and subject lines,
+        // and the pull cursor is a position in the account's queue.
+        do {
+            try await pushRepository?.clearForUnpair()
+        } catch {
+            Log.push.error("Could not clear notification history on unpair: \(error)")
+        }
         statusMessage = "Pairing removed"
     }
 

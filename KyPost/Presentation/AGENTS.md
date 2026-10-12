@@ -34,6 +34,14 @@ Domain.
   confirmation step; otherwise it goes through `router.handle`, which defers it
   until unlock. A link the screen never took (it was dismissed first) goes to
   the router when the last pairing screen disappears, so it is never stranded.
+- **Notification history renders nothing while locked or after an abandoned
+  wipe.** `NotificationHistorySections` (iOS Settings → Notifications →
+  Notification History; macOS Notifications tab) shows sender and subject
+  lines, so it decides `NotificationHistoryAccess` itself rather than trusting
+  the cover, for the same macOS sheet reason as the router — and because the
+  macOS Settings scene sits outside the main window's `ManualRecoveryView`.
+  After an abandoned wipe the view model does not even load the history. Rows
+  for a synthesized `pull-<seq>` id mark read but open nothing.
 - **The MFA approval screen has no plain Approve button.** When the payload
   carries no usable `matchDigits`, `MfaApprovalView` offers Deny and an
   explanation — never a generic Approve. Number matching exists because a

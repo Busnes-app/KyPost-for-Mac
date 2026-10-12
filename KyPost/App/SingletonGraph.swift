@@ -332,6 +332,11 @@ final class SingletonGraph {
         service.setPendingPin = { [pinnedSessionDelegate] pin, host in
             pinnedSessionDelegate.setPendingPin(pin, forHost: host)
         }
+        // A pairing from before the heartbeat's registration stamp: record
+        // the banners it already delivered before the heartbeat can re-pull.
+        service.reconcileExistingPairingPushes = { [weak self] in
+            await self?.pullPollingScheduler.reconcileDeliveredPushesForExistingPairing()
+        }
         return service
     }()
     lazy var desktopPairingService = DesktopPairingService(
@@ -346,11 +351,15 @@ final class SingletonGraph {
         approveMfaChallenge: approveMfaChallengeUseCase,
         pushSettingsStore: pushSettingsStore
     )
-    lazy var pullPollingScheduler = PullPollingScheduler(
-        pushRepository: pushRepository,
-        pushSettingsStore: pushSettingsStore,
-        dispatcher: pushNotificationDispatcher
-    )
+    lazy var pullPollingScheduler: PullPollingScheduler = {
+        let dispatcher = pushNotificationDispatcher
+        return PullPollingScheduler(
+            pushRepository: pushRepository,
+            pushSettingsStore: pushSettingsStore,
+            dispatcher: dispatcher,
+            deliveredPushes: { await dispatcher.deliveredRemotePushes() }
+        )
+    }()
 
     // MARK: - View Models (shared so menu commands and views stay in sync)
 
@@ -381,7 +390,7 @@ final class SingletonGraph {
     /// construct them first — harmless, a freshly built scheduler/monitor
     /// stops as a no-op.
     func shutdown() {
-        pullPollingScheduler.stopForegroundPolling()
+        pullPollingScheduler.shutdown()
         systemContactsChangeMonitor.stop()
         inboxViewModel.stopAutoRefresh()
         // Drops in-flight requests, the connection pool, and the session's
@@ -452,6 +461,13 @@ final class SingletonGraph {
             } catch {
                 Log.sync.error("Contact import-dupe repair failed: \(error.localizedDescription)")
             }
+        }
+        // Every launch, not once: the cap applies to history written before
+        // it existed, and to a store that has received nothing since.
+        do {
+            try await pushRepository.pruneHistory()
+        } catch {
+            Log.push.error("Notification history prune failed: \(error.localizedDescription)")
         }
     }
 

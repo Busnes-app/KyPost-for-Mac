@@ -314,12 +314,27 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         let payload = MailPushPayload(
             messageId: "m-1", senderName: "Ada", emailSubject: "Hi", keywords: []
         )
+        var other = payload
+        other.messageId = "m-2"
         let sameInstant = Date()
-        let first = try await env.repository.recordPushArrival(payload, receivedAt: sameInstant)
-        let second = try await env.repository.recordPushArrival(payload, receivedAt: sameInstant)
+        let first = try #require(try await env.repository.recordPushArrival(payload, receivedAt: sameInstant))
+        let second = try #require(try await env.repository.recordPushArrival(other, receivedAt: sameInstant))
 
         #expect(first.seq != second.seq)
         #expect(try await env.repository.history().count == 2)
+    }
+
+    /// The same message pushed twice (or pulled by the heartbeat first) is
+    /// one history entry, and the second arrival reports nothing new.
+    @Test func aRepeatedMessageIdIsRecordedOnce() async throws {
+        let env = try makeEnvironment(client: stubClient())
+        let payload = MailPushPayload(
+            messageId: "m-1", senderName: "Ada", emailSubject: "Hi", keywords: []
+        )
+        let sameInstant = Date()
+        #expect(try await env.repository.recordPushArrival(payload, receivedAt: sameInstant) != nil)
+        #expect(try await env.repository.recordPushArrival(payload, receivedAt: sameInstant) == nil)
+        #expect(try await env.repository.history().count == 1)
     }
 
     @Test func pullDeduplicatesBySeqAndAdvancesCursorAfterHandoff() async throws {
@@ -346,7 +361,7 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
 
         let delivered = try await env.repository.pullOnce()
         // seq 3 <= cursor: deduped; only seq 5 is new.
-        #expect(delivered.map(\.seq) == [5])
+        #expect(delivered.mail.map(\.seq) == [5])
         #expect(env.cursorStore.lastCursor == 5)
         #expect(try await env.repository.history().map(\.seq) == [5])
     }
@@ -475,6 +490,32 @@ private final class PinArmingRecorder: @unchecked Sendable {
         let outcome = await env.service.reregisterIfPaired(deviceToken: "t2")
         #expect(outcome != nil)
         #expect(try env.pairingStore.loadPairing()?.lastDeviceId == "dev-8")
+    }
+
+    /// Routine re-registration does not restart the heartbeat's quiet clock:
+    /// hourly foregrounds with no push must not postpone the heartbeat past
+    /// three hours from the original registration.
+    @Test func reregistrationKeepsTheHeartbeatQuietClock() async throws {
+        let client = stubClient(json: #"{"ok": true, "deviceId": "dev-8", "deviceSecret": "s-8"}"#)
+        let env = try makeEnvironment(client: client)
+        // A new pairing starts the clock.
+        guard case .success = await env.service.pair(params: params, deviceToken: "t1") else {
+            Issue.record("pairing failed")
+            return
+        }
+        #expect(env.settings.lastRegisteredAt != nil)
+
+        let paired = try makeEnvironment(client: client, paired: true)
+        let initial = Date().addingTimeInterval(-3 * 60 * 60)
+        paired.settings.lastRegisteredAt = initial
+        for _ in 0..<3 {
+            _ = await paired.service.reregisterIfPaired(deviceToken: "t2")
+        }
+        #expect(paired.settings.lastRegisteredAt == initial)
+        #expect(PullHeartbeatPolicy.decide(
+            mode: .push, lastPushReceivedAt: nil,
+            lastRegisteredAt: paired.settings.lastRegisteredAt, lastPulledAt: nil, now: Date()
+        ) == .poll(heartbeat: true))
     }
 
     /// Every successful register mints a brand-new secret, invalidating the

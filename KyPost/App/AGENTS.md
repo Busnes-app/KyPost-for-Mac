@@ -85,8 +85,11 @@ intact and the wipe landed a few hundred milliseconds later.
 - A verdict of `.settled(.incomplete(_, willRetry: false))` blocks the whole
   app behind `ManualRecoveryView`. Entry points that never present a window
   guard on `securityWipe.blockedByAbandonedWipe` themselves — currently
-  `PushNotificationDispatcher.handleIncoming`, `presentLocally`, and the
-  KyIdentity sign-on (`KyIdentitySignOnCoordinator.appIsGated`).
+  `PushNotificationDispatcher.handleIncoming`, `presentLocally`,
+  `presentMfaLocally`, `deliveredRemotePushes`, the KyIdentity sign-on
+  (`KyIdentitySignOnCoordinator.appIsGated`), and notification history
+  (`NotificationHistoryAccess`), which the macOS Settings scene shows outside
+  the main window's recovery screen.
 
 `AppLockManager.onWipe` is wired in `onLaunch`. Left unset it fails closed and
 reports a wipe that could not run, rather than rejecting the eleventh wrong PIN
@@ -127,9 +130,67 @@ this device holds is not a claim to make from a device the app failed to
 erase) and while a run is already in flight, so overlapping hooks send once.
 
 Background pull is gated on `appLockManager.isLocked` in the `BGTaskScheduler`
-handler as well as in `onForeground`, and `presentLocally` withholds sender and
-subject while locked. "Require Unlock to Open" reads as "nobody sees my mail
+handler, the macOS wake observer, and `onForeground`, and `presentLocally`
+withholds sender and subject — from the banner *and* its stored `userInfo` —
+while locked. "Require Unlock to Open" reads as "nobody sees my mail
 without authenticating"; a subject line on the lock screen breaks that.
+
+## Pull is also the push-mode heartbeat
+
+The server queues every notification for pull in both delivery modes and never
+flips the mode itself (server issue #137 option 1, Android #129), so a device on
+a dead relay recovers only by polling. `PullPollingScheduler` runs in both modes
+and `PullHeartbeatPolicy.decide` says whether a tick touches the network:
+
+- Pull mode always polls. Anything else (push, or no mode yet) polls only once
+  APNs has been quiet for 3 h (a constant), counted from
+  `PushSettingsStore.lastPushReceivedAt`, else `lastRegisteredAt`; heartbeat
+  polls are then spaced 15 min apart, counted from the later of the last
+  successful pull and `lastHeartbeatAttemptAt` (stamped *before* the request,
+  so a failing relay is not retried every tick). A pull answer of "push" is
+  not "stop".
+- `lastRegisteredAt` is set by a new pairing only. Routine re-registration of
+  the same account (same `sub` and `srv`) keeps it: it proves the relay
+  answers, not that APNs delivers. A same-account pairing with no stamp yet
+  (it predates the stamp) gets one, and then
+  `DeviceRegistrationService.reconcileExistingPairingPushes` records its
+  delivered banners regardless of the stamp, so the next heartbeat does not
+  re-alert them.
+- `lastPushReceivedAt` only moves forward and is fed by every handled APNs
+  payload, `willPresent`, and the newest `UNPushNotificationTrigger` banner
+  still in Notification Center — the server sends alert pushes, which do not
+  wake a suspended iOS app, so the banner is the only evidence. Each tick also
+  records those banners' mail into history
+  (`PushRepository.reconcileDeliveredPushes`) before pulling, so the heartbeat
+  does not alert them a second time — only banners inside the heartbeat
+  window and dated after `lastRegisteredAt`, since unpair leaves Notification
+  Center alone. A reconcile run is pinned to the session it started under and
+  stops when unpair moves it on.
+- A heartbeat (and a first pull, cursor 0) drops entries queued more than 6 h
+  ago while still advancing the cursor past them; a months-stale cursor would
+  otherwise re-alert the whole backlog.
+- The wire shape is the server's `{seq,title,body,data,createdAt}` with mail or
+  MFA fields inside `data` — `PullNotificationDTO.routed`, MFA first. History
+  dedupes by `messageId` as well as `seq`, so mail push already delivered is not
+  alerted twice; pulled MFA is never stored and is raised only within the
+  server's 5-minute window — measured when the banner is raised, not at tick
+  start — as a detail-free tap-to-open banner.
+- `pollNow` is single-flight. The iOS refresh task is armed whenever paired.
+  `PullPollingScheduler.shutdown` (graph teardown) cancels the poll in flight
+  as well as the cadence; backgrounding only stops the cadence. A cancelled
+  poll persists and presents nothing: `PushNotificationDAO.insert` itself
+  refuses a cancelled caller, so an insert queued on the actor at shutdown
+  does not land.
+- History shows 30 rows (`PushNotificationDAO.historyLimit`). Rows pushed past
+  that keep only their message id, seq and time for
+  `deliveryIdRetention` (the heartbeat window) and are then deleted; they are
+  never listed. The cap is applied at launch and when the history screen
+  loads, not only on insert.
+- Unpair clears history, the pull cursor and the heartbeat clock
+  (`PushRepository.clearForUnpair`), and first moves the repository's
+  `session` on. Every write a pull makes — history rows (checked inside the
+  DAO actor), cursor, delivery mode, heartbeat stamps — and every banner it
+  raises is checked against the session it started under.
 
 ## The screenshot demo build
 
@@ -180,7 +241,7 @@ Rules:
 
 - `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (`AppEnvironmentTests`, `SecurityTests`, `SecurityWipeTests`,
-  `SecurityWipeStepsTests`).
+  `SecurityWipeStepsTests`, `PullHeartbeatTests`).
 - The rebuild path is exercised end-to-end by toggling Hostile Location
   Protection in Settings → Security on a paired build.
 

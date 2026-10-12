@@ -114,6 +114,8 @@ final class PushNotificationDispatcher: NSObject {
             Log.push.warning("Ignoring unrecognized push payload")
             return
         }
+        // Resets the heartbeat's quiet clock: APNs is demonstrably working.
+        pushSettingsStore.markPushReceived(at: Date())
         switch payload {
         case .mail(let mail):
             // APNs already showed the system banner (aps.alert); record history.
@@ -155,12 +157,18 @@ final class PushNotificationDispatcher: NSObject {
             : notification.emailSubject
         content.sound = .default
         content.categoryIdentifier = Self.mailCategoryId
-        content.userInfo = [
-            "messageId": notification.messageId,
-            "senderName": notification.senderName,
-            "emailSubject": notification.emailSubject,
-            "Keywords": notification.keywords,
-        ]
+        // The tap only needs the message id. Sender and subject ride along
+        // only when they are on screen anyway: a delivered notification's
+        // userInfo is stored by the system, and a redacted banner carrying the
+        // subject in its payload has only hidden it from the user.
+        content.userInfo = redact
+            ? ["messageId": notification.messageId]
+            : [
+                "messageId": notification.messageId,
+                "senderName": notification.senderName,
+                "emailSubject": notification.emailSubject,
+                "Keywords": notification.keywords,
+            ]
         let request = UNNotificationRequest(
             identifier: "pull-\(notification.seq)",
             content: content,
@@ -174,6 +182,66 @@ final class PushNotificationDispatcher: NSObject {
     }
 }
 
+extension PushNotificationDispatcher {
+    /// Presents a pulled MFA challenge. Tap-to-open only, and no challenge
+    /// detail in the banner whether or not the app is locked — the decision
+    /// happens on the approval screen, which re-authenticates. The userInfo
+    /// is the server's data map, so a tap routes through `PushPayloadMapper`
+    /// exactly like an APNs challenge.
+    func presentMfaLocally(
+        _ challenge: MfaChallenge,
+        userInfo: [String: String],
+        center: UNUserNotificationCenter = .current()
+    ) async {
+        guard pushSettingsStore.systemNotificationsEnabled else { return }
+        guard !SingletonGraph.shared.securityWipe.blockedByAbandonedWipe else { return }
+        let content = UNMutableNotificationContent()
+        content.title = String(localized: "Sign-in approval requested")
+        content.body = String(localized: "Open KyPost to review this sign-in.")
+        content.sound = .default
+        content.categoryIdentifier = Self.mfaCategoryId
+        content.userInfo = Self.mfaUserInfo(from: userInfo)
+        let request = UNNotificationRequest(
+            identifier: "mfa-\(challenge.challengeId)",
+            content: content,
+            trigger: nil
+        )
+        do {
+            try await center.add(request)
+        } catch {
+            Log.push.error("Failed to present local MFA notification: \(error)")
+        }
+    }
+
+    /// Only what routing a tap needs; nothing else from the relay is stored
+    /// in the system's notification database.
+    static func mfaUserInfo(from data: [String: String]) -> [String: String] {
+        data.filter { ["type", "challengeId", "matchDigits", "decoyDigits"].contains($0.key) }
+    }
+
+    /// The remote (APNs) notifications still in Notification Center, with
+    /// the mail each one alerted. Alert pushes do not wake a suspended app,
+    /// so this is how the heartbeat learns push is alive, and how history
+    /// learns what push already alerted, without a service extension. Empty
+    /// when the user has cleared them — the heartbeat then errs toward one
+    /// extra poll — and after an abandoned wipe, which records nothing.
+    func deliveredRemotePushes(
+        center: UNUserNotificationCenter = .current()
+    ) async -> [DeliveredPush] {
+        guard !SingletonGraph.shared.securityWipe.blockedByAbandonedWipe else { return [] }
+        return await center.deliveredNotifications()
+            .filter { $0.request.trigger is UNPushNotificationTrigger }
+            .map { Self.deliveredPush(userInfo: $0.request.content.userInfo, date: $0.date) }
+    }
+
+    static func deliveredPush(userInfo: [AnyHashable: Any], date: Date) -> DeliveredPush {
+        guard case .mail(let mail) = PushPayloadMapper.map(userInfo: userInfo, receivedAt: date) else {
+            return DeliveredPush(date: date, mail: nil)
+        }
+        return DeliveredPush(date: date, mail: mail)
+    }
+}
+
 // MARK: - UNUserNotificationCenterDelegate
 
 extension PushNotificationDispatcher: UNUserNotificationCenterDelegate {
@@ -183,7 +251,11 @@ extension PushNotificationDispatcher: UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        notification.request.content.categoryIdentifier == Self.mfaCategoryId
+        if notification.request.trigger is UNPushNotificationTrigger {
+            let date = notification.date
+            await MainActor.run { self.pushSettingsStore.markPushReceived(at: date) }
+        }
+        return notification.request.content.categoryIdentifier == Self.mfaCategoryId
             ? [.banner, .sound]
             : [.banner]
     }

@@ -104,7 +104,10 @@ private enum PushLifecycle {
                 await graph.deviceRegistrationService.reregisterIfPaired(deviceToken: token)
             }
         }
-        // Immediate pull on foreground, then 90s cadence (spec §3).
+        // Immediate tick on foreground, then the 90s cadence (spec §3). In
+        // push mode each tick is a heartbeat check (PullHeartbeatPolicy).
+        // The explicit poll covers an unlock while the cadence was already
+        // running; pollNow is single-flight, so the two never double up.
         graph.pullPollingScheduler.startForegroundPolling()
         Task {
             await graph.pullPollingScheduler.pollNow()
@@ -228,8 +231,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
     }
 
+    /// Armed whenever the device is paired, in both modes: in push mode the
+    /// refresh is the heartbeat, and `pollNow` decides whether it polls.
     private func scheduleBackgroundPull() {
-        guard SingletonGraph.shared.pushSettingsStore.deliveryMode == .pull else { return }
+        guard SingletonGraph.shared.securePairingStore.isPaired else { return }
         let request = BGAppRefreshTaskRequest(identifier: Config.backgroundPullTaskId)
         request.earliestBeginDate = Date(timeIntervalSinceNow: Config.backgroundPullInterval)
         do {
@@ -260,6 +265,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { _ in
             Task { @MainActor in
+                // Same lock gate as onForeground and iOS background refresh:
+                // waking from a screen lock wakes a locked app, and the
+                // deferred poll runs from onUnlock instead.
+                guard !SingletonGraph.shared.appLockManager.isLocked else { return }
                 await SingletonGraph.shared.pullPollingScheduler.pollNow()
             }
         }
