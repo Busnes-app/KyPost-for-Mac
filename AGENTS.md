@@ -78,6 +78,9 @@ Default section order:
 ## Testing
 
 - Run: `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`.
+- iOS-only code (`#if os(iOS)`, e.g. `KyIdentitySignOnCoordinatorTests`) runs
+  only under an iOS destination: `xcodebuild test -scheme "KyPost"
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`.
 - `KyPost.xctestplan` is the shared test plan, referenced from the
   shared scheme. Both test targets set `parallelizable: false`, and that must
   stay off.
@@ -456,6 +459,32 @@ old sentence edited out.
   not a form.
 - 502 is `.upstreamFailure` and retryable with backoff; other 5xx are not.
   Telling the user to retry is only honest for the one that is.
+
+### KyIdentity sign-on via KyAuth, iOS only (`Domain/SignOn`, `Data/Networking/KyIdentitySignOnClient.swift`, `KyIdentitySignOnCoordinator`)
+
+Binding contract: KyAuth-iOS `docs/specs/2026-10-11-ios-signon-handoff.md`.
+Port of KyPost Android's `signon/`; status mapping and texts mirror it.
+
+- **A URL carries only a nonce.** Request and response travel through the App
+  Group `group.org.kysecurity.signon`, in the iOS entitlements only; team
+  TATYN4X57D is the trust boundary. KyPost writes
+  `SignOn/requests/<nonce>.json` (atomic, `.completeFileProtection`), reads
+  and deletes `SignOn/responses/<nonce>.json`, and sweeps stale files (over 5
+  minutes) only in `responses/`. `requests/` is KyAuth's to sweep.
+- `origin` is exactly `RelayOrigin.origin` (`https://host[:port]`, lowercase
+  punycode host, 443 dropped). KyAuth refuses anything not already canonical.
+- The pending nonce lives in memory only, is accepted only from
+  `kypost://kyidentity-signon?nonce=…` or on becoming active, and is abandoned
+  after 180 s. The ID token is never logged or stored; it is a local for the
+  one relay call.
+- The response is not read, and the token not exchanged, while the app is
+  locked, before the startup wipe verdict settles, or behind an abandoned
+  wipe; a wipe, failed-unlock reset or unpair discards the whole sign-on.
+  Details in `KyPost/App/AGENTS.md`.
+- The relay's link goes through `PairingLinkParser`, must name the relay's own
+  host, and then takes the ordinary confirmation step. Sign-on never pairs
+  directly, so registration, pinning and secret storage stay single-path.
+- macOS has no sign-on: no App Group, no entry, no return handling.
 
 ### MFA number matching (`Domain/Models/MfaNumberMatch.swift`)
 

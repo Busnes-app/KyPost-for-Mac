@@ -52,8 +52,29 @@ final class NavigationRouter {
     /// deliberately outlives graph rebuilds.
     var isLocked: () -> Bool = { SingletonGraph.shared.appLockManager.isLocked }
 
-    init(deepLinkHandler: DeepLinkHandler = DeepLinkHandler()) {
+    @ObservationIgnored private var resetObservation: NotificationObservation?
+
+    init(
+        deepLinkHandler: DeepLinkHandler = DeepLinkHandler(),
+        notificationCenter: NotificationCenter = .default
+    ) {
         self.deepLinkHandler = deepLinkHandler
+        // This router outlives graph rebuilds, so a pairing link deferred
+        // behind the lock would otherwise replay into the app a wipe just
+        // erased — the rebuilt graph comes up unlocked.
+        resetObservation = NotificationObservation(
+            center: notificationCenter,
+            name: .kyPostSessionReset
+        ) { [weak self] in
+            self?.discardForSessionReset()
+        }
+    }
+
+    /// Drops the deferred action and everything presented. Runs on
+    /// `.kyPostSessionReset`.
+    func discardForSessionReset() {
+        deferredAction = nil
+        dismissPresentedRoutes()
     }
 
     /// Nothing presents while locked.

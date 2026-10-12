@@ -22,6 +22,15 @@ struct KyPostApp: App {
     // The router deliberately outlives graph rebuilds (it holds navigation
     // state, not graph state); DeepLinkHandler is a stateless parser.
     @State private var router = NavigationRouter()
+#if os(iOS)
+    // Outlives graph rebuilds and every screen for the same reason as the
+    // router: a KyIdentity sign-on spans a trip to KyAuth, during which the
+    // app lock tears the pairing sheet down. It holds no graph state, and it
+    // clears itself on `.kyPostSessionReset` (wipe, failed-unlock reset,
+    // unpair).
+    @State private var signOn = KyIdentitySignOnCoordinator()
+    @Environment(\.scenePhase) private var scenePhase
+#endif
 
     private var graph: SingletonGraph { .shared }
     private var environment: AppEnvironment { .shared }
@@ -102,6 +111,9 @@ struct KyPostApp: App {
                 .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
+#if os(iOS)
+                .environment(signOn)
+#endif
                 .environment(\.theme, themeManager.palette)
                 // Read here rather than in a row's body: it reads the Keychain,
                 // and SwiftUI re-evaluates a list row's body constantly.
@@ -109,6 +121,14 @@ struct KyPostApp: App {
                 .preferredColorScheme(themeManager.palette.preferredColorScheme)
                 .background(themeManager.palette.bg.ignoresSafeArea())
                 .onOpenURL { url in
+#if os(iOS)
+                    // kypost://kyidentity-signon carries only a nonce and
+                    // presents nothing, so the router does not defer it; the
+                    // coordinator holds the token exchange itself while the
+                    // app is gated, and the pairing link it produces goes
+                    // through the router.
+                    if signOn.handleReturn(url) { return }
+#endif
                     router.handleURL(url)
                 }
                 .onAppear {
@@ -116,7 +136,25 @@ struct KyPostApp: App {
                     graph.pushNotificationDispatcher.onNavigate = { [weak router] action in
                         router?.handle(action)
                     }
+#if os(iOS)
+                    signOn.deliver = { [weak router] params in
+                        router?.handle(.openPairingFlow(params))
+                    }
+#endif
                 }
+#if os(iOS)
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { signOn.checkForResponse() }
+                }
+                // The coordinator leaves KyAuth's response unread while the
+                // app is locked, the startup wipe check is pending, or an
+                // abandoned wipe blocks the app. Returning from KyAuth lands
+                // on the lock screen, so this is what picks the response up
+                // once the user unlocks.
+                .onChange(of: KyIdentitySignOnCoordinator.appIsGated()) { _, gated in
+                    if !gated { signOn.checkForResponse() }
+                }
+#endif
                 .task {
                     await graph.runStartupMigrationsIfNeeded()
                 }

@@ -24,6 +24,35 @@ extension Notification.Name {
     /// observes it and dismisses: `dismissWindow` is a SwiftUI environment
     /// value available only inside a View, so it can't be called from here.
     static let kyPostCloseComposeWindows = Notification.Name("kypost.closeComposeWindows")
+    /// Posted, on the main actor, when this device's pairing is erased: a
+    /// security wipe, the failed-unlock reset, or an unpair. App-level state
+    /// that outlives graph rebuilds (the router, the KyIdentity sign-on) drops
+    /// anything that could present or re-pair afterwards.
+    static let kyPostSessionReset = Notification.Name("kypost.sessionReset")
+}
+
+/// A block observer that removes itself when released, so an owner can hold
+/// it without a `deinit` of its own. Posters of the observed name must be on
+/// the main actor; the block runs synchronously on the posting thread.
+nonisolated final class NotificationObservation {
+    private let center: NotificationCenter
+    private let token: any NSObjectProtocol
+
+    init(center: NotificationCenter, name: Notification.Name, perform: @escaping @MainActor () -> Void) {
+        self.center = center
+        token = center.addObserver(forName: name, object: nil, queue: nil) { _ in
+            MainActor.assumeIsolated { perform() }
+        }
+    }
+
+    deinit { center.removeObserver(token) }
+}
+
+extension AppEnvironment {
+    /// See `Notification.Name.kyPostSessionReset`.
+    static func postSessionReset() {
+        NotificationCenter.default.post(name: .kyPostSessionReset, object: nil)
+    }
 }
 
 @Observable
@@ -164,6 +193,9 @@ final class AppEnvironment {
         let deregisterClient = graph.deregisterClient
         let hostileLocationEnabled = graph.hostileLocationProtectionStore.enabled
         let hostileStore = graph.hostileLocationProtectionStore
+        // First, before anything awaits: a sign-on in flight or a deferred
+        // pairing link must not re-pair the device this wipe is erasing.
+        Self.postSessionReset()
 
         let result = await graph.securityWipe.run(
             steps: SecurityWipeSteps.build(graph: graph, defaultsDomain: Bundle.main.bundleIdentifier),
@@ -271,6 +303,9 @@ final class AppEnvironment {
     /// cached locally goes, the pairing goes, and the device comes back
     /// unpaired and unlocked, exactly as if it had been reinstalled.
     func resetAfterFailedUnlock() throws {
+        // A pending sign-on or deferred pairing link would re-pair the device
+        // this reset promises comes back "as if reinstalled".
+        Self.postSessionReset()
         // Gated copy and gate flag first: `clear()` routes through the gate,
         // and it must not be the only thing that removes the gated secret.
         graph.credentialGateService.removeAll()

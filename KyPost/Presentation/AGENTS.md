@@ -27,6 +27,13 @@ Domain.
   presenting at all. Either way MFA approval and pairing were reachable on a
   locked app. A new scene root gets `.lockAwareRouting(router)` alongside its
   `.id(generation)`, `LockedOverlay`, and `protectedFromCapture()`.
+- **`PushPairingView` closes itself on iOS when the lock engages.** Settings
+  presents it outside the router, so `dismissPresentedRoutes` cannot reach
+  it, and "Sign in with KyIdentity" backgrounds the app on purpose. A sign-on
+  that finishes while a pairing screen is on screen lands in that screen's
+  confirmation step; otherwise it goes through `router.handle`, which defers it
+  until unlock. A link the screen never took (it was dismissed first) goes to
+  the router when the last pairing screen disappears, so it is never stranded.
 - **The MFA approval screen has no plain Approve button.** When the payload
   carries no usable `matchDigits`, `MfaApprovalView` offers Deny and an
   explanation — never a generic Approve. Number matching exists because a

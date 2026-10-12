@@ -46,6 +46,16 @@
 	     $(AppIdentifierPrefix)com.urlxl.mail as a second entry here, and a
 	     one-time purge on launch and in the wipe paths that deletes every item
 	     under the old service names and the old Secure Enclave key tag. -->
+	<!-- KyIdentity sign-on handoff with KyAuth (KyAuth-iOS
+	     docs/specs/2026-10-11-ios-signon-handoff.md). Only apps of team
+	     TATYN4X57D can open this group; that is the whole trust boundary of
+	     the handoff, so never add it to an app outside the team's suite.
+	     iOS only: the macOS app has no KyAuth to hand off to. Both iOS files
+	     carry it; they must stay identical apart from aps-environment. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.org.kysecurity.signon</string>
+	</array>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)org.kysecurity.mail</string>

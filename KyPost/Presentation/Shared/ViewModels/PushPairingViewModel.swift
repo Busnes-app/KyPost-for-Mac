@@ -111,7 +111,7 @@ final class PushPairingViewModel {
     /// A refused link is not the same as an unrecognised one, and the
     /// certificate-pin case in particular must not read as "try again" —
     /// retrying is exactly the wrong response to it.
-    private static func message(for error: Error, scanned: Bool = false) -> String {
+    static func message(for error: Error, scanned: Bool = false) -> String {
         switch error {
         case PairingLinkError.malformedCertificatePin:
             return "This pairing link carries a damaged certificate pin, so KyPost stopped rather than pairing without one. Generate a fresh link on your server's Security page. If a new link does the same thing, something is altering it in transit — do not pair on this network."

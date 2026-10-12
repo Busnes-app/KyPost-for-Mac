@@ -121,6 +121,8 @@ final class SettingsViewModel {
             return
         }
         _ = await deregisterDeviceUseCase()
+        // A sign-on still in flight would otherwise re-pair right after this.
+        AppEnvironment.postSessionReset()
         try? securePairingStore.clear()
         // Unpairing is a session boundary for the OpenPGP key as much as for
         // the credential. The envelope is the account's private key sealed to
