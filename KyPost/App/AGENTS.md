@@ -55,6 +55,16 @@ Protection turns on and at every launch while it is on (`PushLifecycle.onLaunch`
 A `UserDefaults`-backed store that goes memory-only under the mode erases its
 persisted copy there; switching reads to memory does not remove it.
 
+`shutdown()` also **drops** the inbox's held list actions (the undo window)
+rather than sending them: the superseded graph's session is cancelled, and a
+rebuild is a Hostile Location Protection switch or a wipe. The lock sites
+(`PushLifecycle.onBackground`, the macOS screen-lock observer) instead
+**commit** them — on iOS the `didEnterBackgroundNotification` observer in
+`installLifecycleObservers` commits first, under a background assertion —
+and must do so before `appLockManager.lockAfterGrace()` (a grace period
+does not extend the undo window) — see the root "Inbox list actions"
+contract.
+
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.
 It is installed once, from the platform delegate

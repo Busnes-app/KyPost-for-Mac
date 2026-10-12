@@ -678,6 +678,52 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
   directly, so registration, pinning and secret storage stay single-path.
 - macOS has no sign-on: no App Group, no entry, no return handling.
 
+### Inbox list actions (`MailRepository.applyAction`, `InboxViewModel`, `Domain/Models/InboxRules.swift`)
+
+- **HTTP 200 from `/api/inbox/actions` is not success.** The relay answers
+  `{ok, action, processed, failed: [{messageId, error}], targetMailbox}` and
+  its loop stops early on a cancelled request, leaving ids in neither list.
+  `applyAction` is the only gate on dropping a cached row: an id is confirmed
+  only when it is absent from `failed[]` **and** `processed` equals the number
+  of such ids; a shortfall confirms nothing. A bare `{"ok":true}` reads as zero
+  processed. Ids are trimmed and de-duplicated first (the relay counts them
+  that way), and more than `maxActionIds` (500, server `maxInboxActionIDs`)
+  is refused without a request. Partial failure reads "1 of 3 not changed: …".
+- **List actions (archive/delete/junk/move, single or bulk, drag-to-folder)
+  are held for a 5 s Undo; nothing reaches the relay until the window
+  closes.** One bar covers every held action; a new action restarts the window
+  without sending. Each held action leaves `PendingMailActions` exactly once —
+  `takeAll` (sent) or `undoAll` (never). Held and in-flight rows are hidden by
+  (folder, id), never id alone, so a refresh cannot bring them back and a
+  same-id row in another folder stays visible. The source folder is pinned at
+  tap time.
+- **Commit points:** the timer, leaving the list (iOS `onDisappear`, which
+  includes opening a message; macOS switching to Contacts or closing the
+  window), iOS backgrounding (under a background-task assertion), and app lock.
+  The lock sites call `commitHeldActions()` **before** `lockAfterGrace()`,
+  grace period or not: the commit binds the relay source synchronously, and
+  `lock()` drops the gated device secret.
+- **Drop points, never send:** security wipe (`inMemoryPlaintext` step), graph
+  rebuild (`SingletonGraph.shutdown`, whose session is about to be cancelled),
+  unpair. "Never" is the safe direction — the mail stays where it was. A
+  process killed inside the window likewise loses the action.
+- **Reader actions (archive/move/junk/delete in `EmailDetailView`) are not
+  undoable**: they run at once through `performNow`, and the reader closes only
+  when the relay confirmed that id; a rejection keeps it open with the reason.
+- **Sent and Drafts are resolved, never hardcoded or created.** Each pick lists
+  the top-level folders and opens the first whose leaf matches the server's
+  alias list (`special_folders.go`: Sent, Sent Items, Sent Messages, Sent Mail /
+  Drafts, Draft), case-insensitively, in that preference order. Paths under
+  Archive are Archive's. No match is a notice, and the folder on screen stays.
+  The relay exposes no special-use flag, so a localized name (`Gesendet`) reads
+  as missing.
+- **Move targets** are INBOX, Inbox children, top-level folders, then Archive
+  children (best effort), de-duplicated case-insensitively, minus the message's
+  own folder; `Archive` itself is never a target (the Archive action resolves
+  the real archive server-side). Labels are raw paths, so two same-leaf folders
+  stay distinguishable. Inbox children are an Apple-only addition: this client
+  shows them in its sidebar.
+
 ### MFA number matching (`Domain/Models/MfaNumberMatch.swift`)
 
 - **Every value comes from the server.** Never invent decoys. This client used
