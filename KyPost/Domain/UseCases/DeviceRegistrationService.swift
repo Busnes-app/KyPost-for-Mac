@@ -59,7 +59,8 @@ final class DeviceRegistrationService {
     /// account (another `sub` or server), so the previous account's
     /// account-scoped state is erased as an unpair would. Wired by
     /// SingletonGraph to `AccountTeardown`, the list unpair runs; nil in tests.
-    var onAccountReplaced: (@MainActor () async -> Void)?
+    /// Returns false when a step failed: the new pairing is then not stored.
+    var onAccountReplaced: (@MainActor () async -> Bool)?
 
     /// One registration per (pairing token, device token). A pairing deep
     /// link is delivered to every open main window and each auto-pairs, so
@@ -167,8 +168,12 @@ final class DeviceRegistrationService {
             case .success(nil): false
             case .failure: true
             }
-            if replacesAccount {
-                await onAccountReplaced?()
+            // Stored only once the previous account is gone: a pairing saved
+            // over an incomplete teardown would list what was left under the
+            // new account. The previous pairing stays, so a retry runs the
+            // teardown again.
+            if replacesAccount, let onAccountReplaced, !(await onAccountReplaced()) {
+                return .failure("Registered, but this device could not erase the previous account's data, so the new pairing was not saved. Try again.")
             }
             do {
                 try securePairingStore.savePairing(Pairing(

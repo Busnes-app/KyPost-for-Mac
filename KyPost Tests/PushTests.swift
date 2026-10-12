@@ -477,6 +477,7 @@ private final class PinArmingRecorder: @unchecked Sendable {
         env.service.onAccountReplaced = { [pairingStore = env.pairingStore] in
             // Still the previous pairing: the hook runs before the save.
             subsSeen.mutate { $0.append(try? pairingStore.loadPairing()?.sub) }
+            return true
         }
 
         _ = await env.service.pair(params: params, deviceToken: "t1")
@@ -488,6 +489,31 @@ private final class PinArmingRecorder: @unchecked Sendable {
 
         _ = await env.service.pair(params: PairingParams(sub: "u2", srv: "https://other.example", pt: "pt-3"), deviceToken: "t1")
         #expect(subsSeen.value == ["u1", "u2"])
+    }
+
+    /// A teardown that could not erase the previous account's data leaves
+    /// the new pairing unsaved, and the previous one in place so a retry
+    /// runs the teardown again.
+    @Test func anIncompleteTeardownLeavesTheNewPairingUnsaved() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true)
+        let runs = Box(0)
+        env.service.onAccountReplaced = {
+            runs.mutate { $0 += 1 }
+            return runs.value > 1
+        }
+        let other = PairingParams(sub: "u2", srv: server, pt: "pt-2")
+
+        let first = await env.service.pair(params: other, deviceToken: "t1")
+        guard case .failure = first else {
+            Issue.record("Expected failure, got \(first)")
+            return
+        }
+        #expect(try env.pairingStore.loadPairing()?.sub == "u1")
+
+        _ = await env.service.pair(params: other, deviceToken: "t1")
+        #expect(runs.value == 2)
+        #expect(try env.pairingStore.loadPairing()?.sub == "u2")
     }
 
     @Test func failedPairingSavesNothing() async throws {

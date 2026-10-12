@@ -350,7 +350,7 @@ final class SingletonGraph {
         // account left here, exactly as an unpair does. Weak: the graph owns
         // the service.
         service.onAccountReplaced = { [weak self] in
-            await self?.makeAccountTeardown().run()
+            await self?.makeAccountTeardown().run() ?? false
         }
         return service
     }()

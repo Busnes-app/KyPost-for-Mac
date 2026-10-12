@@ -19,6 +19,13 @@ final class MailRepository {
     /// the relay path requires. Nil everywhere except the DEBUG screenshot
     /// build (SingletonGraph, DemoContent.isEnabled).
     private let overrideSource: (any MailSource)?
+    /// The pairing `forgetAccount` erased the mail of. Its credentials may
+    /// stay readable after the erase — a pairing to another account stores
+    /// the new one only once the whole teardown has run — and a request made
+    /// with them would fetch the forgotten account's mail under the new
+    /// epoch. Refused until another pairing replaces it.
+    private let forgottenLock = NSLock()
+    private var forgottenAccount: MailAccountBinding?
 
     init(
         securePairingStore: SecurePairingStore,
@@ -34,17 +41,26 @@ final class MailRepository {
         self.overrideSource = overrideSource
     }
 
-    /// The relay source; requires a stored pairing.
+    /// The relay source; requires a stored pairing whose mail has not been
+    /// forgotten.
     func makeSource() throws -> any MailSource {
         if let overrideSource { return overrideSource }
-        guard let pairing = try securePairingStore.loadPairing() else {
-            throw MailSourceError.notPaired
-        }
+        let pairing = try currentPairing()
         return RelayMailSource(
             httpClient: httpClient,
             serverUrl: pairing.srv,
             auth: RelayAuth(pairing: pairing)
         )
+    }
+
+    /// The stored pairing, unless it is the one `forgetAccount` left.
+    private func currentPairing() throws -> Pairing {
+        guard let pairing = try securePairingStore.loadPairing() else {
+            throw MailSourceError.notPaired
+        }
+        let forgotten = forgottenLock.withLock { forgottenAccount }
+        guard MailAccountBinding(pairing) != forgotten else { throw MailSourceError.notPaired }
+        return pairing
     }
 
     func listFolders(parent: String? = nil) async throws -> [MailFolder] {
@@ -115,10 +131,7 @@ final class MailRepository {
             try await emailDAO.replaceFolderSnapshot(folder: folder, emails: result.emails, epoch: epoch)
             return try await emailDAO.getFolder(folder: folder)
         }
-        guard let pairing = try securePairingStore.loadPairing() else {
-            throw MailSourceError.notPaired
-        }
-        let pairingId = pairing.sub
+        let pairingId = try currentPairing().sub
         // A cursor describes rows this device holds. With none held — a fresh
         // or discarded store, a schema change, a Hostile Location Protection
         // switch — a delta would only list what changed since, and the folder
@@ -183,8 +196,13 @@ final class MailRepository {
     /// Erases the account's mail from this device: every cached row (window,
     /// older mail, fetched bodies) and every cursor. For an unpair and for a
     /// pairing that replaces the account. A refresh, page or body fetch still
-    /// in flight is refused when it comes back (`EmailDAO.accountEpoch`).
+    /// in flight is refused when it comes back (`EmailDAO.accountEpoch`), and
+    /// the pairing still stored is refused from here on (`currentPairing`).
+    /// Recorded before the epoch moves, so a request that captures the new
+    /// epoch can no longer reach the old account.
     func forgetAccount() async throws {
+        let leaving = (try? securePairingStore.loadPairing()).map(MailAccountBinding.init)
+        forgottenLock.withLock { forgottenAccount = leaving }
         defer { cursorStore?.clear() }
         try await emailDAO.forgetAccount()
     }

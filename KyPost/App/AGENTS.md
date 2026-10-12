@@ -75,7 +75,11 @@ registration that stores a pairing for another `sub` or server over the
 current one runs it first (`DeviceRegistrationService.onAccountReplaced`,
 wired to `SingletonGraph.makeAccountTeardown`); an unreadable previous
 pairing counts as another account. A new account-scoped store adds its clear
-there, not at either call site.
+there, not at either call site. Held list actions are dropped before the first
+`await` (and the inbox cleared again at the end), so an undo deadline passing
+mid-teardown sends nothing. `run()` returns false when a step failed: unpair
+says so instead of "Pairing removed", and a replacement does not store the new
+pairing (the previous one stays, so a retry re-runs the teardown).
 
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.

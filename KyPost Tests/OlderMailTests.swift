@@ -76,14 +76,16 @@ private struct Harness {
     let relay = ScriptedRelay()
     let dao: EmailDAO
     let cursors: MailCursorStore
+    let pairingStore: SecurePairingStore
     let repository: MailRepository
 
     init() throws {
         dao = EmailDAO(modelContainer: try AppDatabase(inMemory: true).container)
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         cursors = MailCursorStore(defaults: defaults, hostileLocation: HostileLocationProtectionStore(defaults: defaults))
+        pairingStore = try makePairedStore()
         repository = MailRepository(
-            securePairingStore: try makePairedStore(),
+            securePairingStore: pairingStore,
             emailDAO: dao,
             httpClient: relay.client,
             cursorStore: cursors
@@ -102,6 +104,14 @@ private struct Harness {
     }
 
     var cursor: String { cursors.cursor(pairingId: "u1", folder: "INBOX") }
+
+    /// The next account's pairing, stored over the forgotten one.
+    func pairNextAccount() throws {
+        try pairingStore.savePairing(Pairing(
+            sub: "u2", deviceSecret: "s2", srv: server, registrationUrl: nil,
+            pairingToken: "pt2", lastDeviceId: nil, pairedAt: Date().addingTimeInterval(1)
+        ))
+    }
 }
 
 // MARK: - The window and what lies outside it
@@ -449,6 +459,7 @@ private func makeViewModel(_ h: Harness) -> InboxViewModel {
         #expect(h.cursor == "")
 
         // The next account's whole window, dated after the aged-out row.
+        try h.pairNextAccount()
         h.relay.inbox.value = { _ in (200, inboxJSON([wire("theirs", minutesAgo: 2)])) }
         await viewModel.load()
 
@@ -506,6 +517,63 @@ private func makeViewModel(_ h: Harness) -> InboxViewModel {
         #expect(viewModel.showsLoadOlder)
         #expect(!viewModel.isLoadingOlder)
         #expect(viewModel.notice == nil)
+    }
+
+    /// Replacing the account erases its mail before the next pairing is
+    /// stored, so the previous one is still readable for a moment. A
+    /// refresh, page or body fetch started in that moment goes nowhere.
+    @Test func theForgottenPairingStillStoredReachesNoMail() async throws {
+        let h = try Harness()
+        h.relay.inbox.value = { _ in (200, inboxJSON([wire("old", minutesAgo: 1)], extra: #""cursor":"9""#)) }
+        h.relay.body.value = { _ in (200, #"{"body":"previous account's text","bodyMode":"plain"}"#) }
+        try await h.repository.forgetAccount()
+
+        await #expect(throws: MailSourceError.self) { try await h.repository.refreshFolder("INBOX") }
+        #expect(await h.repository.loadOlder(folder: "INBOX", frontier: "a1") != .loaded(nextBefore: nil))
+        await #expect(throws: MailSourceError.self) {
+            try await h.repository.loadBody(for: row("w1", minutesAgo: 1, body: ""))
+        }
+        #expect(h.relay.queries.value.isEmpty)
+        #expect(try await h.stored("old") == nil)
+        #expect(h.cursor == "")
+
+        // The next account's pairing is served normally.
+        try h.pairNextAccount()
+        try await h.repository.refreshFolder("INBOX")
+        #expect(try await h.stored("old") != nil)
+    }
+
+    /// Code review: a list action held when the account is left is dropped
+    /// before teardown's first suspension, so an undo deadline that passes
+    /// while a later step awaits sends nothing.
+    @Test func teardownDropsHeldActionsBeforeItsFirstSuspension() async throws {
+        let h = try Harness()
+        try await h.seed([row("w1", minutesAgo: 1)])
+        let viewModel = InboxViewModel(
+            mailRepository: h.repository,
+            keywordRepository: KeywordRepository(
+                settingsStore: KeywordSettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+            ),
+            undoWindow: .milliseconds(20)
+        )
+        viewModel.delete(serverIds: ["w1"])
+        #expect(viewModel.undoMessage != nil)
+
+        // Whether the mail erase had happened yet when the inbox was told.
+        let cursorAtFirstCall = Box<[String]>([])
+        let complete = await AccountTeardown(
+            mailRepository: h.repository,
+            forgetInbox: {
+                cursorAtFirstCall.mutate { $0.append(h.cursor) }
+                viewModel.forgetAccount()
+            }
+        ).run()
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(complete)
+        #expect(cursorAtFirstCall.value.first == "10")
+        #expect(viewModel.undoMessage == nil)
+        #expect(!h.relay.queries.value.contains { ($0["path"] ?? "").contains("actions") })
     }
 
     @Test func aBodyFetchedAfterTheAccountIsForgottenIsNotCached() async throws {

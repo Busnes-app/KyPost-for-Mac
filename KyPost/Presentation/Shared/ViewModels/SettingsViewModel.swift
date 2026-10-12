@@ -142,10 +142,10 @@ final class SettingsViewModel {
         _ = await deregisterDeviceUseCase()
         // A sign-on still in flight would otherwise re-pair right after this.
         AppEnvironment.postSessionReset()
-        try? securePairingStore.clear()
+        let pairingCleared = (try? securePairingStore.clear()) != nil
         // Everything else the account left on this device — the same list a
         // pairing to another account runs.
-        await AccountTeardown(
+        let tornDown = await AccountTeardown(
             enrollmentVault: enrollmentVault,
             pushRepository: pushRepository,
             recipientPinStore: recipientPinStore,
@@ -153,7 +153,9 @@ final class SettingsViewModel {
             mailRepository: mailRepository,
             forgetInbox: onUnpaired
         ).run()
-        statusMessage = "Pairing removed"
+        statusMessage = pairingCleared && tornDown
+            ? "Pairing removed"
+            : "Pairing removed, but some of this account's data could not be erased from this device."
     }
 
     func testConnection() async {

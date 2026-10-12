@@ -24,7 +24,16 @@ struct AccountTeardown {
     var forgetInbox: (() -> Void)?
 
     /// Runs every step; a failing step is logged and the rest still run.
-    func run() async {
+    /// Returns false when any step failed, so the caller cannot report the
+    /// account as gone while some of its data is still here.
+    @discardableResult
+    func run() async -> Bool {
+        var complete = true
+        // First, before any suspension: a list action still in its undo
+        // window belongs to the account being left, and its timer could
+        // otherwise commit it — with the credentials it was bound to —
+        // while a later step awaits. Dropped, not sent.
+        forgetInbox?()
         // The envelope is the account's private key sealed to *this* device;
         // left behind, it outlives the pairing that authorised putting it
         // here. The in-memory copy goes with it — destroying the sealed blob
@@ -40,6 +49,7 @@ struct AccountTeardown {
             try await pushRepository?.clearForUnpair()
         } catch {
             Log.push.error("Could not clear notification history on leaving the account: \(error)")
+            complete = false
         }
         // Keys verified by QR belong to this account's address book.
         recipientPinStore?.clear()
@@ -53,9 +63,11 @@ struct AccountTeardown {
             try await mailRepository?.forgetAccount()
         } catch {
             Log.mail.error("Could not clear cached mail on leaving the account: \(error)")
+            complete = false
         }
-        // A list action still in its undo window belongs to the account just
-        // left; it is dropped rather than sent.
+        // Again, now the cache is empty: rows the inbox repainted from it
+        // while a step above awaited are the account just left.
         forgetInbox?()
+        return complete
     }
 }

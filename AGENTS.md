@@ -662,7 +662,10 @@ old sentence edited out.
   else would remove them.
   `EmailDAO.accountEpoch` is captured before a refresh, page or body fetch goes
   to the network and checked by its write; one that started under a forgotten
-  account stores nothing, cursor included.
+  account stores nothing, cursor included. The forgotten pairing itself is
+  refused from then on (`MailRepository.currentPairing`), because a
+  replacement stores the next pairing only after the teardown: a request in
+  between would otherwise fetch the old account's mail under the new epoch.
 - Known gaps, all needing server help: out-of-window rows never learn of a
   deletion (opening one says it is gone) and are not healed after a
   UIDVALIDITY reset; encrypted mail stored from a page has no PGP flags, so it

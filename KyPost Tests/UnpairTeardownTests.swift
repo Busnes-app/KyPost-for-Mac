@@ -126,7 +126,7 @@ import Testing
         let graph = try makeGraph()
         try await seedMail(graph)
 
-        await graph.deviceRegistrationService.onAccountReplaced?()
+        #expect(await graph.deviceRegistrationService.onAccountReplaced?() == true)
 
         #expect(try await graph.emailDAO.getFolder(folder: "INBOX").isEmpty)
         #expect(graph.mailCursorStore.cursor(pairingId: "u1", folder: "INBOX") == "")
