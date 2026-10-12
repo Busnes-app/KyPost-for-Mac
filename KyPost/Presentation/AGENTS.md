@@ -32,7 +32,8 @@ Domain.
   it, and "Sign in with KyIdentity" backgrounds the app on purpose. A sign-on
   that finishes while a pairing screen is on screen lands in that screen's
   confirmation step; otherwise it goes through `router.handle`, which defers it
-  until unlock.
+  until unlock. A link the screen never took (it was dismissed first) goes to
+  the router when the last pairing screen disappears, so it is never stranded.
 - **The MFA approval screen has no plain Approve button.** When the payload
   carries no usable `matchDigits`, `MfaApprovalView` offers Deny and an
   explanation — never a generic Approve. Number matching exists because a

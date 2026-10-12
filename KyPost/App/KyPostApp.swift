@@ -25,7 +25,9 @@ struct KyPostApp: App {
 #if os(iOS)
     // Outlives graph rebuilds and every screen for the same reason as the
     // router: a KyIdentity sign-on spans a trip to KyAuth, during which the
-    // app lock tears the pairing sheet down. It holds no graph state.
+    // app lock tears the pairing sheet down. It holds no graph state, and it
+    // clears itself on `.kyPostSessionReset` (wipe, failed-unlock reset,
+    // unpair).
     @State private var signOn = KyIdentitySignOnCoordinator()
     @Environment(\.scenePhase) private var scenePhase
 #endif
@@ -121,8 +123,10 @@ struct KyPostApp: App {
                 .onOpenURL { url in
 #if os(iOS)
                     // kypost://kyidentity-signon carries only a nonce and
-                    // presents nothing, so it is not deferred by the lock;
-                    // the pairing link it produces goes through the router.
+                    // presents nothing, so the router does not defer it; the
+                    // coordinator holds the token exchange itself while the
+                    // app is gated, and the pairing link it produces goes
+                    // through the router.
                     if signOn.handleReturn(url) { return }
 #endif
                     router.handleURL(url)
@@ -141,6 +145,14 @@ struct KyPostApp: App {
 #if os(iOS)
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { signOn.checkForResponse() }
+                }
+                // The coordinator leaves KyAuth's response unread while the
+                // app is locked, the startup wipe check is pending, or an
+                // abandoned wipe blocks the app. Returning from KyAuth lands
+                // on the lock screen, so this is what picks the response up
+                // once the user unlocks.
+                .onChange(of: KyIdentitySignOnCoordinator.appIsGated()) { _, gated in
+                    if !gated { signOn.checkForResponse() }
                 }
 #endif
                 .task {

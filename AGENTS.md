@@ -477,6 +477,10 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
   `kypost://kyidentity-signon?nonce=…` or on becoming active, and is abandoned
   after 180 s. The ID token is never logged or stored; it is a local for the
   one relay call.
+- The response is not read, and the token not exchanged, while the app is
+  locked, before the startup wipe verdict settles, or behind an abandoned
+  wipe; a wipe, failed-unlock reset or unpair discards the whole sign-on.
+  Details in `KyPost/App/AGENTS.md`.
 - The relay's link goes through `PairingLinkParser`, must name the relay's own
   host, and then takes the ordinary confirmation step. Sign-on never pairs
   directly, so registration, pinning and secret storage stay single-path.

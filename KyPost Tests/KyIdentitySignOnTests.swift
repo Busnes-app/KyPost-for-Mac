@@ -364,8 +364,12 @@ import Testing
     private let link = "kypost://native-pair?sub=s1&srv=https%3A%2F%2Fmail.example.com&pt=tok"
 
     private final class Harness {
-        let coordinator = KyIdentitySignOnCoordinator()
+        /// Private, so a real reset elsewhere in the host app cannot reach it.
+        let center = NotificationCenter()
+        let coordinator: KyIdentitySignOnCoordinator
         let store: SignOnHandoffStore
+        /// Stands in for locked / startup verdict pending / abandoned wipe.
+        var gated = false
         var opened: [URL] = []
         var delivered: [PairingParams] = []
         var exchangedTokens: [String] = []
@@ -373,6 +377,7 @@ import Testing
 
         @MainActor
         init(openSucceeds: Bool = true, signOnBody: String) throws {
+            coordinator = KyIdentitySignOnCoordinator(notificationCenter: center)
             store = SignOnHandoffStore(root: try scratchDirectory())
             let store = store
             let tokens = TokenLog()
@@ -392,6 +397,7 @@ import Testing
             }
             coordinator.now = { [unowned self] in self.now }
             coordinator.deliver = { [unowned self] in self.delivered.append($0) }
+            coordinator.isGated = { [unowned self] in self.gated }
             self.tokenLog = tokens
         }
 
@@ -519,6 +525,131 @@ import Testing
         #expect(h.opened.isEmpty)
     }
 
+    // MARK: Security gates
+
+    /// Returning from KyAuth lands on the lock screen. The response must stay
+    /// unread — no token in memory, no relay call — until the user unlocks.
+    @Test func gatedAppLeavesTheResponseUnreadUntilUnlock() async throws {
+        let h = try Harness(signOnBody: #"{"configured":true,"deepLink":"\#(link)"}"#)
+        h.coordinator.start(serverUrl: server)
+        await waitUntil { h.coordinator.phase == .waitingForKyAuth }
+        let nonce = try #require(h.nonce)
+        try h.respond(#"{"v":1,"nonce":"\#(nonce)","status":"ok","idToken":"eyJ.a.b"}"#)
+
+        h.gated = true
+        #expect(h.coordinator.handleReturn(URL(string: "kypost://kyidentity-signon?nonce=\(nonce)")!))
+        h.coordinator.checkForResponse()
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(h.coordinator.phase == .waitingForKyAuth)
+        #expect(FileManager.default.fileExists(atPath: h.store.responseFile(nonce).path))
+        #expect(h.tokenLog?.values.isEmpty == true)
+        #expect(h.delivered.isEmpty)
+
+        // Unlocking (KyPostApp re-checks when the gate clears).
+        h.gated = false
+        h.coordinator.checkForResponse()
+        await waitUntil { !h.delivered.isEmpty }
+        #expect(h.delivered.count == 1)
+        #expect(h.tokenLog?.values == [#"{"idToken":"eyJ.a.b"}"#])
+        #expect(!FileManager.default.fileExists(atPath: h.store.responseFile(nonce).path))
+    }
+
+    /// Still gated at the deadline: the response is discarded and never
+    /// sent to the relay.
+    @Test func gatedPastTheDeadlineAbandonsWithoutExchanging() async throws {
+        let h = try Harness(signOnBody: "")
+        h.coordinator.start(serverUrl: server)
+        await waitUntil { h.coordinator.phase == .waitingForKyAuth }
+        let nonce = try #require(h.nonce)
+        try h.respond(#"{"v":1,"nonce":"\#(nonce)","status":"ok","idToken":"late"}"#)
+        h.gated = true
+        h.now = h.now.addingTimeInterval(181)
+        h.coordinator.checkForResponse()
+        #expect(h.coordinator.phase == .idle)
+        #expect(h.coordinator.status == "KyAuth did not answer. Try again.")
+        #expect(h.tokenLog?.values.isEmpty == true)
+        #expect(!FileManager.default.fileExists(atPath: h.store.responseFile(nonce).path))
+    }
+
+    // MARK: Session reset
+
+    /// A wipe, failed-unlock reset or unpair posts `.kyPostSessionReset`; a
+    /// pending sign-on must not survive it and re-pair the erased device.
+    @Test func sessionResetWithdrawsTheRequestAndDiscardsTheResponse() async throws {
+        let h = try Harness(signOnBody: #"{"configured":true,"deepLink":"\#(link)"}"#)
+        h.coordinator.start(serverUrl: server)
+        await waitUntil { h.coordinator.phase == .waitingForKyAuth }
+        let nonce = try #require(h.nonce)
+        try h.respond(#"{"v":1,"nonce":"\#(nonce)","status":"ok","idToken":"t"}"#)
+
+        h.center.post(name: .kyPostSessionReset, object: nil)
+        #expect(h.coordinator.phase == .idle)
+        #expect(h.coordinator.status == nil)
+        #expect(!FileManager.default.fileExists(atPath: h.store.requestFile(nonce).path))
+        #expect(!FileManager.default.fileExists(atPath: h.store.responseFile(nonce).path))
+
+        try h.respond(#"{"v":1,"nonce":"\#(nonce)","status":"ok","idToken":"t"}"#)
+        #expect(h.coordinator.handleReturn(URL(string: "kypost://kyidentity-signon?nonce=\(nonce)")!))
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(h.tokenLog?.values.isEmpty == true)
+        #expect(h.delivered.isEmpty)
+    }
+
+    @Test func sessionResetDropsAFinishedLink() async throws {
+        let h = try Harness(signOnBody: #"{"configured":true,"deepLink":"\#(link)"}"#)
+        h.coordinator.pairingScreenAppeared()
+        h.coordinator.start(serverUrl: server)
+        await waitUntil { h.coordinator.phase == .waitingForKyAuth }
+        try h.respond(#"{"v":1,"nonce":"\#(h.nonce!)","status":"ok","idToken":"t"}"#)
+        h.coordinator.checkForResponse()
+        await waitUntil { h.coordinator.completed != nil }
+
+        h.center.post(name: .kyPostSessionReset, object: nil)
+        #expect(h.coordinator.completed == nil)
+        h.coordinator.pairingScreenDisappeared()
+        #expect(h.delivered.isEmpty)
+    }
+
+    /// Reset after the response was taken but before the exchange ran: the
+    /// token is never sent and nothing is delivered.
+    @Test func sessionResetCancelsAScheduledExchange() async throws {
+        let h = try Harness(signOnBody: #"{"configured":true,"deepLink":"\#(link)"}"#)
+        h.coordinator.start(serverUrl: server)
+        await waitUntil { h.coordinator.phase == .waitingForKyAuth }
+        try h.respond(#"{"v":1,"nonce":"\#(h.nonce!)","status":"ok","idToken":"t"}"#)
+        h.coordinator.checkForResponse()
+        #expect(h.coordinator.phase == .exchanging)
+        h.coordinator.reset()
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(h.tokenLog?.values.isEmpty == true)
+        #expect(h.delivered.isEmpty)
+        #expect(h.coordinator.phase == .idle)
+    }
+
+    // MARK: Pairing screen presence
+
+    /// The exchange finished for a live screen, which then went away (the lock
+    /// dismissed it) before taking the link: it goes to the router, once.
+    @Test func lastScreenDisappearingHandsAnUntakenLinkToTheRouter() async throws {
+        let h = try Harness(signOnBody: #"{"configured":true,"deepLink":"\#(link)"}"#)
+        h.coordinator.pairingScreenAppeared()
+        h.coordinator.start(serverUrl: server)
+        await waitUntil { h.coordinator.phase == .waitingForKyAuth }
+        try h.respond(#"{"v":1,"nonce":"\#(h.nonce!)","status":"ok","idToken":"t"}"#)
+        h.coordinator.checkForResponse()
+        await waitUntil { h.coordinator.completed != nil }
+        #expect(h.delivered.isEmpty)
+
+        h.coordinator.pairingScreenDisappeared()
+        #expect(h.delivered.count == 1)
+        #expect(h.delivered.first?.pt == "tok")
+        #expect(h.coordinator.completed == nil)
+        #expect(h.coordinator.takeCompleted() == nil)
+
+        h.coordinator.pairingScreenDisappeared()
+        #expect(h.delivered.count == 1)
+    }
+
     @Test func nonReturnURLsFallThrough() {
         let coordinator = KyIdentitySignOnCoordinator()
         #expect(!coordinator.handleReturn(URL(string: "kypost://native-pair?sub=a&srv=https%3A%2F%2Fx&pt=t")!))
@@ -526,6 +657,24 @@ import Testing
     }
 }
 #endif
+
+@MainActor
+@Suite struct RouterSessionResetTests {
+    /// The router outlives graph rebuilds; an action deferred behind the lock
+    /// must not replay into the app a wipe just erased.
+    @Test func sessionResetDiscardsTheDeferredAction() {
+        let center = NotificationCenter()
+        let router = NavigationRouter(notificationCenter: center)
+        var locked = true
+        router.isLocked = { locked }
+        router.handle(.openMfaApproval(MfaChallenge(challengeId: "c1", receivedAt: Date(), matchDigits: "47")))
+
+        center.post(name: .kyPostSessionReset, object: nil)
+        locked = false
+        router.resumeDeferredAction()
+        #expect(router.mfaRoute == nil)
+    }
+}
 
 private func scratchDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory

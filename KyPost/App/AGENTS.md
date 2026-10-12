@@ -30,8 +30,21 @@ graph at runtime (`AppEnvironment.rebuild`), so:
 for the same reason: a sign-on spans a trip to KyAuth, during which the lock
 tears the pairing sheet down. It holds no graph child and re-reads `.shared`
 per use. `onOpenURL` offers `kypost://kyidentity-signon` to it before the
-router (the return presents nothing, so the lock does not defer it), and
-`scenePhase == .active` makes it check for KyAuth's response.
+router, and `scenePhase == .active` makes it check for KyAuth's response.
+
+- **The token exchange is gated like any windowless entry point.** While
+  `KyIdentitySignOnCoordinator.appIsGated()` (locked, `startupWipeVerdict`
+  pending, or `blockedByAbandonedWipe`) the response stays unread in the App
+  Group — no ID token in memory, no relay call. `KyPostApp` re-checks on the
+  gate clearing, which is how a return that lands on the lock screen
+  completes after unlock. The 180 s deadline still applies.
+- **`.kyPostSessionReset` clears App-level state.** `performSecurityWipe`
+  (first, before any await), `resetAfterFailedUnlock`, and
+  `SettingsViewModel.unpair` post it; the coordinator `reset()`s (withdraws
+  the request, discards the response, drops a finished link, voids in-flight
+  work) and the router drops its deferred action and presented routes.
+  Anything new that erases the pairing posts it, and any new App-level state
+  that could present or re-pair observes it (`NotificationObservation`).
 
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.
@@ -72,7 +85,8 @@ intact and the wipe landed a few hundred milliseconds later.
 - A verdict of `.settled(.incomplete(_, willRetry: false))` blocks the whole
   app behind `ManualRecoveryView`. Entry points that never present a window
   guard on `securityWipe.blockedByAbandonedWipe` themselves — currently
-  `PushNotificationDispatcher.handleIncoming` and `presentLocally`.
+  `PushNotificationDispatcher.handleIncoming`, `presentLocally`, and the
+  KyIdentity sign-on (`KyIdentitySignOnCoordinator.appIsGated`).
 
 `AppLockManager.onWipe` is wired in `onLaunch`. Left unset it fails closed and
 reports a wipe that could not run, rather than rejecting the eleventh wrong PIN
