@@ -43,6 +43,11 @@ struct EmailDetailView: View {
     @State private var showsReplyUnavailable = false
     /// True while Forward downloads the attachments it carries.
     @State private var preparingForward = false
+    /// The attachment listing in flight, so Forward can wait for it rather
+    /// than read the still-empty `attachments`. Nil on failure.
+    @State private var attachmentListing: Task<[EmailAttachment]?, Never>?
+    /// The Forward in progress; cancelled when the screen goes away.
+    @State private var forwardTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -171,13 +176,26 @@ struct EmailDetailView: View {
             Text("Replying to encrypted mail isn't available in the app yet.")
         }
         .task {
+            let listing = Task { await inboxViewModel.attachmentListing(for: email) }
+            attachmentListing = listing
             await prepareEncryptedRead()
             await inboxViewModel.markRead(email)
-            attachments = await inboxViewModel.attachments(for: email)
+            attachments = await listing.value ?? []
+        }
+        .onChange(of: isLocked) { _, locked in
+            guard locked else { return }
+            // Nothing decrypted stays on screen, or on disk, behind the lock:
+            // the preview and the save panel can sit above the lock cover,
+            // and the held key is gone anyway. Decrypt is offered again.
+            quickLookURL = nil
+            attachmentExport = nil
+            encryptedRead?.forget()
         }
         .onDisappear {
             // The plaintext does not outlive the screen showing it.
             encryptedRead?.forget()
+            attachmentListing?.cancel()
+            forwardTask?.cancel()
         }
     }
 
@@ -319,26 +337,30 @@ struct EmailDetailView: View {
     /// Forward carries the original's attachments. They travel beside the
     /// draft through `ForwardAttachmentHandoff`, never inside it — the draft
     /// is a scene value state restoration writes to disk.
+    ///
+    /// Waits for the attachment listing when it has not landed yet, and opens
+    /// nothing if a session boundary passes meanwhile (`runForward`).
     private func forward() {
+        guard forwardTask == nil else { return }
         let draft = ComposeDraft.forward(email)
-        guard !attachments.isEmpty else {
-            compose(draft)
-            return
-        }
+        let pendingListing = attachmentListing
         preparingForward = true
-        Task {
-            let collected = await collectForwardAttachments(attachments) { attachment in
-                await inboxViewModel.attachmentData(attachment, of: email)
-            }
-            ForwardAttachmentHandoff.shared.put(
-                collected.attachments,
-                notice: forwardAttachmentNotice(failed: collected.failed, tooLarge: collected.tooLarge),
-                for: draft.id
+        forwardTask = Task {
+            await runForward(
+                draftID: draft.id,
+                listing: {
+                    if let pendingListing { return await pendingListing.value }
+                    return await inboxViewModel.attachmentListing(for: email)
+                },
+                fetch: { attachment in await inboxViewModel.attachmentData(attachment, of: email) },
+                open: { compose(draft) }
             )
             preparingForward = false
-            compose(draft)
+            forwardTask = nil
         }
     }
+
+    private var isLocked: Bool { SingletonGraph.shared.appLockManager.isLocked }
 
     /// Our own relay address (the pairing's sub), excluded from Reply All.
     private var ownAddress: String? {

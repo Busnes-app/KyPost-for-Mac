@@ -344,11 +344,12 @@ final class InboxViewModel {
     }
 
     /// Attachment metadata for an email, fetched lazily when it's opened
-    /// (the inbox listing carries none). Errors surface as an empty list.
-    func attachments(for email: Email) async -> [EmailAttachment] {
-        (try? await mailRepository.listAttachments(
+    /// (the inbox listing carries none). Nil when it could not be fetched —
+    /// which Forward must tell apart from "no attachments".
+    func attachmentListing(for email: Email) async -> [EmailAttachment]? {
+        try? await mailRepository.listAttachments(
             folder: email.folder, messageId: email.serverId
-        )) ?? []
+        )
     }
 
     /// Raw bytes of one attachment (for Save As…), or nil on failure.

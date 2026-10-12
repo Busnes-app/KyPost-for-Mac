@@ -335,7 +335,9 @@ is the server's pin, not this device's.
   preview under `attachments/decrypted` (inside the root the wipe and the HLP
   purge delete); the view model deletes it when the preview closes and in
   `forget()`. Save As goes only where the user picks, and is refused under
-  Hostile Location Protection like any attachment.
+  Hostile Location Protection like any attachment. When the app lock engages
+  the reader closes the preview and the save panel and calls `forget()`;
+  Decrypt is offered again after unlock.
 - **`cid:` images become `data:` URIs** (`InlineImages`) for png/jpeg/gif/webp
   only, within 128 KiB per message; anything else keeps its unresolvable
   `cid:`. `data:` images render with `loadsSubresources` off (verified against

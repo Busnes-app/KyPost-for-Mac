@@ -47,10 +47,8 @@ nonisolated enum InlineImages {
         var budget = byteBudget
 
         for tag in imgTag.matches(in: html, range: NSRange(location: 0, length: source.length)) {
-            guard let src = srcAttribute.firstMatch(in: html, range: tag.range) else { continue }
-            let valueRange = (2...4).map { src.range(at: $0) }.first { $0.location != NSNotFound }
-            guard let valueRange else { continue }
-            let value = source.substring(with: valueRange).trimmingCharacters(in: .whitespaces)
+            guard let src = srcAttribute(in: source, tag: tag.range) else { continue }
+            let value = source.substring(with: src.value).trimmingCharacters(in: .whitespaces)
             guard value.count > 4, value.prefix(4).lowercased() == "cid:" else { continue }
             let reference = String(value.dropFirst(4))
             guard let part = byId[reference] ?? reference.removingPercentEncoding.flatMap({ byId[$0] }),
@@ -60,7 +58,7 @@ nonisolated enum InlineImages {
 
             // Replace the whole attribute value, quotes included, with a
             // double-quoted data URI: base64 contains no quote to escape.
-            let attributeValue = src.range(at: 1)
+            let attributeValue = src.quoted
             output += source.substring(with: NSRange(location: cursor, length: attributeValue.location - cursor))
             output += "\"data:\(part.mimeType);base64,\(part.data.base64EncodedString())\""
             cursor = attributeValue.location + attributeValue.length
@@ -76,10 +74,53 @@ nonisolated enum InlineImages {
         options: [.caseInsensitive]
     )
 
-    /// A `src` attribute — preceded by whitespace, so `data-src` is not it.
-    /// Group 1 is the whole value with its quotes; 2–4 are the bare value.
-    private static let srcAttribute = try! NSRegularExpression(
-        pattern: #"\ssrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))"#,
-        options: [.caseInsensitive]
-    )
+    /// The tag's `src` attribute: `quoted` is the value with its quotes,
+    /// `value` without. Walks the attributes in order, so text inside another
+    /// attribute's quoted value (`alt='src="cid:x"'`) is never mistaken for
+    /// one, and `data-src` is a different name. The first `src` wins, as in
+    /// HTML parsing.
+    private static func srcAttribute(
+        in source: NSString, tag: NSRange
+    ) -> (quoted: NSRange, value: NSRange)? {
+        let end = tag.location + tag.length - 1  // the closing ">"
+        var index = tag.location + 4             // past "<img"
+        func char(_ at: Int) -> unichar { source.character(at: at) }
+        func isSpace(_ c: unichar) -> Bool { c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0C || c == 0x0D }
+        func skipSpace() { while index < end, isSpace(char(index)) { index += 1 } }
+
+        while index < end {
+            skipSpace()
+            guard index < end else { break }
+            if char(index) == 0x2F { index += 1; continue }  // "/"
+            let nameStart = index
+            while index < end, !isSpace(char(index)), char(index) != 0x3D, char(index) != 0x2F {
+                index += 1
+            }
+            let name = source.substring(with: NSRange(location: nameStart, length: index - nameStart))
+            skipSpace()
+            guard index < end, char(index) == 0x3D else { continue }  // no value
+            index += 1
+            skipSpace()
+            guard index < end else { break }
+            let quoted: NSRange
+            let value: NSRange
+            let quote = char(index)
+            if quote == 0x22 || quote == 0x27 {
+                let open = index
+                index += 1
+                while index < end, char(index) != quote { index += 1 }
+                guard index < end else { return nil }  // unterminated: leave it alone
+                index += 1
+                quoted = NSRange(location: open, length: index - open)
+                value = NSRange(location: open + 1, length: index - open - 2)
+            } else {
+                let start = index
+                while index < end, !isSpace(char(index)) { index += 1 }
+                quoted = NSRange(location: start, length: index - start)
+                value = quoted
+            }
+            if name.caseInsensitiveCompare("src") == .orderedSame { return (quoted, value) }
+        }
+        return nil
+    }
 }

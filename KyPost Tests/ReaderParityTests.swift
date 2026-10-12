@@ -124,6 +124,14 @@ import Testing
         #expect(html.hasPrefix(#"<img src="data:image/gif;base64,"#))
         #expect(html.hasSuffix(#"<img src="cid:b">"#))
     }
+
+    /// Text inside another attribute's quoted value is not a `src`.
+    @Test func onlyTheRealSrcAttributeIsRewritten() {
+        let html = InlineImages.inlineCidImages(
+            html: #"<img alt='example src="cid:logo@x"' src="cid:logo@x">"#, attachments: [png]
+        )
+        #expect(html == #"<img alt='example src="cid:logo@x"' src="data:image/png;base64,AQID">"#)
+    }
 }
 
 // MARK: - Staged previews
@@ -355,6 +363,88 @@ JVBERg==\r
         #expect(forwardAttachmentNotice(failed: 1, tooLarge: 2)?.contains("2 attachments are too large") == true)
     }
 
+    private let listed = [EmailAttachment(index: 0, name: "a.txt", mimeType: "text/plain", size: 1)]
+
+    /// A forward overtaken by a session boundary stores nothing and opens
+    /// nothing, whichever boundary it was.
+    @Test func aSessionBoundaryDuringTheFetchVoidsTheForward() async {
+        for name in [Notification.Name.kyPostSessionReset, .kyPostCloseComposeWindows] {
+            let center = NotificationCenter()
+            let handoff = ForwardAttachmentHandoff(center: center)
+            let gate = AsyncGate()
+            let opened = Flag()
+            let forward = Task { @MainActor in
+                await runForward(
+                    draftID: UUID(), handoff: handoff,
+                    listing: { listed },
+                    fetch: { _ in await gate.wait(); return Data("a".utf8) },
+                    open: { opened.value = true }
+                )
+            }
+            await gate.waitUntilWaiting()
+            center.post(name: name, object: nil)
+            await gate.open()
+            #expect(await forward.value == false)
+            #expect(!handoff.isHoldingAttachments)
+            #expect(!opened.value)
+        }
+    }
+
+    /// Forward pressed before the listing lands waits for it and carries the
+    /// original's file.
+    @Test func forwardWaitsForTheAttachmentListing() async {
+        let handoff = ForwardAttachmentHandoff(center: NotificationCenter())
+        let gate = AsyncGate()
+        let draftID = UUID()
+        let opened = Flag()
+        let forward = Task { @MainActor in
+            await runForward(
+                draftID: draftID, handoff: handoff,
+                listing: { await gate.wait(); return listed },
+                fetch: { _ in Data("a".utf8) },
+                open: { opened.value = true }
+            )
+        }
+        await gate.waitUntilWaiting()
+        #expect(!opened.value)
+        await gate.open()
+        #expect(await forward.value)
+        #expect(opened.value)
+        #expect(handoff.take(for: draftID)?.attachments == [file])
+    }
+
+    /// A listing that failed is said in compose, not read as "no files".
+    @Test func aFailedListingIsSurfaced() async {
+        let handoff = ForwardAttachmentHandoff(center: NotificationCenter())
+        let draftID = UUID()
+        let opened = await runForward(
+            draftID: draftID, handoff: handoff,
+            listing: { nil }, fetch: { _ in nil }, open: {}
+        )
+        #expect(opened)
+        #expect(handoff.take(for: draftID)?.notice == forwardListingFailedNotice)
+    }
+
+    /// The screen going away cancels its forward.
+    @Test func aCancelledForwardOpensNothing() async {
+        let handoff = ForwardAttachmentHandoff(center: NotificationCenter())
+        let gate = AsyncGate()
+        let opened = Flag()
+        let forward = Task { @MainActor in
+            await runForward(
+                draftID: UUID(), handoff: handoff,
+                listing: { await gate.wait(); return [] },
+                fetch: { _ in nil },
+                open: { opened.value = true }
+            )
+        }
+        await gate.waitUntilWaiting()
+        forward.cancel()
+        await gate.open()
+        #expect(await forward.value == false)
+        #expect(!opened.value)
+    }
+
     @Test func composeAdoptsTheForwardedFilesAndNotice() throws {
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         let pairingStore = try makePairedStore()
@@ -456,6 +546,41 @@ JVBERg==\r
         #expect(body.attachmentsOmitted)
     }
 
+    /// A files-only message whose every file was dropped still opens, so the
+    /// screen can say what was left out.
+    @Test func aFilesOnlyMessageKeepsItsOmissionWhenEveryFileIsDropped() throws {
+        let big = String(repeating: "a", count: PgpMimeReader.attachmentByteCap + 1)
+        let body = try #require(read(mixed([
+            "Content-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=big\r\n\r\n\(big)",
+        ])))
+        #expect(body.plain == "")
+        #expect(body.attachments.isEmpty)
+        #expect(body.attachmentsOmitted)
+    }
+
+    /// An unwrapped text part marked as an attachment is a file, not the body.
+    @Test func aSinglePartTextAttachmentIsAFile() throws {
+        let body = try #require(read(
+            "Content-Type: text/plain\r\nContent-Disposition: attachment; filename=notes.txt\r\n\r\nfile"
+        ))
+        #expect(body.plain == "")
+        #expect(body.html == nil)
+        #expect(body.attachments.map(\.name) == ["notes.txt"])
+        #expect(body.attachments.first?.data == Data("file".utf8))
+    }
+
+    /// A Q-encoded word whose payload starts with an escaped byte.
+    @Test func aQEncodedFilenameStartingWithAnEscapeDecodes() throws {
+        let body = try #require(read(mixed([
+            "Content-Type: text/plain\r\n\r\nx",
+            "Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"=?UTF-8?Q?=C3=A9t=C3=A9_1.pdf?=\"\r\n\r\n%",
+        ])))
+        #expect(body.attachments.map(\.name) == ["été 1.pdf"])
+        #expect(PgpMimeReader.decodeEncodedWords("=?utf-8?q?=C3=A9?= and =?UTF-8?Q??=") == "é and ")
+        // Malformed words are kept verbatim rather than trapping.
+        #expect(PgpMimeReader.decodeEncodedWords("=?UTF-8?Q?=") == "=?UTF-8?Q?=")
+    }
+
     @Test func aRootSignedWrapperIsDetected() throws {
         let signed = """
         Content-Type: multipart/signed; micalg=pgp-sha256; protocol="application/pgp-signature"; boundary="s"\r
@@ -484,5 +609,30 @@ JVBERg==\r
         ))
         #expect(!body.hasDetachedSignature)
         #expect(String(describing: body) == "DecryptedBody(redacted)")
+    }
+}
+
+@MainActor private final class Flag {
+    var value = false
+}
+
+/// Holds one waiter until `open()`, so a test can act while work is suspended.
+private actor AsyncGate {
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+
+    func waitUntilWaiting() async {
+        while waiter == nil { await Task.yield() }
+    }
+
+    func open() {
+        isOpen = true
+        waiter?.resume()
+        waiter = nil
     }
 }

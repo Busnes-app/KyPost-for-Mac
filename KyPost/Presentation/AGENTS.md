@@ -167,7 +167,12 @@ Domain.
   archives). One slot keyed by draft id, claimed once from compose's `.task`,
   at most 12 MiB, refusing rather than evicting; what did not come along is
   said in compose. Dropped on `.kyPostSessionReset`,
-  `.kyPostCloseComposeWindows` and by the wipe's in-memory step.
+  `.kyPostCloseComposeWindows` and by the wipe's in-memory step. Forward runs
+  through `runForward`: it waits for the attachment listing (a failed listing
+  is said in compose, not read as "no files"), and a forward still in flight
+  when any of those boundaries passes stores nothing and opens no compose
+  window (`ForwardAttachmentHandoff.begin`/`isCurrent`). The reader cancels it
+  on disappear.
 - **The whole email row is the open target.** `EmailListRow` expands to the
   list width and supplies a rectangular content shape, including whitespace.
   The decrypt action uses visible button chrome rather than link styling.

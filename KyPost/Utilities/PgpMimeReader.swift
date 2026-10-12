@@ -39,9 +39,14 @@ nonisolated enum PgpMimeReader {
         var walk = Walk()
         walk.noteSignature(root)
         if root.children.isEmpty {
-            // A single-part message: its own content type decides, with RFC
-            // 2045's text/plain default for a missing header.
-            walk.takeLeaf(root)
+            // A single-part message: its disposition, then its own content
+            // type decides, with RFC 2045's text/plain default for a missing
+            // header. A text part marked as an attachment is a file.
+            if root.isAttachment {
+                walk.keepAttachment(root)
+            } else {
+                walk.takeLeaf(root)
+            }
         } else {
             walk.collect(root, depth: 0)
         }
@@ -56,9 +61,11 @@ nonisolated enum PgpMimeReader {
         }
 
         // Attachments are content: a files-only message renders an empty body
-        // and its files, rather than failing as unreadable.
+        // and its files, rather than failing as unreadable. That holds when
+        // every file was dropped for size too — the omission is then the one
+        // thing the screen has to say.
         if walk.html == nil, walk.plain == nil {
-            guard !walk.attachments.isEmpty else { return nil }
+            guard !walk.attachments.isEmpty || walk.omitted else { return nil }
             walk.plain = ""
         }
 
@@ -458,8 +465,8 @@ nonisolated enum PgpMimeReader {
 
     /// Decodes RFC 2047 `=?charset?B?...?=` / `?Q?...?=` words.
     ///
-    /// Only for the protected subject. A subject is the one header this reader
-    /// surfaces, and non-ASCII subjects arrive encoded far more often than not.
+    /// For the protected subject and attachment filenames, which arrive
+    /// encoded far more often than not when they are non-ASCII.
     static func decodeEncodedWords(_ value: String) -> String {
         guard value.contains("=?") else { return value }
         var result = ""
@@ -472,10 +479,14 @@ nonisolated enum PgpMimeReader {
             result += rest[rest.startIndex..<open.lowerBound]
             let after = rest[open.upperBound...]
 
+            // The terminator is searched for only after the encoding's own
+            // "?", which a payload starting with "=" would otherwise match.
             guard let charsetEnd = after.firstIndex(of: "?"),
                   case let afterCharset = after[after.index(after: charsetEnd)...],
                   let encodingEnd = afterCharset.firstIndex(of: "?"),
-                  let close = afterCharset.range(of: "?=")
+                  case let encoded = afterCharset[afterCharset.index(after: encodingEnd)...],
+                  let close = encoded.range(of: "?="),
+                  encoded.startIndex <= close.lowerBound
             else {
                 // Not a well-formed encoded word; keep it verbatim rather than
                 // dropping text the user was meant to read.
@@ -485,7 +496,7 @@ nonisolated enum PgpMimeReader {
 
             let charset = String(after[after.startIndex..<charsetEnd])
             let encoding = afterCharset[afterCharset.startIndex..<encodingEnd]
-            let payload = afterCharset[afterCharset.index(after: encodingEnd)..<close.lowerBound]
+            let payload = encoded[encoded.startIndex..<close.lowerBound]
 
             let decoded: Data? = switch encoding.first {
             case "B", "b":
@@ -499,7 +510,7 @@ nonisolated enum PgpMimeReader {
             }
 
             result += decoded.map { decodeText($0, charset: charset) } ?? String(payload)
-            rest = afterCharset[close.upperBound...]
+            rest = encoded[close.upperBound...]
         }
         result += rest
         return result
