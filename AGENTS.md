@@ -701,8 +701,11 @@ old sentence edited out.
 - **Each result is stamped with the searched folder**; actions, held rows,
   read flags and opening use (folder, id). An uncached result fetches its body
   on open (`MailRepository.loadBody`, which reuses a cached row's body for the
-  same pair), and Reply All uses the result's own `sentTo`/`cc` — the body
-  endpoint carries none.
+  same pair **together with that row's OpenPGP state** — a result carries
+  none, and dropping it hides a cached verdict or turns a client-protected row
+  into a server fetch), and Reply All uses the result's own `sentTo`/`cc` —
+  the body endpoint carries none. `InboxViewModel.email(for:)` (macOS pop-out
+  readers) prefers the folder row but takes the result's To/Cc.
 - **Results land only while their submission is the newest and their query
   and folder are still on screen.** A failure says why and shows the folder
   list — never an older query's results. The search ends on clearing or
@@ -711,7 +714,7 @@ old sentence edited out.
 - **The query is never logged or persisted** — view `@State` and view-model
   memory only; no `@SceneStorage`, no state restoration, no defaults.
 - Known gap: results carry no PGP flags (the server sends none), so encrypted
-  mail found only by search opens through `/api/mail/body` with no decrypt
+  mail found only by search and not cached opens through `/api/mail/body` with no decrypt
   path, like older mail.
 
 ### Relay error mapping (`Data/Mail/MailSource.swift`)

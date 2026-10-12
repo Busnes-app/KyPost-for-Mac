@@ -396,3 +396,93 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
         #expect(draft.cc == "bo@example.com, cy@example.com")
     }
 }
+
+// MARK: - Review fixes
+
+@Suite struct SearchReviewFixTests {
+    /// A folder refresh while a search is pending must not leave a new-mail
+    /// pill over the results.
+    @Test @MainActor func aRefreshDuringASearchNeverRaisesTheNewMailPill() async throws {
+        let relay = SearchRelay()
+        relay.folders.value = ["INBOX": folder(["1"])]
+        relay.search.value = { _ in (200, results(["7"])) }
+        relay.gated.value = ["x"]
+        let (viewModel, _) = try makeInbox(relay)
+        await viewModel.load()
+        viewModel.listScrolled(atTop: false)
+
+        let search = Task { await viewModel.submitSearch("x") }
+        #expect(await eventually { relay.searchQueries.count == 1 })
+        relay.folders.value = ["INBOX": #"{"byTab":{"Personal":[{"messageId":"2","subject":"2","body":"b","atUtc":"2026-10-03T10:00:00Z"},{"messageId":"1","subject":"1","body":"b","atUtc":"2026-10-02T10:00:00Z"}]}}"#]
+        await viewModel.refresh()
+        #expect(viewModel.emails.map(\.serverId) == ["2", "1"])
+        relay.gated.value = []
+        await search.value
+
+        #expect(viewModel.searchResults?.map(\.serverId) == ["7"])
+        #expect(viewModel.newMailCount == 0)
+    }
+
+    /// A pop-out reader resolves through `email(for:)`; a cached row without
+    /// recipients must not cost the result its To/Cc.
+    @Test @MainActor func aPopOutOfACachedResultKeepsTheResultsRecipients() async throws {
+        let relay = SearchRelay()
+        relay.folders.value = ["INBOX": #"{"byTab":{"Personal":[{"messageId":"7","subject":"s","sender":"Ada <ada@example.com>","body":"b","atUtc":"2026-10-02T10:00:00Z"}]}}"#]
+        relay.search.value = { _ in (200, results(["7"])) }
+        let (viewModel, _) = try makeInbox(relay)
+        await viewModel.load()
+        #expect(viewModel.emails.first?.sentTo == "")
+        #expect(viewModel.emails.first?.cc == "")
+        await viewModel.submitSearch("x")
+
+        let resolved = try #require(viewModel.email(for: MailRowKey(folder: "INBOX", serverId: "7")))
+        let draft = ComposeDraft.replyAll(to: resolved, ownAddress: "me@example.com")
+
+        #expect(resolved.body == "b")
+        #expect(draft.to == "ada@example.com")
+        #expect(draft.cc == "bo@example.com, cy@example.com")
+    }
+
+    /// Opening a result that is cached keeps the cached OpenPGP state, so an
+    /// unverified signature is still reported as such.
+    @Test @MainActor func aCachedResultKeepsItsSignatureState() async throws {
+        let relay = SearchRelay()
+        relay.folders.value = ["INBOX": #"{"byTab":{"Personal":[{"messageId":"7","subject":"s","body":"server plaintext","atUtc":"2026-10-02T10:00:00Z","pgpEncrypted":true,"pgpSigned":true,"pgpVerified":false}]}}"#]
+        relay.search.value = { _ in (200, results(["7"])) }
+        let (viewModel, _) = try makeInbox(relay)
+        await viewModel.load()
+        await viewModel.submitSearch("x")
+        let result = try #require(viewModel.searchResults?.first)
+        #expect(!result.pgpEncrypted && !result.pgpSigned)
+
+        let body = try #require(try await viewModel.loadBody(for: result))
+        let shown = body.applied(to: result)
+        let state = pgpMessageState(
+            pgpEncrypted: shown.pgpEncrypted, pgpDecryptError: shown.pgpDecryptError, body: shown.body
+        )
+
+        #expect(shown.body == "server plaintext")
+        #expect(state == .decryptedByServer)
+        #expect(showsSignaturePill(state: state, signed: shown.pgpSigned))
+        #expect(!shown.pgpVerified)
+    }
+
+    /// A cached client-protected row (encrypted, no body) opened from the
+    /// results stays client-protected rather than fetching the server's body.
+    @Test @MainActor func aCachedClientProtectedResultStaysClientProtected() async throws {
+        let relay = SearchRelay()
+        relay.folders.value = ["INBOX": #"{"byTab":{"Personal":[{"messageId":"7","subject":"s","body":"","atUtc":"2026-10-02T10:00:00Z","pgpEncrypted":true}]}}"#]
+        relay.search.value = { _ in (200, results(["7"])) }
+        let (viewModel, _) = try makeInbox(relay)
+        await viewModel.load()
+        await viewModel.submitSearch("x")
+        let result = try #require(viewModel.searchResults?.first)
+
+        let shown = try #require(try await viewModel.loadBody(for: result)).applied(to: result)
+
+        #expect(pgpMessageState(
+            pgpEncrypted: shown.pgpEncrypted, pgpDecryptError: shown.pgpDecryptError, body: shown.body
+        ) == .clientProtected)
+        #expect(!relay.queries.value.contains { $0["path"] == "/api/mail/body" })
+    }
+}

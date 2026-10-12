@@ -125,10 +125,50 @@ struct MailPage: Equatable, Sendable {
 }
 
 /// `GET /api/mail/body`: the body and its mode, nothing else. No recipients
-/// and no PGP flags — those come from the row.
+/// and no PGP flags — those come from the row (or, for a body taken from
+/// the cache, from `cachedPgp`).
 nonisolated struct MailMessageBody: Equatable, Sendable {
     var body: String
     var bodyMode: String
+    /// The cached row's OpenPGP state when the body came from the cache for a
+    /// row that carries none of its own (a search result). Nil for a body
+    /// from `/api/mail/body`, which carries no PGP fields.
+    var cachedPgp: MailPgpFields? = nil
+
+    /// `email` as the reader renders it: this body in place of the missing
+    /// one, and the cached OpenPGP state when there is one — so a cached
+    /// signature or encryption verdict is never dropped by opening the same
+    /// message from somewhere that lacks it.
+    func applied(to email: Email) -> Email {
+        var shown = email
+        shown.body = body
+        if !bodyMode.isEmpty { shown.bodyMode = bodyMode }
+        if let cachedPgp {
+            shown.pgpEncrypted = cachedPgp.encrypted
+            shown.pgpSigned = cachedPgp.signed
+            shown.pgpVerified = cachedPgp.verified
+            shown.pgpSignerFingerprint = cachedPgp.signerFingerprint
+            shown.pgpDecryptError = cachedPgp.decryptError
+        }
+        return shown
+    }
+}
+
+/// A cached row's OpenPGP fields (see `Email`).
+nonisolated struct MailPgpFields: Equatable, Sendable {
+    var encrypted: Bool
+    var signed: Bool
+    var verified: Bool
+    var signerFingerprint: String
+    var decryptError: String
+
+    init(of email: Email) {
+        encrypted = email.pgpEncrypted
+        signed = email.pgpSigned
+        verified = email.pgpVerified
+        signerFingerprint = email.pgpSignerFingerprint
+        decryptError = email.pgpDecryptError
+    }
 }
 
 /// The list actions that take a message out of its folder, as the relay's

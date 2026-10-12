@@ -295,13 +295,16 @@ final class MailRepository {
     /// uncached messages fetch again on every open.
     ///
     /// A search result is never cached, but the same (folder, id) may be: its
-    /// cached body is used rather than fetched again.
+    /// cached body is used rather than fetched again, **with the cached row's
+    /// OpenPGP state** — a result carries none, and the reader must not lose
+    /// a cached verdict (or the client-protected shape, a blank body on an
+    /// encrypted row) by opening the message from the results.
     func loadBody(for email: Email) async throws -> MailMessageBody? {
         guard Self.needsBodyFetch(email) else { return nil }
         let epoch = await emailDAO.accountEpoch
         let row = try? await emailDAO.getEmail(folder: email.folder, serverId: email.serverId)
-        if let row, !row.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return MailMessageBody(body: row.body, bodyMode: row.bodyMode)
+        if let row, !row.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || row.pgpEncrypted {
+            return MailMessageBody(body: row.body, bodyMode: row.bodyMode, cachedPgp: MailPgpFields(of: row))
         }
         let fetched = try await makeSource().fetchBody(folder: email.folder, messageId: email.serverId)
         if let row, row.inWindow {

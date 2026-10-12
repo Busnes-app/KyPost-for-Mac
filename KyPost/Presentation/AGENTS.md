@@ -272,7 +272,9 @@ Domain.
   macOS toolbar, submit-only, autocorrection off. While a search is on screen
   the keyword tabs (iOS strip, macOS sidebar rows) and the "Load older mail"
   footer step aside, the results replace the list, "No matching messages"
-  replaces the empty-folder line, and results never raise the new-mail pill.
+  replaces the empty-folder line, and results never raise the new-mail pill:
+  starting a search clears it, and no folder repaint counts new rows while a
+  search is in flight or on screen.
   Starting a search, its results landing, and the search ending all end the
   selection (`selectionResetRequest`); a search the view model ends itself
   clears and closes the field (`searchDismissRequest`). A search that

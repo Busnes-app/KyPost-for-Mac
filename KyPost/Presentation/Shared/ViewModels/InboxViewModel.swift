@@ -757,8 +757,17 @@ final class InboxViewModel {
     }
 
     /// The row on screen for `key` — a folder row or a search result — or nil.
+    /// When both exist the folder row wins (it carries the body and OpenPGP
+    /// state), but a result's own To/Cc replace the row's: Reply All uses
+    /// the result's recipients.
     func email(for key: MailRowKey) -> Email? {
-        emails.first { $0.id == key } ?? searchResults?.first { $0.id == key }
+        let result = searchResults?.first { $0.id == key }
+        guard var row = emails.first(where: { $0.id == key }) else { return result }
+        if let result, !result.sentTo.isEmpty || !result.cc.isEmpty {
+            row.sentTo = result.sentTo
+            row.cc = result.cc
+        }
+        return row
     }
 
     /// Prepares the list for a notification tap and returns its target.
@@ -812,6 +821,9 @@ final class InboxViewModel {
         searchResults = nil
         isSearchInFlight = true
         selectionResetRequest += 1
+        // Results never raise the new-mail pill, and one left over from the
+        // folder would sit over them.
+        newMailCount = 0
         let outcome: Result<[Email], any Error>
         do {
             outcome = .success(try await mailRepository.search(query, in: requested))
@@ -993,7 +1005,8 @@ final class InboxViewModel {
     /// Paints `newEmails`. A repaint of the folder and tab already on screen
     /// announces rows that landed above the old top row: kept in sight when
     /// the list is at the top, counted on the pill otherwise. A first paint or
-    /// a folder switch announces nothing.
+    /// a folder switch announces nothing, and neither does any repaint while a
+    /// search is on screen, in flight or landed.
     private func apply(emails newEmails: [Email]) {
         let previous = paintedFolder == folder ? filteredEmails : []
         let tabBefore = selectedTab
@@ -1001,7 +1014,7 @@ final class InboxViewModel {
         rebuildTabs()
         let sameView = paintedFolder == folder && selectedTab == tabBefore
         paintedFolder = folder
-        guard sameView else { return }
+        guard sameView, !isSearchActive else { return }
         let added = InboxRules.newRowsAbove(old: previous, new: filteredEmails)
         guard added > 0 else { return }
         if isListAtTop {
