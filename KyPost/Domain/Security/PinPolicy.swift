@@ -17,10 +17,10 @@ nonisolated enum PinPolicyResult: Equatable, Sendable {
     case tooCommon
 }
 
-/// The lock wipes after `LockoutPolicy.wipeThreshold` wrong attempts, so an
-/// attacker gets ten guesses — which is what makes the handful of PINs
-/// everybody picks a real risk rather than a theoretical one. All ten free
-/// guesses would otherwise land inside `weakPins`.
+/// The lock wipes after the user's `WipeThreshold` (10 by default) wrong
+/// attempts, so an attacker gets that many guesses — which is what makes the
+/// handful of PINs everybody picks a real risk rather than a theoretical one.
+/// All of them would otherwise land inside `weakPins`.
 nonisolated enum PinPolicy {
     /// **Eight, not six.** Iteration count cannot defend a small keyspace: both
     /// the verifier and the wrapping key are peppered with a device-bound
@@ -28,6 +28,14 @@ nonisolated enum PinPolicy {
     /// minutes-to-an-hour of those calls where 10^8 is days.
     static let minLength = 8
     static let maxLength = 12
+
+    /// What a PIN entry field keeps of its text. `PinPolicy` alone decides the
+    /// length, so a field caps at `maxLength` here rather than at a literal —
+    /// Android's unlock layout hardcoded 6 while the policy required 8 to 12,
+    /// and a valid PIN could never be typed in full (Android #139).
+    static func capped(_ entry: String) -> String {
+        entry.count > maxLength ? String(entry.prefix(maxLength)) : entry
+    }
 
     /// Sized for `minLength` and up. `validate` checks length first, so a
     /// six-digit entry here would be dead code — rejected as `tooShort` before

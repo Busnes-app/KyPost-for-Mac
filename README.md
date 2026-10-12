@@ -26,7 +26,8 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 - **Require Unlock to Open** — gates the app behind Face ID, Touch ID, or
   the device passcode (`LAContext`). iOS locks the app when you send it to the
   background. macOS locks the app when the screen locks, and not when you
-  switch apps.
+  switch apps. A delay — Immediately (the default), 30 seconds, 1 minute or
+  5 minutes — can be set; lengthening it asks you to authenticate.
 - **App PIN** — optional, 8 to 12 digits, separate from your device passcode.
   This reverses an earlier decision. The README used to say the OS owned
   rate-limiting and lockout and there was no app-specific PIN; that was true
@@ -36,7 +37,9 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
   - the first two wrong attempts are free,
   - the third onward adds a growing wait — 30s, 60s, 5m, 15m, 30m,
   - **ten wrong attempts in a row erase** the pairing and everything KyPost
-    has stored on this device. Your mail stays on your server.
+    has stored on this device. Your mail stays on your server. The number can
+    be set to 10, 20 or 30, or Never; allowing more attempts asks you to
+    authenticate, and a stored value that does not verify counts as 10.
 
   If the key protecting the PIN verifier becomes unavailable, KyPost says so
   and counts nothing — a PIN it cannot check is not a wrong PIN, and it must

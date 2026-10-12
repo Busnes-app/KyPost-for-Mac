@@ -5,8 +5,9 @@
 //  Setting or changing the app-lock PIN.
 //
 //  The consequence is stated **before** the field, not in a footnote after it:
-//  ten wrong attempts erase everything KyPost keeps on this Mac. A user who
-//  learns that from the erasure was not told.
+//  the chosen number of wrong attempts (ten by default) erases everything
+//  KyPost keeps on this device. A user who learns that from the erasure was
+//  not told.
 //
 
 import SwiftUI
@@ -26,17 +27,20 @@ struct AppPinSetupView: View {
     @State private var message: String?
     @State private var working = false
 
+    private var consequence: String {
+        if let attempts = manager.wipeThresholdSetting.attempts {
+            return String(localized: "8 to 12 digits. After \(attempts) wrong attempts in a row, KyPost erases the pairing and everything it has stored on this device. Your mail stays on your server.")
+        }
+        return String(localized: "8 to 12 digits. Wrong attempts add a wait but never erase this device (Erase Data After: Never).")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(isChange ? "Change PIN" : "Set a PIN")
                 .font(AppFont.ui(17, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
 
-            Text("""
-                8 to 12 digits. After ten wrong attempts in a row, KyPost erases \
-                the pairing and everything it has stored on this Mac. Your mail \
-                stays on your server.
-                """)
+            Text(consequence)
                 .font(AppFont.ui(12))
                 .foregroundStyle(theme.ink.opacity(0.85))
                 .frame(maxWidth: 380, alignment: .leading)

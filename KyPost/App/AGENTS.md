@@ -129,11 +129,13 @@ an unlock. It is a no-op without a marker, nil when unpaired, and
 this device holds is not a claim to make from a device the app failed to
 erase) and while a run is already in flight, so overlapping hooks send once.
 
-Background pull is gated on `appLockManager.isLocked` in the `BGTaskScheduler`
-handler, the macOS wake observer, and `onForeground`, and `presentLocally`
-withholds sender and subject — from the banner *and* its stored `userInfo` —
-while locked. "Require Unlock to Open" reads as "nobody sees my mail
-without authenticating"; a subject line on the lock screen breaks that.
+Background pull is gated on the lock in the `BGTaskScheduler` handler, the
+macOS wake observer, and `onForeground`. Each resolves a pending grace-period
+deadline (`resolvePendingLock` / `returnedWithinGrace`) before reading
+`isLocked`, because a suspended iOS app never ran the timer. `presentLocally`
+withholds sender and subject while locked, from the banner *and* its stored
+`userInfo`. "Require Unlock to Open" reads as "nobody sees my mail without
+authenticating"; a subject line on the lock screen breaks that.
 
 ## Pull is also the push-mode heartbeat
 

@@ -96,6 +96,9 @@ private enum PushLifecycle {
 
     static func onForeground() {
         let graph = SingletonGraph.shared
+        // A return inside the grace period cancels the pending lock; one after
+        // it engages the lock before anything below can read the cache.
+        graph.appLockManager.returnedWithinGrace()
         // Gate the sync side, not just the pixels: nothing runs until the
         // user unlocks (onUnlock re-enters here).
         guard !graph.appLockManager.isLocked else { return }
@@ -146,8 +149,9 @@ private enum PushLifecycle {
         EnrollmentSession.shared.clear()
         // iOS lock trigger: backgrounding covers home button, app switch,
         // screen lock, and incoming-call takeover. (macOS never calls this;
-        // its trigger is the screen-lock notification in AppDelegate.)
-        SingletonGraph.shared.appLockManager.lock()
+        // its trigger is the screen-lock notification in AppDelegate.) The
+        // user's grace period defers it; the deadline is resolved on return.
+        SingletonGraph.shared.appLockManager.lockAfterGrace()
     }
 
     static func onRemoteNotification(_ userInfo: [AnyHashable: Any]) async {
@@ -171,6 +175,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
         registerBackgroundPull()
         return true
+    }
+
+    /// Resolved here as well as in `onForeground`, because this runs before
+    /// the first frame is drawn: an expired grace period must cover the app
+    /// before it is visible, not a moment after.
+    func applicationWillEnterForeground(_ application: UIApplication) {
+        SingletonGraph.shared.appLockManager.returnedWithinGrace()
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
@@ -218,7 +229,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 // Same gate as onForeground. Without it, background refresh
                 // kept pulling and posting local notifications — sender and
                 // subject included — onto the lock screen of a locked app.
-                if SingletonGraph.shared.appLockManager.isLocked {
+                if SingletonGraph.shared.appLockManager.resolvePendingLock() {
                     task.setTaskCompleted(success: false)
                     return
                 }
@@ -268,7 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Same lock gate as onForeground and iOS background refresh:
                 // waking from a screen lock wakes a locked app, and the
                 // deferred poll runs from onUnlock instead.
-                guard !SingletonGraph.shared.appLockManager.isLocked else { return }
+                guard !SingletonGraph.shared.appLockManager.resolvePendingLock() else { return }
                 await SingletonGraph.shared.pullPollingScheduler.pollNow()
             }
         }
@@ -283,7 +294,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { _ in
             Task { @MainActor in
-                SingletonGraph.shared.appLockManager.lock()
+                SingletonGraph.shared.appLockManager.lockAfterGrace()
+            }
+        }
+        // Unlocking the screen inside the grace period is the user coming
+        // back: the pending lock is cancelled (or engages, if it expired).
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                SingletonGraph.shared.appLockManager.returnedWithinGrace()
             }
         }
     }

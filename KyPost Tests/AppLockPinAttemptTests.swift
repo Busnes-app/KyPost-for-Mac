@@ -60,6 +60,10 @@ private final class PinAttemptHarness {
     }
 }
 
+/// The shipped default, ten. Spelled out so a change to the default shows up
+/// here as a deliberate edit.
+private let defaultWipeAttempts = 10
+
 private struct StubAlwaysAuthenticator: DeviceAuthenticating {
     func canAuthenticate() -> Bool { true }
     func authenticate(reason: String) async -> Bool { true }
@@ -108,7 +112,7 @@ private struct StubAlwaysAuthenticator: DeviceAuthenticating {
 
     @Test func theTenthWrongAttemptWipes() async throws {
         let harness = try PinAttemptHarness()
-        let last = await harness.burnWrongAttempts(LockoutPolicy.wipeThreshold)
+        let last = await harness.burnWrongAttempts(defaultWipeAttempts)
         #expect(last == .wiped)
         #expect(harness.wipeCalls.value == 1)
     }
@@ -118,7 +122,7 @@ private struct StubAlwaysAuthenticator: DeviceAuthenticating {
     @Test func anIncompleteWipeIsItsOwnOutcome() async throws {
         let harness = try PinAttemptHarness()
         harness.wipeResult = .incomplete(failedSteps: ["database"], willRetry: true)
-        let last = await harness.burnWrongAttempts(LockoutPolicy.wipeThreshold)
+        let last = await harness.burnWrongAttempts(defaultWipeAttempts)
         #expect(last == .wipeFailed(failedSteps: ["database"], willRetry: true))
     }
 
@@ -127,7 +131,7 @@ private struct StubAlwaysAuthenticator: DeviceAuthenticating {
     /// only limit on guessing.
     @Test func aThresholdWithNoWipeWiredUpReportsItself() async throws {
         let harness = try PinAttemptHarness(wireWipe: false)
-        let last = await harness.burnWrongAttempts(LockoutPolicy.wipeThreshold)
+        let last = await harness.burnWrongAttempts(defaultWipeAttempts)
         #expect(last == .wipeFailed(failedSteps: ["wipeNotConfigured"], willRetry: false))
     }
 
@@ -158,7 +162,7 @@ private struct StubAlwaysAuthenticator: DeviceAuthenticating {
         let harness = try PinAttemptHarness()
         harness.pepper.available = false
 
-        for _ in 0..<(LockoutPolicy.wipeThreshold * 2) {
+        for _ in 0..<(defaultWipeAttempts * 2) {
             #expect(await harness.manager.attemptPinUnlock("83910472") == .verifierUnavailable)
         }
         #expect(harness.wipeCalls.value == 0)

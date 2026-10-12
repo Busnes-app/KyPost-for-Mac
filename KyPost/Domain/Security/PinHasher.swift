@@ -44,7 +44,7 @@ nonisolated enum PinHasher {
     ///
     /// Throws rather than returning false when the pepper is gone: a `false`
     /// here is indistinguishable from a wrong PIN, and wrong PINs are counted
-    /// toward `LockoutPolicy.wipeThreshold`.
+    /// toward the user's `WipeThreshold`.
     static func matches(pin: String, stored: PinHash, pepper: any PinPepper) throws -> Bool {
         guard stored.version == currentVersion else {
             // A verifier written by a build this one does not understand. Not a

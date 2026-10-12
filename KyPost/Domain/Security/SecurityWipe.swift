@@ -5,7 +5,7 @@
 //  Full destructive reset. Swift port of kypost-android's
 //  security/SecurityWipe.kt.
 //
-//  It runs when `LockoutPolicy.wipeThreshold` wrong PIN attempts accumulate,
+//  It runs when the user's `WipeThreshold` of wrong PIN attempts accumulates,
 //  and when the `AppLockStore` tripwire fires at launch.
 //
 //  **The steps are supplied by the caller, not built here.** Everything below

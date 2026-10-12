@@ -5,7 +5,8 @@
 //  Keychain-backed app-lock settings and PIN state. Keys are a binding
 //  contract: appLock.enabled, appLock.credentialGateEnabled, appLock.pinSalt,
 //  appLock.pinHash, appLock.pinVersion, appLock.failedAttempts,
-//  appLock.lockoutUntil, appLock.lockoutDuration.
+//  appLock.lockoutUntil, appLock.lockoutDuration, appLock.wipeThreshold,
+//  appLock.wipeThresholdTag, appLock.graceSeconds.
 //
 //  **The PIN fields reverse this file's original decision.** It used to say
 //  "deliberately no PIN or lockout fields — verification is LAContext's job,
@@ -30,6 +31,9 @@ final class AppLockStore: Sendable {
         static let failedAttempts = "appLock.failedAttempts"
         static let lockoutUntil = "appLock.lockoutUntil"
         static let lockoutDuration = "appLock.lockoutDuration"
+        static let wipeThreshold = "appLock.wipeThreshold"
+        static let wipeThresholdTag = "appLock.wipeThresholdTag"
+        static let graceSeconds = "appLock.graceSeconds"
     }
 
     /// The unencrypted companion marker — see `tripwireBroken`. In
@@ -57,6 +61,14 @@ final class AppLockStore: Sendable {
     nonisolated enum StoredPin: Equatable {
         case configured(PinHash)
         case absent
+        case unreadable
+    }
+
+    /// The wipe threshold as stored, before `WipeThresholdSeal` decides
+    /// whether to believe it.
+    nonisolated enum StoredWipeThreshold: Equatable {
+        case absent
+        case stored(wire: String, tag: Data)
         case unreadable
     }
 
@@ -168,6 +180,45 @@ final class AppLockStore: Sendable {
     /// for a transient status.
     var tripwireBroken: Bool { wasConfigured && storedPin == .absent }
 
+    // MARK: - Wipe threshold and grace period
+
+    /// In the Keychain beside the verifier, not in `UserDefaults`, where any
+    /// process running as the user can rewrite a plist. A value without a tag,
+    /// or a tag without a value, is `.unreadable` — a half-written or
+    /// half-deleted record is not "nothing configured".
+    var wipeThresholdRecord: StoredWipeThreshold {
+        do {
+            let wire = try keychain.string(forKey: Key.wipeThreshold)
+            let tag = try keychain.string(forKey: Key.wipeThresholdTag)
+            switch (wire, tag) {
+            case (nil, nil):
+                return .absent
+            case (let wire?, let tag?):
+                guard let tagData = Data(base64Encoded: tag) else { return .unreadable }
+                return .stored(wire: wire, tag: tagData)
+            default:
+                return .unreadable
+            }
+        } catch {
+            return .unreadable
+        }
+    }
+
+    func setWipeThreshold(wire: String, tag: Data) throws {
+        try keychain.set(wire, forKey: Key.wipeThreshold)
+        try keychain.set(tag.base64EncodedString(), forKey: Key.wipeThresholdTag)
+    }
+
+    /// Seconds the lock waits after its trigger. Fails closed: unreadable,
+    /// absent or not one of `LockGracePeriod.options` is Immediately.
+    var lockGraceSeconds: Int {
+        LockGracePeriod.sanitized((try? keychain.string(forKey: Key.graceSeconds)).flatMap { Int($0) })
+    }
+
+    func setLockGraceSeconds(_ seconds: Int) throws {
+        try keychain.set(String(LockGracePeriod.sanitized(seconds)), forKey: Key.graceSeconds)
+    }
+
     // MARK: - Lockout accounting
 
     /// Consecutive wrong attempts. A read failure answers 0 — the manager
@@ -206,9 +257,9 @@ final class AppLockStore: Sendable {
         try setLockout(untilMillis: 0, durationMillis: 0)
     }
 
-    /// Clears the PIN, both feature flags and the attempt counters — the
-    /// app-lock half of `SecurityWipe`, and also what "turn off Require Unlock
-    /// to Open" runs.
+    /// Clears the PIN, both feature flags, the attempt counters, the wipe
+    /// threshold and the grace period — the app-lock half of `SecurityWipe`,
+    /// and also what "turn off Require Unlock to Open" runs.
     ///
     /// Tripwire first, for `clearPin`'s reason. Every removal is attempted
     /// even after one fails, and the first error is rethrown: a caller told
@@ -221,6 +272,7 @@ final class AppLockStore: Sendable {
             Key.pinSalt, Key.pinHash, Key.pinVersion,
             Key.failedAttempts, Key.lockoutUntil, Key.lockoutDuration,
             Key.lockEnabled, Key.credentialGateEnabled,
+            Key.wipeThreshold, Key.wipeThresholdTag, Key.graceSeconds,
         ] {
             do { try keychain.remove(key) } catch { firstError = firstError ?? error }
         }

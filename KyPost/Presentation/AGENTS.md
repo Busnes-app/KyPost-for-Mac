@@ -73,6 +73,11 @@ Domain.
   `confirmWithDeviceAuth` and then uses
   `AppLockManager.disableLockAfterAuthentication`, so one prompt covers both
   changes.
+- **Loosening a Security picker re-authenticates; tightening does not.** A
+  longer lock delay or a higher wipe threshold (or Never) goes through
+  `confirmWithDeviceAuth` first, like the *off* paths. While a grace-period
+  lock is pending, `MainTabView` covers itself so the iOS app-switcher
+  snapshot shows no mail (best effort: an open sheet sits above it).
 - **Generated HTML uses a link-scheme allowlist.** `RichTextHTML` emits an
   `<a href>` only for `http`, `https`, `mailto`, `tel`. Escaping the attribute
   value stops it breaking out of the quotes and does nothing about
