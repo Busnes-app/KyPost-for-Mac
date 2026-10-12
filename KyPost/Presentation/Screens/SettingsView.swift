@@ -23,7 +23,8 @@ struct SettingsView: View {
         deregisterDeviceUseCase: SingletonGraph.shared.deregisterDeviceUseCase,
         pushNotificationDispatcher: SingletonGraph.shared.pushNotificationDispatcher,
         enrollmentVault: SingletonGraph.shared.enrollmentVault,
-        appLockManager: SingletonGraph.shared.appLockManager
+        appLockManager: SingletonGraph.shared.appLockManager,
+        pushRepository: SingletonGraph.shared.pushRepository
     )
     @State private var showPairingSheet = false
     @State private var showUnpairConfirmation = false
@@ -85,6 +86,9 @@ struct SettingsView: View {
             Section {
                 Toggle("Enable system notifications", isOn: $viewModel.systemNotificationsEnabled)
                 LabeledContent("Delivery Mode", value: viewModel.deliveryMode)
+                NavigationLink("Notification History") {
+                    NotificationHistoryView()
+                }
                 Button("Fix Notifications") {
                     Task { await viewModel.repairNotifications() }
                 }

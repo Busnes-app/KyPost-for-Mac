@@ -346,11 +346,15 @@ final class SingletonGraph {
         approveMfaChallenge: approveMfaChallengeUseCase,
         pushSettingsStore: pushSettingsStore
     )
-    lazy var pullPollingScheduler = PullPollingScheduler(
-        pushRepository: pushRepository,
-        pushSettingsStore: pushSettingsStore,
-        dispatcher: pushNotificationDispatcher
-    )
+    lazy var pullPollingScheduler: PullPollingScheduler = {
+        let dispatcher = pushNotificationDispatcher
+        return PullPollingScheduler(
+            pushRepository: pushRepository,
+            pushSettingsStore: pushSettingsStore,
+            dispatcher: dispatcher,
+            deliveredPushDate: { await dispatcher.latestDeliveredRemoteNotificationDate() }
+        )
+    }()
 
     // MARK: - View Models (shared so menu commands and views stay in sync)
 

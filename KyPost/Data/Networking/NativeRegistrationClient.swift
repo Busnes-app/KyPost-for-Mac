@@ -16,6 +16,15 @@ struct RegistrationResponse: Decodable, Equatable, Sendable {
     enum DeliveryMode: String, Decodable, Sendable {
         case push
         case pull
+
+        /// Lenient wire read for the pull response: anything that is not an
+        /// explicit "pull" is push, the safe default (matches Android's
+        /// `DeliveryMode.fromWire`). Nil only for a missing value.
+        static func wire(_ value: String) -> DeliveryMode? {
+            let trimmed = value.trimmingCharacters(in: .whitespaces).lowercased()
+            guard !trimmed.isEmpty else { return nil }
+            return trimmed == "pull" ? .pull : .push
+        }
     }
 
     var ok: Bool

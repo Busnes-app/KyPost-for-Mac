@@ -153,6 +153,7 @@ final class DeviceRegistrationService {
                 return .failure("Registered but could not save pairing: \(error)")
             }
             pushSettingsStore.deliveryMode = response.deliveryMode ?? .push
+            pushSettingsStore.lastRegisteredAt = Date()
             pushSettingsStore.pullEndpoint = response
                 .resolvedPullEndpoint(srv: params.srv)?.absoluteString
             // Trust on FIRST use: pin the key this handshake presented only

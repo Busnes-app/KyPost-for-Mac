@@ -18,6 +18,30 @@ struct MailPushPayload: Equatable, Sendable {
     var emailSubject: String
     var keywords: [String]
 
+    static let maxMessageIdLength = 256
+    static let maxHeaderLength = 512
+    static let maxKeywords = 32
+    static let maxKeywordLength = 64
+
+    /// The one place relay-supplied strings get bounded, for every delivery
+    /// path: the APNs userInfo (`PushPayloadMapper.map`) and the pull queue
+    /// (`PullNotificationDTO.routed`). Both write to the same history table,
+    /// so an unbounded path is the one a hostile relay would pick. Bounds
+    /// match Android's `PushPayloadParser.sanitize`.
+    func sanitized() -> MailPushPayload {
+        MailPushPayload(
+            messageId: String(messageId.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.maxMessageIdLength)),
+            senderName: String(senderName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.maxHeaderLength)),
+            emailSubject: String(emailSubject.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.maxHeaderLength)),
+            keywords: Array(
+                keywords.lazy
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty && $0.count <= Self.maxKeywordLength }
+                    .prefix(Self.maxKeywords)
+            )
+        )
+    }
+
     func toNotification(seq: Int, receivedAt: Date) -> PushNotification {
         PushNotification(
             seq: seq,
@@ -55,12 +79,13 @@ enum PushPayloadMapper {
         guard let messageId = userInfo["messageId"] as? String, !messageId.isEmpty else {
             return nil
         }
-        return .mail(MailPushPayload(
+        let payload = MailPushPayload(
             messageId: messageId,
             senderName: userInfo["senderName"] as? String ?? "",
             emailSubject: userInfo["emailSubject"] as? String ?? "",
             keywords: keywords(from: userInfo["Keywords"])
-        ))
+        ).sanitized()
+        return payload.messageId.isEmpty ? nil : .mail(payload)
     }
 
     /// Only well-formed digit runs survive: these drive tap targets on a

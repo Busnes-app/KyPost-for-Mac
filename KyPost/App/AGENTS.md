@@ -127,9 +127,37 @@ this device holds is not a claim to make from a device the app failed to
 erase) and while a run is already in flight, so overlapping hooks send once.
 
 Background pull is gated on `appLockManager.isLocked` in the `BGTaskScheduler`
-handler as well as in `onForeground`, and `presentLocally` withholds sender and
-subject while locked. "Require Unlock to Open" reads as "nobody sees my mail
+handler, the macOS wake observer, and `onForeground`, and `presentLocally`
+withholds sender and subject — from the banner *and* its stored `userInfo` —
+while locked. "Require Unlock to Open" reads as "nobody sees my mail
 without authenticating"; a subject line on the lock screen breaks that.
+
+## Pull is also the push-mode heartbeat
+
+The server queues every notification for pull in both delivery modes and never
+flips the mode itself (server issue #137 option 1, Android #129), so a device on
+a dead relay recovers only by polling. `PullPollingScheduler` runs in both modes
+and `PullHeartbeatPolicy.decide` says whether a tick touches the network:
+
+- Pull mode always polls. Anything else (push, or no mode yet) polls only once
+  APNs has been quiet for 3 h (a constant), counted from
+  `PushSettingsStore.lastPushReceivedAt`, else `lastRegisteredAt`; heartbeat
+  polls are then spaced 15 min apart. A pull answer of "push" is not "stop".
+- `lastPushReceivedAt` only moves forward and is fed by every handled APNs
+  payload, `willPresent`, and the newest `UNPushNotificationTrigger` banner
+  still in Notification Center — the server sends alert pushes, which do not
+  wake a suspended iOS app, so the banner is the only evidence.
+- A heartbeat (and a first pull, cursor 0) drops entries queued more than 6 h
+  ago while still advancing the cursor past them; a months-stale cursor would
+  otherwise re-alert the whole backlog.
+- The wire shape is the server's `{seq,title,body,data,createdAt}` with mail or
+  MFA fields inside `data` — `PullNotificationDTO.routed`, MFA first. History
+  dedupes by `messageId` as well as `seq`, so mail push already delivered is not
+  alerted twice; pulled MFA is never stored and is raised only within the
+  server's 5-minute window, as a detail-free tap-to-open banner.
+- `pollNow` is single-flight. The iOS refresh task is armed whenever paired.
+- History holds 30 rows (`PushNotificationDAO.historyLimit`); unpair clears it
+  with the pull cursor and the heartbeat clock (`PushRepository.clearForUnpair`).
 
 ## The screenshot demo build
 
@@ -180,7 +208,7 @@ Rules:
 
 - `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (`AppEnvironmentTests`, `SecurityTests`, `SecurityWipeTests`,
-  `SecurityWipeStepsTests`).
+  `SecurityWipeStepsTests`, `PullHeartbeatTests`).
 - The rebuild path is exercised end-to-end by toggling Hostile Location
   Protection in Settings → Security on a paired build.
 
