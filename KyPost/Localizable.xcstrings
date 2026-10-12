@@ -118,10 +118,7 @@
     "OK" : {
 
     },
-    "Open in webmail" : {
-
-    },
-    "Replying to encrypted mail isn't available in the app yet — use webmail." : {
+    "Replying to encrypted mail isn't available in the app yet." : {
 
     },
     "To: %@" : {

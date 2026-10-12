@@ -126,36 +126,10 @@ nonisolated func showsSignaturePill(state: PgpMessageState, signed: Bool) -> Boo
 /// False only for `.clientProtected`. A reply to one would either quote the
 /// decrypted plaintext into a `ComposeDraft` — a scene value state
 /// restoration archives to disk — or hand off through a server-side draft
-/// (`/api/mail/draft`), which uploads it. Webmail, where the browser holds
-/// the key, is the place to answer it. Decided from the row's state, so it
+/// (`/api/mail/draft`), which uploads it. Decided from the row's state, so it
 /// holds before, during and after an on-device decrypt.
 nonisolated func mayReplyOrForward(_ state: PgpMessageState) -> Bool {
     state != .clientProtected
-}
-
-/// Whether the reader offers "Open in webmail" for a client-protected message:
-/// only when this device cannot read it.
-///
-/// - Not enrolled: no key will ever be held here.
-/// - Before an outcome, or after `needsUnlock`/`cancelled`: Decrypt is the
-///   offer, and the user is the missing input — not webmail.
-/// - Decrypted: only when parts were dropped, so the missing files have
-///   somewhere to be fetched from.
-/// - Every other outcome means this device could not open the message.
-nonisolated func readerOffersWebmail(
-    outcome: ReadOutcome?,
-    deviceIsEnrolled: Bool,
-    attachmentsOmitted: Bool
-) -> Bool {
-    switch outcome {
-    case nil, .needsUnlock, .cancelled:
-        !deviceIsEnrolled
-    case .decrypted:
-        attachmentsOmitted
-    case .notEnrolled, .noSecureLockScreen, .tooLarge, .notClientProtected,
-         .noEncryptedContent, .unsealFailed, .fetchFailed, .decryptFailed:
-        true
-    }
 }
 
 /// `/read` URL components for the paired server, or nil when `serverUrl` isn't

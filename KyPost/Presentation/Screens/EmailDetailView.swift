@@ -19,7 +19,6 @@ struct EmailDetailView: View {
     @Environment(\.deviceIsEnrolled) private var deviceIsEnrolled
     @Environment(\.self) private var environment
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
 #if os(macOS)
     @Environment(\.openWindow) private var openWindow
 #endif
@@ -39,10 +38,6 @@ struct EmailDetailView: View {
     /// Drives the Decrypt affordance. Built in `.task` because constructing it
     /// reads the pairing out of the Keychain, which `body` must not do.
     @State private var encryptedRead: EncryptedReadViewModel?
-    /// This message in webmail, resolved once in `.task` (it reads the pairing
-    /// out of the Keychain, which `body` must not). Only for client-protected
-    /// mail; offered only when this device cannot read it.
-    @State private var webmailURL: URL?
     /// Set when Reply/Reply All/Forward is pressed on a message they are not
     /// available for; drives the explanation.
     @State private var showsReplyUnavailable = false
@@ -91,8 +86,7 @@ struct EmailDetailView: View {
                 decryptedAttachmentBar(decrypted.attachments)
             }
             if let model = encryptedRead, model.body != nil,
-               model.signatureLine != nil || model.attachmentsOmittedMessage != nil
-                || (model.offersWebmail(deviceIsEnrolled: deviceIsEnrolled) && webmailURL != nil) {
+               model.signatureLine != nil || model.attachmentsOmittedMessage != nil {
                 decryptedNotices(model)
                     .padding(.horizontal)
                     .padding(.top, 6)
@@ -172,15 +166,11 @@ struct EmailDetailView: View {
             }
         }
         .alert("Not available for encrypted mail", isPresented: $showsReplyUnavailable) {
-            if let webmailURL {
-                Button("Open in webmail") { openURL(webmailURL) }
-            }
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Replying to encrypted mail isn't available in the app yet — use webmail.")
+            Text("Replying to encrypted mail isn't available in the app yet.")
         }
         .task {
-            resolveWebmailURL()
             await prepareEncryptedRead()
             await inboxViewModel.markRead(email)
             attachments = await inboxViewModel.attachments(for: email)
@@ -196,7 +186,7 @@ struct EmailDetailView: View {
     @ViewBuilder
     private var mailActionButtons: some View {
         // Not `.disabled`: a disabled button cannot say why it is disabled.
-        // Dimmed instead, and pressing it explains and offers webmail.
+        // Dimmed instead, and pressing it explains.
         Group {
             Button {
                 replyOrExplain { compose(.reply(to: email)) }
@@ -315,7 +305,7 @@ struct EmailDetailView: View {
     private var replyAvailable: Bool { mayReplyOrForward(pgpState) }
 
     private var replyUnavailableHelp: String {
-        String(localized: "Replying to encrypted mail isn't available in the app yet — use webmail.")
+        String(localized: "Replying to encrypted mail isn't available in the app yet.")
     }
 
     private func replyOrExplain(_ action: () -> Void) {
@@ -348,20 +338,6 @@ struct EmailDetailView: View {
             preparingForward = false
             compose(draft)
         }
-    }
-
-    private func resolveWebmailURL() {
-        guard pgpState == .clientProtected,
-              let pairing = try? SingletonGraph.shared.securePairingStore.loadPairing()
-        else {
-            webmailURL = nil
-            return
-        }
-        webmailURL = webmailMessageURL(
-            serverUrl: pairing.srv,
-            mailbox: email.folder,
-            messageId: email.serverId
-        )
     }
 
     /// Our own relay address (the pairing's sub), excluded from Reply All.
@@ -468,29 +444,12 @@ struct EmailDetailView: View {
                         .foregroundStyle(theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if model.body == nil, model.offersWebmail(deviceIsEnrolled: deviceIsEnrolled) {
-                    webmailButton
-                }
             }
-        } else if !deviceIsEnrolled {
-            webmailButton
         }
     }
 
-    /// Opens this message in the user's browser through `openURL` — never an
-    /// in-app WebView, which would share no session and put an
-    /// account-password field inside this app. Absent when no URL resolved.
-    @ViewBuilder
-    private var webmailButton: some View {
-        if let webmailURL {
-            Button("Open in webmail") { openURL(webmailURL) }
-                .font(AppFont.ui(12, weight: .medium))
-                .buttonStyle(.borderless)
-        }
-    }
-
-    /// What stays visible once plaintext is on screen: the signature line,
-    /// a dropped-attachment notice, and webmail for the missing files.
+    /// What stays visible once plaintext is on screen: the signature line and
+    /// a dropped-attachment notice.
     private func decryptedNotices(_ model: EncryptedReadViewModel) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             if let line = model.signatureLine {
@@ -510,9 +469,6 @@ struct EmailDetailView: View {
                     .font(AppFont.ui(12))
                     .foregroundStyle(theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-            if model.offersWebmail(deviceIsEnrolled: deviceIsEnrolled) {
-                webmailButton
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -3,9 +3,9 @@
 //  KyPost Tests
 //
 //  Message-detail rules ported from kypost-android: the To/Cc line (#119),
-//  decrypted attachments and inline images (#109), the reply/forward gate and
-//  the webmail offer for client-protected mail, and forwarding the original's
-//  attachments (ForwardAttachmentHandoff).
+//  decrypted attachments and inline images (#109), the reply/forward gate for
+//  client-protected mail, and forwarding the original's attachments
+//  (ForwardAttachmentHandoff).
 //
 
 import Foundation
@@ -55,28 +55,6 @@ import Testing
         #expect(mayReplyOrForward(.none))
         #expect(mayReplyOrForward(.decryptedByServer))
         #expect(mayReplyOrForward(.decryptFailed))
-    }
-
-    /// Webmail is for a device that cannot read the message, never an
-    /// alternative to a Decrypt the user has not pressed yet.
-    @Test func webmailIsOfferedOnlyWhenThisDeviceCannotRead() {
-        for pending: ReadOutcome? in [nil, .needsUnlock, .cancelled] {
-            #expect(readerOffersWebmail(outcome: pending, deviceIsEnrolled: true, attachmentsOmitted: false) == false)
-            #expect(readerOffersWebmail(outcome: pending, deviceIsEnrolled: false, attachmentsOmitted: false))
-        }
-        let terminal: [ReadOutcome] = [
-            .notEnrolled, .noSecureLockScreen, .tooLarge, .notClientProtected,
-            .noEncryptedContent, .unsealFailed("x"), .fetchFailed("x"), .decryptFailed("x"),
-        ]
-        for outcome in terminal {
-            #expect(readerOffersWebmail(outcome: outcome, deviceIsEnrolled: true, attachmentsOmitted: false))
-        }
-        let decrypted = ReadOutcome.decrypted(
-            body: DecryptedBody(html: nil, plain: "x"), signature: .unsigned, resolvedSender: ""
-        )
-        #expect(!readerOffersWebmail(outcome: decrypted, deviceIsEnrolled: true, attachmentsOmitted: false))
-        // Dropped parts have to be fetchable from somewhere.
-        #expect(readerOffersWebmail(outcome: decrypted, deviceIsEnrolled: true, attachmentsOmitted: true))
     }
 
     @Test func messageLevelSignatureNoticesNeedNoSender() {

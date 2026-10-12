@@ -92,17 +92,8 @@ final class EncryptedReadViewModel {
     /// Said out loud when a part was dropped for size or count.
     var attachmentsOmittedMessage: String? {
         body?.attachmentsOmitted == true
-            ? "Some attachments in this message could not be shown on this device. Open it in webmail to get them."
+            ? "Some attachments in this message could not be shown on this device."
             : nil
-    }
-
-    /// See `readerOffersWebmail`.
-    func offersWebmail(deviceIsEnrolled: Bool) -> Bool {
-        readerOffersWebmail(
-            outcome: outcome,
-            deviceIsEnrolled: deviceIsEnrolled,
-            attachmentsOmitted: body?.attachmentsOmitted == true
-        )
     }
 
     /// The decrypted HTML with `cid:` images resolved to bounded `data:` URIs

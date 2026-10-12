@@ -329,7 +329,7 @@ is the server's pin, not this device's.
 - **Decrypted attachments stay in memory** (`DecryptedBody.attachments`,
   Android #109). `PgpMimeReader` keeps at most 50 parts and 4 MiB decoded,
   drops an over-cap part whole (never truncated) and sets
-  `attachmentsOmitted`, which the screen says out loud with a webmail link. A
+  `attachmentsOmitted`, which the screen says out loud. A
   `multipart/signed`'s `application/pgp-signature` part is transport, not a
   file. Quick Look needs a file, so `DecryptedAttachmentFiles` stages one per
   preview under `attachments/decrypted` (inside the root the wipe and the HLP
@@ -348,11 +348,10 @@ is the server's pin, not this device's.
 - **Reply, Reply All and Forward are closed on client-protected mail**
   (`mayReplyOrForward`): quoting the plaintext would put it in an archived
   `ComposeDraft`, and the webmail handoff uploads a server draft. The buttons
-  stay pressable and explain, offering webmail.
-- **"Open in webmail" appears only when this device cannot read the message**
-  (`readerOffersWebmail`): not enrolled, a terminal or failed outcome, or
-  dropped attachments — never instead of a Decrypt the user has not pressed.
-  It goes through `openURL`, never an in-app WebView.
+  stay pressable and explain.
+- **The reader has no webmail fallback** (`KyPost/Presentation/AGENTS.md`): no
+  "Open in webmail" link, not on a failed decrypt, the reply gate, or dropped
+  attachments.
 
 ### Signature attribution is entity-level (`Domain/Security/GopenPGPCrypto.swift`)
 
