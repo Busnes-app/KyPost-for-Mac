@@ -146,7 +146,9 @@ final class PushNotificationDispatcher: NSObject {
     ) async {
         guard pushSettingsStore.systemNotificationsEnabled else { return }
         guard !SingletonGraph.shared.securityWipe.blockedByAbandonedWipe else { return }
-        let redact = redactContent ?? SingletonGraph.shared.appLockManager.isLocked
+        // Resolve first: inside a suspended grace period the timer never
+        // fired, and the deadline is the truth.
+        let redact = redactContent ?? SingletonGraph.shared.appLockManager.resolvePendingLock()
 
         let content = UNMutableNotificationContent()
         content.title = redact

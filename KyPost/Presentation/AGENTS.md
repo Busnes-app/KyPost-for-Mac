@@ -73,6 +73,14 @@ Domain.
   `confirmWithDeviceAuth` and then uses
   `AppLockManager.disableLockAfterAuthentication`, so one prompt covers both
   changes.
+- **Loosening a Security picker re-authenticates; tightening does not.** A
+  longer lock delay or a higher wipe threshold (or Never) goes through
+  `confirmWithDeviceAuth` first, like the *off* paths.
+- **The iOS background snapshot is covered by a window, not an overlay.**
+  `PrivacySnapshotCover` (AppDelegate) puts an opaque `UIWindow` at
+  `.alert + 1` over each scene entering the background whenever the lock is
+  on, and removes it on return only after the grace deadline is resolved. An
+  in-tree overlay sits below presented sheets, so an open reply would show.
 - **Generated HTML uses a link-scheme allowlist.** `RichTextHTML` emits an
   `<a href>` only for `http`, `https`, `mailto`, `tel`. Escaping the attribute
   value stops it breaking out of the quotes and does nothing about

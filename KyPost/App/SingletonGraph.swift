@@ -393,6 +393,9 @@ final class SingletonGraph {
         pullPollingScheduler.shutdown()
         systemContactsChangeMonitor.stop()
         inboxViewModel.stopAutoRefresh()
+        // A pending grace-period lock owns a timer; a superseded graph's must
+        // not fire into the replacement's session.
+        appLockManager.shutdown()
         // Drops in-flight requests, the connection pool, and the session's
         // strong reference to its delegate. Not `finishTasksAndInvalidate`:
         // a superseded graph's requests write to a database that is going

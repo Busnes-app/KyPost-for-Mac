@@ -110,9 +110,9 @@ func makeLockStore(defaults: UserDefaults? = nil) -> AppLockStore {
     }
 
     @Test func theTenthWrongAttemptWipes() {
-        #expect(!LockoutPolicy.shouldWipe(attemptCount: 9))
-        #expect(LockoutPolicy.shouldWipe(attemptCount: 10))
-        #expect(LockoutPolicy.shouldWipe(attemptCount: 11))
+        #expect(!LockoutPolicy.shouldWipe(attemptCount: 9, threshold: .default))
+        #expect(LockoutPolicy.shouldWipe(attemptCount: 10, threshold: .default))
+        #expect(LockoutPolicy.shouldWipe(attemptCount: 11, threshold: .default))
     }
 }
 

@@ -41,19 +41,30 @@ struct SecuritySettingsContent: View {
     var body: some View {
         Section {
             Toggle("Require Unlock to Open", isOn: lockEnabledBinding)
+            Picker("Lock", selection: graceBinding) {
+                ForEach(LockGracePeriod.options, id: \.self) { seconds in
+                    Text(Self.graceLabel(seconds)).tag(seconds)
+                }
+            }
+            .disabled(!lockManager.isLockEnabled)
             if let lockToggleMessage {
                 Text(lockToggleMessage)
                     .font(AppFont.ui(13))
                     .foregroundStyle(SemanticColors.danger)
             }
         } footer: {
-            Text("Unlocks with Face ID, Touch ID, or this device's passcode. KyPost locks when it goes to the background (iOS) or the screen locks (Mac).")
+            Text("Unlocks with Face ID, Touch ID, or this device's passcode. KyPost locks when it goes to the background (iOS) or the screen locks (Mac), after the delay chosen above. Choosing a longer delay asks you to authenticate.")
         }
 
         Section {
             if lockManager.hasPin {
                 Button("Change PIN…") { pinSheet = .change }
                 Button("Remove PIN", role: .destructive) { removePin() }
+                Picker("Erase Data After", selection: wipeThresholdBinding) {
+                    ForEach(WipeThreshold.choices, id: \.self) { threshold in
+                        Text(Self.thresholdLabel(threshold)).tag(threshold)
+                    }
+                }
             } else {
                 Button("Set a PIN…") { pinSheet = .set }
                     .disabled(!lockManager.isLockEnabled)
@@ -69,7 +80,7 @@ struct SecuritySettingsContent: View {
             // The erasure is stated here as well as in the sheet. This is the
             // screen someone reads while deciding, and a consequence that only
             // appears once they have already decided is not a disclosure.
-            Text("An optional PIN, separate from your Mac's password. The first two wrong attempts are free; after that each one adds a wait, from 30 seconds up to 30 minutes. Ten wrong attempts in a row erase the pairing and everything KyPost has stored on this Mac. Your mail stays on your server. Requires Require Unlock to Open.")
+            Text(pinFooter)
         }
         .sheet(item: $pinSheet) { sheet in
             AppPinSetupView(manager: lockManager, isChange: sheet == .change)
@@ -261,6 +272,88 @@ struct SecuritySettingsContent: View {
                         credentialGateMessage = String(
                             localized: "Could not restore the credential — try again."
                         )
+                    }
+                }
+            }
+        )
+    }
+
+    private var pinFooter: String {
+        let ladder = String(localized: "An optional PIN, separate from your Mac's password. The first two wrong attempts are free; after that each one adds a wait, from 30 seconds up to 30 minutes.")
+        let consequence: String
+        if let attempts = lockManager.wipeThresholdSetting.attempts {
+            consequence = String(localized: "\(attempts) wrong attempts in a row erase the pairing and everything KyPost has stored on this device. Your mail stays on your server.")
+        } else {
+            consequence = String(localized: "Wrong attempts never erase this device; only the waits above slow guessing down.")
+        }
+        let tail = String(localized: "Choosing a larger number, or Never, asks you to authenticate. Requires Require Unlock to Open.")
+        return [ladder, consequence, tail].joined(separator: " ")
+    }
+
+    static func graceLabel(_ seconds: Int) -> String {
+        switch seconds {
+        case 0: return String(localized: "Immediately")
+        case 60: return String(localized: "After 1 minute")
+        case let s where s % 60 == 0: return String(localized: "After \(s / 60) minutes")
+        default: return String(localized: "After \(seconds) seconds")
+        }
+    }
+
+    static func thresholdLabel(_ threshold: WipeThreshold) -> String {
+        guard let attempts = threshold.attempts else { return String(localized: "Never") }
+        return String(localized: "\(attempts) Failed Attempts")
+    }
+
+    /// Shortening the delay applies directly; lengthening it is the downgrade
+    /// direction and re-authenticates first, like every *off* path here.
+    private var graceBinding: Binding<Int> {
+        Binding(
+            get: { lockManager.lockGraceSeconds },
+            set: { seconds in
+                Task {
+                    if seconds > lockManager.lockGraceSeconds {
+                        guard await lockManager.confirmWithDeviceAuth(
+                            reason: String(localized: "Lengthen the delay before KyPost locks")
+                        ) else {
+                            lockToggleMessage = String(
+                                localized: "Authentication is required to lengthen the delay."
+                            )
+                            return
+                        }
+                    }
+                    do {
+                        try lockManager.setLockGraceSeconds(seconds)
+                        lockToggleMessage = nil
+                    } catch {
+                        lockToggleMessage = String(localized: "Could not save the change — try again.")
+                    }
+                }
+            }
+        )
+    }
+
+    /// Lowering the threshold applies directly; raising it or choosing Never
+    /// gives an attacker more guesses, so it re-authenticates first.
+    private var wipeThresholdBinding: Binding<WipeThreshold> {
+        Binding(
+            get: { lockManager.wipeThresholdSetting },
+            set: { threshold in
+                Task {
+                    if threshold.isLooser(than: lockManager.wipeThreshold) {
+                        guard await lockManager.confirmWithDeviceAuth(
+                            reason: String(localized: "Allow more wrong PIN attempts before erasing")
+                        ) else {
+                            pinMessage = String(
+                                localized: "Authentication is required to allow more attempts."
+                            )
+                            return
+                        }
+                    }
+                    do {
+                        try lockManager.setWipeThreshold(threshold)
+                        pinMessage = nil
+                    } catch {
+                        pinMessage = String(localized: "Could not save the change — try again.")
                     }
                 }
             }

@@ -114,6 +114,13 @@ struct UnlockView: View {
         VStack(spacing: 8) {
             SecureField("PIN", text: $pin)
                 .textFieldStyle(.roundedBorder)
+#if os(iOS)
+                .keyboardType(.numberPad)
+#endif
+                .onChange(of: pin) { _, entry in
+                    let capped = PinPolicy.capped(entry)
+                    if capped != entry { pin = capped }
+                }
                 .frame(maxWidth: 220)
                 .disabled(submitting || lockoutRemaining > 0)
                 .onSubmit { submit() }

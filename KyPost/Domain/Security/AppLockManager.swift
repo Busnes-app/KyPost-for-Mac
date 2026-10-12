@@ -172,19 +172,123 @@ final class AppLockManager {
         self.store = store
         self.authenticator = authenticator
         self.enrollmentSession = enrollmentSession
-        self.pepper = pepper ?? DevicePinPepper(keychain: KeychainStorage())
+        let resolvedPepper = pepper ?? DevicePinPepper(keychain: KeychainStorage())
+        self.pepper = resolvedPepper
         self.monotonicMillis = monotonicMillis
         isLockEnabled = store.lockEnabled
         isLocked = store.lockEnabled
         sessionFailedAttempts = store.failedAttempts
+        lockGraceSeconds = store.lockGraceSeconds
+        wipeThresholdSetting = WipeThresholdSeal.read(store.wipeThresholdRecord, pepper: resolvedPepper)
     }
 
     static func systemMonotonicMillis() -> Int64 {
         Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1_000_000)
     }
 
-    /// Engages the lock (backgrounding on iOS, screen lock on macOS).
-    /// No-op while the feature is off.
+    // MARK: - Grace period
+
+    /// Observable mirror of `store.lockGraceSeconds` for the settings picker.
+    private(set) var lockGraceSeconds: Int
+
+    /// Monotonic deadline at which a deferred lock engages, nil when none is
+    /// pending. A deadline rather than only a timer because iOS suspends the
+    /// app: a timer does not fire in a suspended process, so every gate that
+    /// asks "is this locked?" after a trip to the background resolves it.
+    private var pendingLockDeadline: Int64?
+    private var pendingLockTimer: Task<Void, Never>?
+
+    /// True while a deferred lock is counting down.
+    var isLockPending: Bool { pendingLockDeadline != nil }
+
+    /// The lock trigger (backgrounding on iOS, screen lock on macOS), honouring
+    /// the grace period.
+    ///
+    /// The unsealed OpenPGP key is still dropped immediately: the grace
+    /// period is about the UI gate, not about how long a private key may sit
+    /// in a process nobody is looking at. An earlier pending deadline is kept,
+    /// never pushed back.
+    func lockAfterGrace() {
+        enrollmentSession.clear()
+        guard isLockEnabled, !isLocked else { return }
+        let grace = store.lockGraceSeconds
+        guard grace > 0 else {
+            lock()
+            return
+        }
+        guard pendingLockDeadline == nil else { return }
+        pendingLockDeadline = monotonicMillis() + Int64(grace) * 1000
+        pendingLockTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(grace))
+            guard !Task.isCancelled else { return }
+            // Resolve, never lock unconditionally: a return to the app or a
+            // successful unlock may have cancelled the deadline while this
+            // callback was already queued (Android 590866f6).
+            self?.resolvePendingLock()
+        }
+    }
+
+    /// Engages the lock if a pending deadline has passed. Every gate that acts
+    /// on `isLocked` after a background trip calls this first.
+    @discardableResult
+    func resolvePendingLock() -> Bool {
+        if let deadline = pendingLockDeadline, monotonicMillis() >= deadline {
+            clearPendingLock()
+            lock()
+        }
+        return isLocked
+    }
+
+    /// The user came back (foreground on iOS, screen unlocked on macOS):
+    /// lock if the window already closed, otherwise forget the deadline.
+    func returnedWithinGrace() {
+        resolvePendingLock()
+        clearPendingLock()
+    }
+
+    /// The macOS screen-unlock notification, which is a hint rather than
+    /// verified state. The deadline is cancelled only when the session state
+    /// read independently confirms the screen is unlocked; otherwise it
+    /// stands, and the lock engages when it passes.
+    func screenUnlockReported(verifiedUnlocked: Bool) {
+        if verifiedUnlocked {
+            returnedWithinGrace()
+        } else {
+            resolvePendingLock()
+        }
+    }
+
+    /// Whether the iOS shell must cover the window before the background
+    /// snapshot is taken. True whenever the lock is on, pending or not: a
+    /// grace period leaves the app unlocked behind the snapshot, and a sheet
+    /// open at the time sits above any in-tree cover.
+    var backgroundSnapshotNeedsCover: Bool { isLockEnabled }
+
+    /// Stops the pending-lock timer. Called from `SingletonGraph.shutdown()`:
+    /// a superseded graph's deadline must never fire later and clear session
+    /// state the replacement graph now owns.
+    func shutdown() {
+        clearPendingLock()
+    }
+
+    private func clearPendingLock() {
+        pendingLockDeadline = nil
+        pendingLockTimer?.cancel()
+        pendingLockTimer = nil
+    }
+
+    /// Sets the grace period. Lengthening it is the downgrade direction, so
+    /// the settings screen authenticates before calling this; this method
+    /// does not, for `setPin`'s reason.
+    func setLockGraceSeconds(_ seconds: Int) throws {
+        try store.setLockGraceSeconds(seconds)
+        lockGraceSeconds = store.lockGraceSeconds
+    }
+
+    // MARK: - Lock
+
+    /// Engages the lock now (also the end of a grace period). No-op while the
+    /// feature is off.
     func lock() {
         // Before the early return, deliberately. The plaintext private key is
         // dropped whenever this is called, whether or not the app lock feature
@@ -193,6 +297,7 @@ final class AppLockManager {
         // unsealed key in memory.
         enrollmentSession.clear()
         guard isLockEnabled, !isLocked else { return }
+        clearPendingLock()
         isLocked = true
         cachedGatedSecret = nil
         onLock?()
@@ -220,6 +325,9 @@ final class AppLockManager {
             cachedGatedSecret = secret
         }
         failedUnlockAttempts = 0
+        // A stale deadline would re-lock the session the user just opened
+        // (Android 7d791090).
+        clearPendingLock()
         isLocked = false
         onUnlock?()
         return true
@@ -324,7 +432,35 @@ final class AppLockManager {
         try store.setPin(try PinHasher.hash(pin: pin, pepper: pepper))
         try? store.resetFailedAttempts()
         sessionFailedAttempts = 0
+        // A first PIN may have minted a new pepper, which no longer vouches
+        // for an older stored threshold — that now reads as the strictest.
+        wipeThresholdSetting = wipeThreshold
         return .valid
+    }
+
+    // MARK: - Wipe threshold
+
+    /// Observable mirror for the settings picker. The attempt path never reads
+    /// this — it re-reads and re-verifies the stored value every time.
+    private(set) var wipeThresholdSetting: WipeThreshold
+
+    /// The threshold in force, read from the store and verified against the
+    /// pepper on every call. Anything that does not verify is the strictest.
+    var wipeThreshold: WipeThreshold {
+        WipeThresholdSeal.read(store.wipeThresholdRecord, pepper: pepper)
+    }
+
+    /// Stores a new threshold, sealed to the pepper. Needs a PIN (the pepper
+    /// exists only once one was set) — without one there is nothing to wipe
+    /// on. Loosening it is the downgrade direction: the settings screen
+    /// authenticates first; this method does not, for `setPin`'s reason.
+    func setWipeThreshold(_ threshold: WipeThreshold) throws {
+        // Refreshed on failure too: a half-written record is enforced as the
+        // strictest value, and the picker must say so rather than keep
+        // showing the value it had before.
+        defer { wipeThresholdSetting = wipeThreshold }
+        let tag = try WipeThresholdSeal.tag(for: threshold, pepper: pepper)
+        try store.setWipeThreshold(wire: threshold.wire, tag: tag)
     }
 
     /// Removes the PIN and disarms the tripwire with it.
@@ -347,6 +483,7 @@ final class AppLockManager {
                 self.cachedGatedSecret = secret
             }
             self.failedUnlockAttempts = 0
+            self.clearPendingLock()
             self.isLocked = false
             self.onUnlock?()
             return .success
@@ -427,7 +564,7 @@ final class AppLockManager {
             Log.app.error("Could not persist the failed-attempt count: \(error.localizedDescription)")
         }
 
-        if LockoutPolicy.shouldWipe(attemptCount: attempts) {
+        if LockoutPolicy.shouldWipe(attemptCount: attempts, threshold: wipeThreshold) {
             guard let onWipe else {
                 Log.app.error("Wipe threshold reached with no wipe wired up")
                 return .wipeFailed(failedSteps: ["wipeNotConfigured"], willRetry: false)
@@ -456,6 +593,7 @@ final class AppLockManager {
         }
         isLockEnabled = enabled
         if !enabled {
+            clearPendingLock()
             isLocked = false
             failedUnlockAttempts = 0
             // The PIN belongs to the lock. Left behind, it would be a verifier

@@ -436,6 +436,31 @@ old sentence edited out.
   "configured, and the PIN vanished" true immediately and wipe the machine at
   the next launch. `unreadable` never arms it either — a Keychain that will not
   answer yet is the ordinary state of a Mac mid-launch.
+- **The wipe threshold is the user's: 10 (default, kept from before the
+  setting existed), 20, 30, or never** (`WipeThreshold`). It lives in the
+  Keychain tagged with the PIN pepper's HMAC (`WipeThresholdSeal`), and
+  anything that does not verify — forged, garbled, half-written, unreadable,
+  pepper gone — reads as 10, never as the looser value it claims.
+  `AppLockManager.verify` re-reads and re-verifies it on every attempt; the
+  `wipeThresholdSetting` mirror is for the UI only. Loosening it (or the grace
+  period) re-authenticates; tightening applies directly.
+- **The grace period is a monotonic deadline, not only a timer**
+  (`lockAfterGrace` / `resolvePendingLock` / `returnedWithinGrace`). iOS
+  suspends the app, so a timer cannot be the control: every gate that reads
+  `isLocked` after a background trip (foreground, `BGTaskScheduler`, macOS
+  wake, `presentLocally`) resolves the deadline first. A firing timer resolves
+  rather than locks, and a successful unlock clears the deadline (Android's
+  2026-08-28 fixes). The trigger still drops `EnrollmentSession` at once, an
+  earlier deadline is never pushed back, and an unknown stored delay reads as
+  Immediately (the default — iOS pickers do not background the app, so
+  Android's 30 s reason does not carry over). The macOS screen-unlock
+  notification is a hint: only `screenUnlockReported(verifiedUnlocked: true)`,
+  confirmed from the login session's own state, cancels the deadline.
+  `SingletonGraph.shutdown()` calls `AppLockManager.shutdown()` so a superseded
+  graph's timer never fires. A failed threshold save still refreshes
+  `wipeThresholdSetting` from the verified store.
+- **PIN entry caps at `PinPolicy.maxLength` through `PinPolicy.capped`**, never
+  a literal (Android #139 shipped a 6-digit cap against an 8–12 policy).
 - **The wipe fails closed.** `WipeResult.complete` is only returned when every
   step ran; a step must not catch its own errors, or the step cannot fail and
   the claim cannot be supported. An incomplete run keeps its marker, resumes at
