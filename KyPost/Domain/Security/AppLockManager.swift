@@ -198,8 +198,7 @@ final class AppLockManager {
     private var pendingLockDeadline: Int64?
     private var pendingLockTimer: Task<Void, Never>?
 
-    /// True while a deferred lock is counting down. The iOS shell covers the
-    /// app-switcher snapshot while this is set.
+    /// True while a deferred lock is counting down.
     var isLockPending: Bool { pendingLockDeadline != nil }
 
     /// The lock trigger (backgrounding on iOS, screen lock on macOS), honouring
@@ -244,6 +243,31 @@ final class AppLockManager {
     /// lock if the window already closed, otherwise forget the deadline.
     func returnedWithinGrace() {
         resolvePendingLock()
+        clearPendingLock()
+    }
+
+    /// The macOS screen-unlock notification, which is a hint rather than
+    /// verified state. The deadline is cancelled only when the session state
+    /// read independently confirms the screen is unlocked; otherwise it
+    /// stands, and the lock engages when it passes.
+    func screenUnlockReported(verifiedUnlocked: Bool) {
+        if verifiedUnlocked {
+            returnedWithinGrace()
+        } else {
+            resolvePendingLock()
+        }
+    }
+
+    /// Whether the iOS shell must cover the window before the background
+    /// snapshot is taken. True whenever the lock is on, pending or not: a
+    /// grace period leaves the app unlocked behind the snapshot, and a sheet
+    /// open at the time sits above any in-tree cover.
+    var backgroundSnapshotNeedsCover: Bool { isLockEnabled }
+
+    /// Stops the pending-lock timer. Called from `SingletonGraph.shutdown()`:
+    /// a superseded graph's deadline must never fire later and clear session
+    /// state the replacement graph now owns.
+    func shutdown() {
         clearPendingLock()
     }
 
@@ -431,9 +455,12 @@ final class AppLockManager {
     /// on. Loosening it is the downgrade direction: the settings screen
     /// authenticates first; this method does not, for `setPin`'s reason.
     func setWipeThreshold(_ threshold: WipeThreshold) throws {
+        // Refreshed on failure too: a half-written record is enforced as the
+        // strictest value, and the picker must say so rather than keep
+        // showing the value it had before.
+        defer { wipeThresholdSetting = wipeThreshold }
         let tag = try WipeThresholdSeal.tag(for: threshold, pepper: pepper)
         try store.setWipeThreshold(wire: threshold.wire, tag: tag)
-        wipeThresholdSetting = wipeThreshold
     }
 
     /// Removes the PIN and disarms the tripwire with it.

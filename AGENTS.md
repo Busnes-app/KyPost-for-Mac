@@ -453,7 +453,12 @@ old sentence edited out.
   2026-08-28 fixes). The trigger still drops `EnrollmentSession` at once, an
   earlier deadline is never pushed back, and an unknown stored delay reads as
   Immediately (the default — iOS pickers do not background the app, so
-  Android's 30 s reason does not carry over).
+  Android's 30 s reason does not carry over). The macOS screen-unlock
+  notification is a hint: only `screenUnlockReported(verifiedUnlocked: true)`,
+  confirmed from the login session's own state, cancels the deadline.
+  `SingletonGraph.shutdown()` calls `AppLockManager.shutdown()` so a superseded
+  graph's timer never fires. A failed threshold save still refreshes
+  `wipeThresholdSetting` from the verified store.
 - **PIN entry caps at `PinPolicy.maxLength` through `PinPolicy.capped`**, never
   a literal (Android #139 shipped a 6-digit cap against an 8–12 policy).
 - **The wipe fails closed.** `WipeResult.complete` is only returned when every

@@ -74,10 +74,19 @@ final class AppLockStore: Sendable {
 
     private let keychain: KeychainStorage
     private let defaults: UserDefaults
+    /// Runs before each half of a wipe-threshold write, keyed by the item
+    /// about to be written. A no-op outside tests, which use it to fail the
+    /// second half and prove what a half-written record reads as.
+    private let beforeThresholdWrite: @Sendable (String) throws -> Void
 
-    init(keychain: KeychainStorage, defaults: UserDefaults = .standard) {
+    init(
+        keychain: KeychainStorage,
+        defaults: UserDefaults = .standard,
+        beforeThresholdWrite: @escaping @Sendable (String) throws -> Void = { _ in }
+    ) {
         self.keychain = keychain
         self.defaults = defaults
+        self.beforeThresholdWrite = beforeThresholdWrite
     }
 
     /// Feature 1: Require Unlock to Open. Callers that only decide what to
@@ -205,7 +214,9 @@ final class AppLockStore: Sendable {
     }
 
     func setWipeThreshold(wire: String, tag: Data) throws {
+        try beforeThresholdWrite(Key.wipeThreshold)
         try keychain.set(wire, forKey: Key.wipeThreshold)
+        try beforeThresholdWrite(Key.wipeThresholdTag)
         try keychain.set(tag.base64EncodedString(), forKey: Key.wipeThresholdTag)
     }
 

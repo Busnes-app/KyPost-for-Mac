@@ -132,7 +132,10 @@ erase) and while a run is already in flight, so overlapping hooks send once.
 Background pull is gated on the lock in the `BGTaskScheduler` handler, the
 macOS wake observer, and `onForeground`. Each resolves a pending grace-period
 deadline (`resolvePendingLock` / `returnedWithinGrace`) before reading
-`isLocked`, because a suspended iOS app never ran the timer. `presentLocally`
+`isLocked`, because a suspended iOS app never ran the timer. On macOS the
+screen-unlock notification cancels the deadline only when
+`CGSessionCopyCurrentDictionary` confirms the screen is unlocked, and
+`shutdown()` stops the pending-lock timer. `presentLocally`
 withholds sender and subject while locked, from the banner *and* its stored
 `userInfo`. "Require Unlock to Open" reads as "nobody sees my mail without
 authenticating"; a subject line on the lock screen breaks that.

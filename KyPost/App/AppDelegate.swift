@@ -170,6 +170,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         PushLifecycle.onLaunch()
         PushLifecycle.installRebuildHandler()
+        PrivacySnapshotCover.install()
         if PushLifecycle.registersForRemoteNotifications {
             application.registerForRemoteNotifications()
         }
@@ -256,8 +257,79 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
+/// An opaque window over each scene while it is in the background, so the
+/// app-switcher snapshot shows no mail.
+///
+/// A window rather than a SwiftUI overlay: an overlay lives inside the root
+/// view's tree, and anything presented from it (reply, forward, pairing, MFA)
+/// renders above it. A window at `.alert + 1` sits above every presentation.
+/// Installed when the scene enters the background — before the snapshot — and
+/// removed on return only after the grace deadline has been resolved, so a
+/// lock that expired while away is already engaged when the content reappears.
+@MainActor
+private enum PrivacySnapshotCover {
+    private static var covers: [ObjectIdentifier: UIWindow] = [:]
+
+    static func install() {
+        let center = NotificationCenter.default
+        center.addObserver(
+            forName: UIScene.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { note in
+            let scene = note.object as? UIWindowScene
+            MainActor.assumeIsolated {
+                guard let scene,
+                      SingletonGraph.shared.appLockManager.backgroundSnapshotNeedsCover
+                else { return }
+                cover(scene)
+            }
+        }
+        center.addObserver(
+            forName: UIScene.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { note in
+            let scene = note.object as? UIWindowScene
+            MainActor.assumeIsolated {
+                SingletonGraph.shared.appLockManager.returnedWithinGrace()
+                if let scene { uncover(scene) }
+            }
+        }
+    }
+
+    private static func cover(_ scene: UIWindowScene) {
+        let key = ObjectIdentifier(scene)
+        guard covers[key] == nil else { return }
+        let controller = UIViewController()
+        controller.view.backgroundColor = .systemBackground
+        let icon = UIImageView(image: UIImage(systemName: "lock.fill"))
+        icon.tintColor = .secondaryLabel
+        icon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 36)
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        controller.view.addSubview(icon)
+        NSLayoutConstraint.activate([
+            icon.centerXAnchor.constraint(equalTo: controller.view.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: controller.view.centerYAnchor),
+        ])
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = .alert + 1
+        window.rootViewController = controller
+        window.accessibilityElementsHidden = true
+        window.isHidden = false
+        covers[key] = window
+    }
+
+    private static func uncover(_ scene: UIWindowScene) {
+        guard let window = covers.removeValue(forKey: ObjectIdentifier(scene)) else { return }
+        window.isHidden = true
+        window.rootViewController = nil
+    }
+}
+
 #elseif os(macOS)
 import AppKit
+import CoreGraphics
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -299,13 +371,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Unlocking the screen inside the grace period is the user coming
         // back: the pending lock is cancelled (or engages, if it expired).
+        // The notification is only a hint; the session state decides.
         DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.screenIsUnlocked"),
             object: nil,
             queue: .main
         ) { _ in
             Task { @MainActor in
-                SingletonGraph.shared.appLockManager.returnedWithinGrace()
+                SingletonGraph.shared.appLockManager.screenUnlockReported(
+                    verifiedUnlocked: Self.sessionReportsScreenUnlocked()
+                )
             }
         }
     }
@@ -316,6 +391,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// already full-time while the app runs.
     func applicationDidBecomeActive(_ notification: Notification) {
         PushLifecycle.runEnrollmentReporter()
+    }
+
+    /// The login session's own record of the screen lock. Fails closed: no
+    /// session dictionary means "not verified", so a pending deadline stands.
+    private static func sessionReportsScreenUnlocked() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (session["CGSSessionScreenIsLocked"] as? Bool) != true
     }
 
     func application(

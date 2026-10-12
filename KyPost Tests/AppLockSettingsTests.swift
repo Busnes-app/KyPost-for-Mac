@@ -26,10 +26,17 @@ private final class LockHarness {
     let session = EnrollmentSession()
     private(set) var manager: AppLockManager!
 
+    /// Keychain items whose next threshold write fails.
+    let failingThresholdWrites = Box<Set<String>>([])
+
     init(pin: String? = "83910472", lockEnabled: Bool = true) throws {
+        let failing = failingThresholdWrites
         store = AppLockStore(
             keychain: keychain,
-            defaults: UserDefaults(suiteName: "tests.\(UUID().uuidString)")!
+            defaults: UserDefaults(suiteName: "tests.\(UUID().uuidString)")!,
+            beforeThresholdWrite: { key in
+                if failing.value.contains(key) { throw KeychainStorage.KeychainError(status: -1) }
+            }
         )
         try store.setLockEnabled(lockEnabled)
         rebuildManager()
@@ -230,6 +237,26 @@ private final class LockHarness {
     }
 }
 
+// MARK: - Failed saves
+
+@MainActor
+@Suite struct WipeThresholdFailedSaveTests {
+    /// The value lands, the tag write fails: enforcement reads the strictest
+    /// value, and the picker must show that rather than the old choice.
+    @Test func aHalfWrittenSaveRefreshesTheDisplayedSetting() async throws {
+        let harness = try LockHarness()
+        try harness.manager.setWipeThreshold(.never)
+        #expect(harness.manager.wipeThresholdSetting == .never)
+
+        harness.failingThresholdWrites.mutate { $0 = ["appLock.wipeThresholdTag"] }
+        #expect(throws: KeychainStorage.KeychainError.self) {
+            try harness.manager.setWipeThreshold(.after(20))
+        }
+        #expect(harness.manager.wipeThreshold == .after(10))
+        #expect(harness.manager.wipeThresholdSetting == .after(10))
+    }
+}
+
 // MARK: - Grace period
 
 @MainActor
@@ -331,6 +358,58 @@ private final class LockHarness {
         harness.manager.lockAfterGrace()
         #expect(!harness.session.isHeld)
         #expect(!harness.manager.isLocked)
+    }
+
+    /// A screen-unlock hint the session state does not confirm leaves the
+    /// deadline in place, and passing it locks and drops the gated secret.
+    @Test func anUnverifiedScreenUnlockKeepsTheDeadline() async throws {
+        let harness = try await unlocked(grace: 30)
+        harness.manager.cacheGatedSecret("device-secret")
+        harness.manager.lockAfterGrace()
+        harness.advance(seconds: 5)
+        harness.manager.screenUnlockReported(verifiedUnlocked: false)
+        #expect(harness.manager.isLockPending)
+        #expect(!harness.manager.isLocked)
+
+        harness.advance(seconds: 26)
+        #expect(harness.manager.resolvePendingLock())
+        #expect(harness.manager.cachedGatedSecret == nil)
+    }
+
+    @Test func aVerifiedScreenUnlockCancelsTheDeadline() async throws {
+        let harness = try await unlocked(grace: 30)
+        harness.manager.lockAfterGrace()
+        harness.advance(seconds: 5)
+        harness.manager.screenUnlockReported(verifiedUnlocked: true)
+        #expect(!harness.manager.isLockPending)
+        harness.advance(seconds: 600)
+        #expect(!harness.manager.resolvePendingLock())
+    }
+
+    /// The background snapshot is covered for the whole grace period, not
+    /// only once the lock engages.
+    @Test func theSnapshotIsCoveredWhileALockIsPending() async throws {
+        let harness = try await unlocked(grace: 30)
+        harness.manager.lockAfterGrace()
+        #expect(harness.manager.isLockPending)
+        #expect(harness.manager.backgroundSnapshotNeedsCover)
+        let off = try LockHarness(pin: nil, lockEnabled: false)
+        #expect(!off.manager.backgroundSnapshotNeedsCover)
+    }
+
+    /// A superseded graph's manager, still retained, must not act on the
+    /// shared session after shutdown.
+    @Test func shutdownDropsThePendingLock() async throws {
+        let harness = try await unlocked(grace: 30)
+        let old = harness.manager!
+        old.lockAfterGrace()
+        old.shutdown()
+        #expect(!old.isLockPending)
+
+        harness.session.put(armoredKey: "-----BEGIN PGP PRIVATE KEY BLOCK-----")
+        harness.advance(seconds: 600)
+        #expect(!old.resolvePendingLock())
+        #expect(harness.session.isHeld)
     }
 
     @Test func nothingIsPendingWhileTheLockIsOff() throws {

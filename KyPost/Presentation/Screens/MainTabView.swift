@@ -52,21 +52,6 @@ struct MainTabView: View {
         }
         .lockAwareRouting(router)
 #if os(iOS)
-        // While a grace-period lock counts down in the background the app is
-        // still unlocked, so the app-switcher snapshot would show mail. Cover
-        // it. Best effort: a sheet open at the time sits above this overlay.
-        .overlay {
-            if SingletonGraph.shared.appLockManager.isLockPending {
-                ZStack {
-                    themeManager.palette.bg
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 36))
-                        .foregroundStyle(themeManager.palette.ink.opacity(0.6))
-                }
-                .ignoresSafeArea()
-                .accessibilityHidden(true)
-            }
-        }
         .fullScreenCover(isPresented: lockBinding) {
             UnlockView(manager: SingletonGraph.shared.appLockManager)
                 .environment(\.theme, themeManager.palette)
