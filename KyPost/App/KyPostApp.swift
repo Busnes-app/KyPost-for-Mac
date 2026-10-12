@@ -157,6 +157,13 @@ struct KyPostApp: App {
 #endif
                 .task {
                     await graph.runStartupMigrationsIfNeeded()
+#if DEBUG
+                    // MFA approval normally arrives by push; the screenshot
+                    // runner has no server to send one.
+                    if DemoContent.requestedScreen == "mfa" {
+                        router.handle(.openMfaApproval(DemoContent.mfaChallenge))
+                    }
+#endif
                 }
                 .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
                 .protectedFromCapture()

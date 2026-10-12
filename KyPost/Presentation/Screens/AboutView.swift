@@ -15,6 +15,8 @@ struct AboutView: View {
     @Environment(\.theme) private var theme
     @State private var tipJar = TipJarStore()
 
+    private let privacyPolicyURL = URL(string: "https://www.kypost.org/privacy.html")!
+
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     }
@@ -49,7 +51,7 @@ struct AboutView: View {
                     Text("Support KyPost")
                         .font(AppFont.ui(17, weight: .semibold))
                         .foregroundStyle(theme.inkStrong)
-                    Text("Help keep private, secure email available with a one-time contribution or monthly support.")
+                    Text("Help keep private, secure email available with a one-time contribution.")
                         .font(AppFont.ui(13))
                         .foregroundStyle(theme.ink.opacity(0.8))
 
@@ -58,14 +60,14 @@ struct AboutView: View {
                             Task { await tipJar.purchase(product) }
                         } label: {
                             HStack(spacing: 12) {
-                                Image(systemName: TipJarStore.ProductID.monthly.contains(product.id) ? "calendar" : "heart.fill")
+                                Image(systemName: "heart.fill")
                                     .foregroundStyle(theme.accent)
                                     .frame(width: 20)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(product.displayName)
                                         .font(AppFont.ui(14, weight: .semibold))
                                         .foregroundStyle(theme.inkStrong)
-                                    Text(TipJarStore.ProductID.monthly.contains(product.id) ? "Monthly support" : "One-time support")
+                                    Text("One-time support")
                                         .font(AppFont.ui(12))
                                         .foregroundStyle(theme.ink.opacity(0.7))
                                 }
@@ -88,11 +90,6 @@ struct AboutView: View {
                             .font(AppFont.ui(13))
                             .foregroundStyle(theme.ink.opacity(0.75))
                     }
-                    if tipJar.isMonthlySupporter {
-                        Label("Thank you for supporting KyPost monthly.", systemImage: "checkmark.seal.fill")
-                            .font(AppFont.ui(12))
-                            .foregroundStyle(theme.accent)
-                    }
                     if let errorMessage = tipJar.errorMessage {
                         Text(errorMessage)
                             .font(AppFont.ui(12))
@@ -102,6 +99,10 @@ struct AboutView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
                 .background(theme.panel.opacity(0.7), in: RoundedRectangle(cornerRadius: 14))
+
+                Link("Privacy Policy", destination: privacyPolicyURL)
+                    .font(AppFont.ui(13, weight: .semibold))
+                    .foregroundStyle(theme.accent)
 
                 DisclosureGroup {
                     ScrollView {
@@ -137,7 +138,7 @@ struct AboutView: View {
             .listRowBackground(theme.panel)
 
             Section {
-                Text("If KyPost is useful to you, you can support its continued development with a one-off tip or a monthly subscription.")
+                Text("If KyPost is useful to you, you can support its continued development with a one-off tip.")
                     .foregroundStyle(theme.ink.opacity(0.8))
 
                 if tipJar.products.isEmpty && !tipJar.isLoading {
@@ -152,15 +153,10 @@ struct AboutView: View {
                         LabeledContent {
                             Text(product.displayPrice)
                         } label: {
-                            Label(product.displayName, systemImage: TipJarStore.ProductID.monthly.contains(product.id) ? "calendar" : "heart")
+                            Label(product.displayName, systemImage: "heart")
                         }
                     }
                     .disabled(tipJar.isLoading)
-                }
-
-                if tipJar.isMonthlySupporter {
-                    Label("Thank you for supporting KyPost monthly.", systemImage: "checkmark.seal.fill")
-                        .foregroundStyle(theme.accent)
                 }
 
                 if let errorMessage = tipJar.errorMessage {
@@ -171,7 +167,12 @@ struct AboutView: View {
             } header: {
                 Text("Support KyPost")
             } footer: {
-                Text("Payments are processed securely by Apple. Monthly support renews automatically until cancelled in your Apple Account settings.")
+                Text("Payments are processed securely by Apple.")
+            }
+            .listRowBackground(theme.panel)
+
+            Section {
+                Link("Privacy Policy", destination: privacyPolicyURL)
             }
             .listRowBackground(theme.panel)
 

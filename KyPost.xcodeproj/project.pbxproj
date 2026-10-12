@@ -312,6 +312,9 @@
 				INFOPLIST_KEY_CFBundleDisplayName = KyPost;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_NSCameraUsageDescription = "KyPost uses the camera to scan pairing QR codes.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "KyPost exports your synced contacts to Apple Contacts when enabled in Preferences.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "KyPost uses Face ID to unlock the app and to release your pairing credential.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -364,6 +367,9 @@
 				INFOPLIST_KEY_CFBundleDisplayName = KyPost;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
+				INFOPLIST_KEY_NSCameraUsageDescription = "KyPost uses the camera to scan pairing QR codes.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "KyPost exports your synced contacts to Apple Contacts when enabled in Preferences.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "KyPost uses Face ID to unlock the app and to release your pairing credential.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;

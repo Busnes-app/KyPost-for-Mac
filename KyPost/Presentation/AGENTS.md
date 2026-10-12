@@ -191,10 +191,10 @@ Domain.
 - About and Support are shared across iOS Settings and the macOS About window.
   macOS exposes one standard About KyPost app-menu item; it does not duplicate
   the surface as a Preferences tab. `AboutView` owns the version, 2026
-  Busnes.app copyright, embedded MIT license, and StoreKit 2 donation presentation. `TipJarStore` uses
-  `CupOJoe4Mail` for one-off purchases and `5usdmonth` and
-  `10dolpermonth` for monthly subscriptions; prices come from App Store
-  Connect and must not be hardcoded. There is no restore-purchases control.
+  Busnes.app copyright, privacy-policy link, embedded MIT license, and StoreKit
+  2 donation presentation. `TipJarStore` uses `CupOJoe4Mail` for one-off
+  purchases only; prices come from App Store Connect and must not be hardcoded.
+  Do not offer recurring support without an ongoing customer benefit.
 
 - Reuse `ContactSearch` for any contact matching; don't hand-roll a filter.
   `localizedCaseInsensitiveContains` over every contact per keystroke routes

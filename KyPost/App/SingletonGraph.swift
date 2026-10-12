@@ -190,8 +190,28 @@ final class SingletonGraph {
         securePairingStore: securePairingStore,
         emailDAO: emailDAO,
         httpClient: httpClient,
-        cursorStore: mailCursorStore
+        cursorStore: mailCursorStore,
+        overrideSource: Self.demoMailSource
     )
+
+    /// The screenshot build's stand-in relay; nil in every other build.
+    private static var demoMailSource: (any MailSource)? {
+#if DEBUG
+        DemoContent.isEnabled ? DemoMailSource() : nil
+#else
+        nil
+#endif
+    }
+
+    /// True only in the DEBUG screenshot build. Kept as one property so the
+    /// database, the mail source and the seed all read the same switch.
+    static var isDemo: Bool {
+#if DEBUG
+        DemoContent.isEnabled
+#else
+        false
+#endif
+    }
     lazy var keywordRepository = KeywordRepository(settingsStore: keywordSettingsStore)
     lazy var sendEmailUseCase = SendEmailUseCase(repository: mailRepository)
     lazy var pgpSendService = PgpSendService(
@@ -344,6 +364,18 @@ final class SingletonGraph {
     /// email/phone → arrays copy, and the cleanup of rows duplicated by the
     /// old order-based reconciler). Safe to call every launch.
     func runStartupMigrationsIfNeeded() async {
+#if DEBUG
+        if DemoContent.isEnabled {
+            await DemoContent.seedContacts(into: contactDAO)
+            // Compose asks the relay who holds the account's key before it
+            // offers Encrypt/Sign. The demo account is server-custody.
+            pgpSendService.preload(
+                hasIdentity: true,
+                protection: pgpProtectionServer,
+                accountAddress: DemoContent.accountAddress
+            )
+        }
+#endif
         if !userDefaults.bool(forKey: Self.legacyContactFieldsMigratedKey) {
             do {
                 try await contactDAO.migrateLegacyFields()
@@ -388,8 +420,10 @@ final class SingletonGraph {
         hostileLocationProtectionStore = HostileLocationProtectionStore(defaults: userDefaults)
         let hostileLocation = hostileLocationProtectionStore.enabled
 
-        // Hostile Location Protection keeps the whole cache in memory.
-        self.database = try database ?? AppDatabase(inMemory: hostileLocation)
+        // Hostile Location Protection keeps the whole cache in memory; the
+        // screenshot build does too, so a demo mailbox never lands on disk
+        // beside — or on top of — real mail.
+        self.database = try database ?? AppDatabase(inMemory: hostileLocation || Self.isDemo)
         contactPhotoCache = ContactPhotoCache(inMemory: hostileLocation)
         if !self.database.isInMemory {
             do {
