@@ -40,8 +40,12 @@ actor PushNotificationDAO {
     ///   `CancellationError` unless it is still the accepted session.
     /// - Returns: false if the entry was already there — the caller must not
     ///   alert for it again.
+    /// - Throws: `CancellationError` when the calling task was cancelled, as
+    ///   well — an insert queued behind other work on this actor when a poll
+    ///   is shut down must not land once it finally runs.
     @discardableResult
     func insert(notification: PushNotification, session: Int? = nil, now: Date = Date()) throws -> Bool {
+        try Task.checkCancellation()
         if let session, session != acceptedSession { throw CancellationError() }
         let seq = notification.seq
         var bySeq = FetchDescriptor<PushNotificationEntity>(

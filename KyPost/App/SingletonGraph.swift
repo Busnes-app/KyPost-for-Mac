@@ -332,6 +332,11 @@ final class SingletonGraph {
         service.setPendingPin = { [pinnedSessionDelegate] pin, host in
             pinnedSessionDelegate.setPendingPin(pin, forHost: host)
         }
+        // A pairing from before the heartbeat's registration stamp: record
+        // the banners it already delivered before the heartbeat can re-pull.
+        service.reconcileExistingPairingPushes = { [weak self] in
+            await self?.pullPollingScheduler.reconcileDeliveredPushesForExistingPairing()
+        }
         return service
     }()
     lazy var desktopPairingService = DesktopPairingService(

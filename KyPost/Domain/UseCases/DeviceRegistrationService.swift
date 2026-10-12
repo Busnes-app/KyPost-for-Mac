@@ -48,6 +48,12 @@ final class DeviceRegistrationService {
     /// pairing attempt, and clears it afterwards (nil pin). Wired by
     /// SingletonGraph to the pinned session's delegate; nil in tests.
     var setPendingPin: ((_ pin: String?, _ host: String) -> Void)?
+    /// Records the banners an existing pairing already delivered into
+    /// history, ignoring `lastRegisteredAt`. Run when a pairing that predates
+    /// that stamp registers for the first time and so gets it set to now.
+    /// Wired by SingletonGraph to `PullPollingScheduler`; nil in tests that
+    /// do not exercise it.
+    var reconcileExistingPairingPushes: (() async -> Void)?
 
     /// One registration per (pairing token, device token). A pairing deep
     /// link is delivered to every open main window and each auto-pairs, so
@@ -134,15 +140,17 @@ final class DeviceRegistrationService {
             params: params,
             deviceId: deviceId
         )
+        // The same account, paired before `lastRegisteredAt` existed.
+        var isExistingPairingWithoutStamp = false
         if case .success(let response) = outcome {
             // Routine re-registration of the same account (foreground, token
             // refresh) must not restart the heartbeat's quiet clock: it proves
             // the relay answers, not that APNs delivers, and resetting it on
             // every foreground would postpone the heartbeat indefinitely.
             let previous = try? securePairingStore.loadPairing()
-            let isRoutineReregistration = previous?.sub == params.sub
-                && previous?.srv == params.srv
-                && pushSettingsStore.lastRegisteredAt != nil
+            let isSameAccount = previous?.sub == params.sub && previous?.srv == params.srv
+            let isRoutineReregistration = isSameAccount && pushSettingsStore.lastRegisteredAt != nil
+            isExistingPairingWithoutStamp = isSameAccount && pushSettingsStore.lastRegisteredAt == nil
             do {
                 try securePairingStore.savePairing(Pairing(
                     sub: params.sub,
@@ -218,6 +226,12 @@ final class DeviceRegistrationService {
                     )
                 }
             }
+        }
+        // After every write above, so nothing here can interleave with them.
+        // Its banners are this pairing's, but the stamp just set says they
+        // predate it; record them before any heartbeat can pull them again.
+        if isExistingPairingWithoutStamp {
+            await reconcileExistingPairingPushes?()
         }
         return outcome
     }

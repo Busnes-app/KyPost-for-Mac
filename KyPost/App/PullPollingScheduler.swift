@@ -85,6 +85,9 @@ final class PullPollingScheduler {
     /// Where pulled arrivals are shown; the dispatcher's local banners unless
     /// a test substitutes a recorder.
     private let presenter: PulledPresenter?
+    /// The wall clock, injectable so a test can let time pass while a poll
+    /// waits on the relay.
+    private let clock: () -> Date
     private var pollingTask: Task<Void, Never>?
     private var inFlight: Task<Void, Never>?
 
@@ -93,13 +96,15 @@ final class PullPollingScheduler {
         pushSettingsStore: PushSettingsStore,
         dispatcher: PushNotificationDispatcher,
         deliveredPushes: @escaping () async -> [DeliveredPush] = { [] },
-        presenter: PulledPresenter? = nil
+        presenter: PulledPresenter? = nil,
+        clock: @escaping () -> Date = Date.init
     ) {
         self.pushRepository = pushRepository
         self.pushSettingsStore = pushSettingsStore
         self.dispatcher = dispatcher
         self.deliveredPushes = deliveredPushes
         self.presenter = presenter
+        self.clock = clock
     }
 
     /// Starts the foreground cadence (immediate tick, then every 90s). Runs
@@ -153,16 +158,31 @@ final class PullPollingScheduler {
         if inFlight == task { inFlight = nil }
     }
 
+    /// Records the mail banners still in Notification Center into history,
+    /// including those from before `lastRegisteredAt`. Only for a pairing
+    /// that existed before that stamp was recorded: its first registration
+    /// sets the stamp to now, which would otherwise exclude banners it
+    /// delivered earlier and let the heartbeat alert them a second time.
+    func reconcileDeliveredPushesForExistingPairing(now: Date = Date()) async {
+        let delivered = await deliveredPushes()
+        await pushRepository.reconcileDeliveredPushes(
+            Self.mail(in: delivered), now: now, includingBeforeRegistration: true
+        )
+    }
+
+    private static func mail(in delivered: [DeliveredPush]) -> [(payload: MailPushPayload, receivedAt: Date)] {
+        delivered.compactMap { item in item.mail.map { (payload: $0, receivedAt: item.date) } }
+    }
+
     private func runPoll(now: Date) async {
+        let started = clock()
         let delivered = await deliveredPushes()
         guard !Task.isCancelled else { return }
         if let newest = delivered.map(\.date).max() {
             pushSettingsStore.markPushReceived(at: newest)
         }
         // Before the pull, so history already knows what push alerted.
-        await pushRepository.reconcileDeliveredPushes(
-            delivered.compactMap { item in item.mail.map { (payload: $0, receivedAt: item.date) } }
-        )
+        await pushRepository.reconcileDeliveredPushes(Self.mail(in: delivered), now: now)
         let decision = PullHeartbeatPolicy.decide(
             mode: pushSettingsStore.deliveryMode,
             lastPushReceivedAt: pushSettingsStore.lastPushReceivedAt,
@@ -183,9 +203,15 @@ final class PullPollingScheduler {
             func stillCurrent() -> Bool {
                 !Task.isCancelled && pushRepository.isCurrent(session: batch.session)
             }
-            for pulled in batch.mfaChallenges
-            where now.timeIntervalSince(pulled.challenge.receivedAt) < Self.mfaFreshness {
+            for pulled in batch.mfaChallenges {
                 guard stillCurrent() else { return }
+                // Measured at presentation, not at tick start: the
+                // reconcile and the request both take time, and the tick's
+                // `now` moves on with the clock.
+                let presentedAt = now.addingTimeInterval(clock().timeIntervalSince(started))
+                guard presentedAt.timeIntervalSince(pulled.challenge.receivedAt) < Self.mfaFreshness else {
+                    continue
+                }
                 await present(.mfa(pulled))
             }
             for notification in batch.mail {

@@ -61,12 +61,16 @@ final class PushRepository {
     /// is synthesized from the arrival time (ms epoch), bumped on collision.
     /// Returns nil when this message is already in history — the heartbeat
     /// pull may have delivered it first.
+    /// - Parameter session: the pairing session the caller started under;
+    ///   the current one when nil. Throws `CancellationError` once it is not.
     @discardableResult
     func recordPushArrival(
         _ payload: MailPushPayload,
-        receivedAt: Date = Date()
+        receivedAt: Date = Date(),
+        session: Int? = nil
     ) async throws -> PushNotification? {
-        let session = self.session
+        let session = session ?? self.session
+        guard isCurrent(session: session) else { throw CancellationError() }
         if try await dao.contains(messageId: payload.messageId) { return nil }
         var seq = Int(receivedAt.timeIntervalSince1970 * 1000)
         var notification = payload.toNotification(seq: seq, receivedAt: receivedAt)
@@ -96,15 +100,33 @@ final class PushRepository {
     /// running. iOS alert pushes do not wake a suspended app, so these never
     /// reached `handleIncoming`; without them history cannot tell the
     /// heartbeat that this mail was already alerted. Idempotent: history
-    /// dedupes by message id. Banners older than the current pairing's
-    /// registration are skipped: unpair leaves Notification Center alone, and
-    /// a previous pairing's mail does not belong in this one's history.
-    func reconcileDeliveredPushes(_ delivered: [(payload: MailPushPayload, receivedAt: Date)]) async {
+    /// dedupes by message id.
+    ///
+    /// Only banners inside the heartbeat window are recorded — nothing older
+    /// can be pulled again, so nothing older is needed. Banners older than
+    /// the current pairing's registration are skipped as well: unpair leaves
+    /// Notification Center alone, and a previous pairing's mail does not
+    /// belong in this one's history. `includingBeforeRegistration` lifts that
+    /// second bound for a pairing that existed before `lastRegisteredAt` was
+    /// recorded (`DeviceRegistrationService`), whose banners are its own.
+    ///
+    /// The whole run belongs to the session it started under: an unpair
+    /// part-way through stops it, rather than letting the remaining banners
+    /// land in the history the unpair just cleared.
+    func reconcileDeliveredPushes(
+        _ delivered: [(payload: MailPushPayload, receivedAt: Date)],
+        now: Date = Date(),
+        includingBeforeRegistration: Bool = false
+    ) async {
+        let session = self.session
         guard !delivered.isEmpty, securePairingStore.isPaired else { return }
-        let pairedSince = pushSettingsStore.lastRegisteredAt ?? .distantPast
-        for item in delivered where item.receivedAt >= pairedSince {
+        let windowFloor = now.addingTimeInterval(-PullHeartbeatPolicy.heartbeatWindow)
+        let since = includingBeforeRegistration
+            ? windowFloor
+            : max(windowFloor, pushSettingsStore.lastRegisteredAt ?? .distantPast)
+        for item in delivered where item.receivedAt >= since {
             do {
-                try await recordPushArrival(item.payload, receivedAt: item.receivedAt)
+                try await recordPushArrival(item.payload, receivedAt: item.receivedAt, session: session)
             } catch {
                 // Session moved on (unpair) or the store failed; stop either way.
                 return

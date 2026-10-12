@@ -151,15 +151,21 @@ and `PullHeartbeatPolicy.decide` says whether a tick touches the network:
   not "stop".
 - `lastRegisteredAt` is set by a new pairing only. Routine re-registration of
   the same account (same `sub` and `srv`) keeps it: it proves the relay
-  answers, not that APNs delivers.
+  answers, not that APNs delivers. A same-account pairing with no stamp yet
+  (it predates the stamp) gets one, and then
+  `DeviceRegistrationService.reconcileExistingPairingPushes` records its
+  delivered banners regardless of the stamp, so the next heartbeat does not
+  re-alert them.
 - `lastPushReceivedAt` only moves forward and is fed by every handled APNs
   payload, `willPresent`, and the newest `UNPushNotificationTrigger` banner
   still in Notification Center — the server sends alert pushes, which do not
   wake a suspended iOS app, so the banner is the only evidence. Each tick also
   records those banners' mail into history
   (`PushRepository.reconcileDeliveredPushes`) before pulling, so the heartbeat
-  does not alert them a second time — only banners dated after
-  `lastRegisteredAt`, since unpair leaves Notification Center alone.
+  does not alert them a second time — only banners inside the heartbeat
+  window and dated after `lastRegisteredAt`, since unpair leaves Notification
+  Center alone. A reconcile run is pinned to the session it started under and
+  stops when unpair moves it on.
 - A heartbeat (and a first pull, cursor 0) drops entries queued more than 6 h
   ago while still advancing the cursor past them; a months-stale cursor would
   otherwise re-alert the whole backlog.
@@ -167,11 +173,14 @@ and `PullHeartbeatPolicy.decide` says whether a tick touches the network:
   MFA fields inside `data` — `PullNotificationDTO.routed`, MFA first. History
   dedupes by `messageId` as well as `seq`, so mail push already delivered is not
   alerted twice; pulled MFA is never stored and is raised only within the
-  server's 5-minute window, as a detail-free tap-to-open banner.
+  server's 5-minute window — measured when the banner is raised, not at tick
+  start — as a detail-free tap-to-open banner.
 - `pollNow` is single-flight. The iOS refresh task is armed whenever paired.
   `PullPollingScheduler.shutdown` (graph teardown) cancels the poll in flight
   as well as the cadence; backgrounding only stops the cadence. A cancelled
-  poll persists and presents nothing.
+  poll persists and presents nothing: `PushNotificationDAO.insert` itself
+  refuses a cancelled caller, so an insert queued on the actor at shutdown
+  does not land.
 - History shows 30 rows (`PushNotificationDAO.historyLimit`). Rows pushed past
   that keep only their message id, seq and time for
   `deliveryIdRetention` (the heartbeat window) and are then deleted; they are

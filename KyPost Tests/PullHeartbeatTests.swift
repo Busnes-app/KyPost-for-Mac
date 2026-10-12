@@ -17,6 +17,7 @@ private struct PullEnvironment {
     var settings: PushSettingsStore
     var dao: PushNotificationDAO
     var db: AppDatabase
+    var pairingStore: SecurePairingStore
 }
 
 @MainActor
@@ -35,7 +36,10 @@ private func makePullEnvironment(client: HTTPClient, paired: Bool = true) throws
         securePairingStore: pairingStore,
         pushSettingsStore: settings
     )
-    return PullEnvironment(repository: repository, cursorStore: cursorStore, settings: settings, dao: dao, db: db)
+    return PullEnvironment(
+        repository: repository, cursorStore: cursorStore, settings: settings, dao: dao, db: db,
+        pairingStore: pairingStore
+    )
 }
 
 /// A transport that holds every response until `release()`, so a test can act
@@ -84,7 +88,8 @@ private final class PresentationLog {
 private func makeScheduler(
     _ env: PullEnvironment,
     deliveredPushes: [DeliveredPush] = [],
-    log: PresentationLog? = nil
+    log: PresentationLog? = nil,
+    clock: @escaping () -> Date = Date.init
 ) throws -> PullPollingScheduler {
     let dispatcher = PushNotificationDispatcher(
         pushRepository: env.repository,
@@ -99,7 +104,8 @@ private func makeScheduler(
         pushSettingsStore: env.settings,
         dispatcher: dispatcher,
         deliveredPushes: { deliveredPushes },
-        presenter: log?.presenter
+        presenter: log?.presenter,
+        clock: clock
     )
 }
 
@@ -678,5 +684,163 @@ private func rfc3339(_ date: Date) -> String {
         #expect(NotificationHistoryAccess.decide(isLocked: true, blockedByAbandonedWipe: true) == .blockedByAbandonedWipe)
         #expect(NotificationHistoryAccess.decide(isLocked: true, blockedByAbandonedWipe: false) == .locked)
         #expect(NotificationHistoryAccess.decide(isLocked: false, blockedByAbandonedWipe: false) == .visible)
+    }
+}
+
+// MARK: - Review findings, round 2
+
+@MainActor
+@Suite struct PullHeartbeatReviewRound2Tests {
+    private static func mailJSON(seq: Int, messageId: String, createdAt: Date) -> String {
+        """
+        { "seq": \(seq), "createdAt": "\(rfc3339(createdAt))",
+          "data": { "messageId": "\(messageId)", "senderName": "Ada", "emailSubject": "Hi" } }
+        """
+    }
+
+    private static func payload(_ id: String) -> MailPushPayload {
+        MailPushPayload(messageId: id, senderName: "Ada", emailSubject: "Hi", keywords: [])
+    }
+
+    /// An insert that only reaches the DAO after its poll was cancelled
+    /// writes nothing, whatever session it carries.
+    @Test func aCancelledInsertDoesNotLand() async throws {
+        let env = try makePullEnvironment(client: stubClient())
+        let notification = PushNotification(
+            seq: 1, messageId: "m-1", senderName: "Ada", emailSubject: "Hi",
+            keywords: [], receivedAt: Date(), read: false
+        )
+        let insert = Task { () async throws -> Bool in
+            while !Task.isCancelled { await Task.yield() }
+            return try await env.dao.insert(notification: notification, session: env.repository.session)
+        }
+        insert.cancel()
+        await #expect(throws: CancellationError.self) { try await insert.value }
+        let recorded = Task { () async throws -> PushNotification? in
+            while !Task.isCancelled { await Task.yield() }
+            return try await env.repository.recordPushArrival(Self.payload("m-2"))
+        }
+        recorded.cancel()
+        await #expect(throws: CancellationError.self) { try await recorded.value }
+        #expect(try allRows(env).isEmpty)
+    }
+
+    /// A pairing made before `lastRegisteredAt` existed: its first
+    /// registration stamps now, and the banner it delivered four hours ago
+    /// must still not be alerted again by the heartbeat that follows.
+    @Test func anExistingPairingKeepsItsDeliveredBannersAcrossTheMigration() async throws {
+        let now = Date()
+        let delivered = now.addingTimeInterval(-4 * hour)
+        let requests = Box(0)
+        let env = try makePullEnvironment(client: stubClient(json: """
+        { "cursor": 1, "notifications": [ \(Self.mailJSON(seq: 1, messageId: "m-1", createdAt: delivered)) ] }
+        """) { _ in requests.mutate { $0 += 1 } })
+        env.settings.deliveryMode = .push
+        #expect(env.settings.lastRegisteredAt == nil)
+        let log = PresentationLog()
+        let pushed = PushNotificationDispatcher.deliveredPush(
+            userInfo: ["messageId": "m-1", "senderName": "Ada", "emailSubject": "Hi"],
+            date: delivered
+        )
+        let scheduler = try makeScheduler(env, deliveredPushes: [pushed], log: log)
+        let service = DeviceRegistrationService(
+            client: NativeRegistrationClient(httpClient: stubClient(
+                json: #"{"ok": true, "deviceId": "dev-1", "deviceSecret": "s2", "deliveryMode": "push"}"#
+            )),
+            securePairingStore: env.pairingStore,
+            pushSettingsStore: env.settings
+        )
+        service.reconcileExistingPairingPushes = {
+            await scheduler.reconcileDeliveredPushesForExistingPairing(now: now)
+        }
+
+        let outcome = await service.pair(
+            params: PairingParams(sub: "u1", srv: server, pt: "pt"), deviceToken: "apns"
+        )
+        guard case .success = outcome else {
+            Issue.record("Expected success, got \(outcome)")
+            return
+        }
+        let stamped = try #require(env.settings.lastRegisteredAt)
+        #expect(stamped > delivered)
+
+        await scheduler.pollNow(now: now)
+        #expect(requests.value == 1)
+        #expect(log.items.isEmpty)
+        #expect(try await env.repository.history().map(\.messageId) == ["m-1"])
+    }
+
+    /// A new pairing (different account) does not adopt banners from before it.
+    @Test func aNewPairingDoesNotRunTheExistingPairingReconcile() async throws {
+        let env = try makePullEnvironment(client: stubClient(), paired: false)
+        let ran = Box(false)
+        let service = DeviceRegistrationService(
+            client: NativeRegistrationClient(httpClient: stubClient(
+                json: #"{"ok": true, "deviceId": "dev-1", "deviceSecret": "s2"}"#
+            )),
+            securePairingStore: env.pairingStore,
+            pushSettingsStore: env.settings
+        )
+        service.reconcileExistingPairingPushes = { ran.mutate { $0 = true } }
+        _ = await service.pair(params: PairingParams(sub: "u1", srv: server, pt: "pt"), deviceToken: "apns")
+        #expect(env.settings.lastRegisteredAt != nil)
+        #expect(ran.value == false)
+        // Nor does routine re-registration once the stamp exists.
+        _ = await service.pair(params: PairingParams(sub: "u1", srv: server, pt: "pt"), deviceToken: "apns-2")
+        #expect(ran.value == false)
+    }
+
+    /// Freshness is measured when the banner would be raised: a challenge
+    /// 299 s old at tick start, after a 2 s wait on the relay, is stale.
+    @Test func mfaFreshnessIsCheckedAtPresentation() async throws {
+        for (elapsed, expected) in [(TimeInterval(2), [String]()), (0, ["mfa:c-1"])] {
+            let start = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+            let held = HeldTransport(json: """
+            { "cursor": 8, "notifications": [
+                { "seq": 8, "createdAt": "\(rfc3339(start.addingTimeInterval(-299)))",
+                  "data": { "type": "mfa_challenge", "challengeId": "c-1", "matchDigits": "42", "decoyDigits": "17,88" } }
+            ] }
+            """)
+            let env = try makePullEnvironment(client: held.client)
+            env.settings.deliveryMode = .pull
+            let log = PresentationLog()
+            let clock = Box(start)
+            let scheduler = try makeScheduler(env, log: log, clock: { clock.value })
+
+            let poll = Task { await scheduler.pollNow(now: start) }
+            await held.waitForRequest()
+            clock.mutate { $0 = start.addingTimeInterval(elapsed) }
+            held.release()
+            await poll.value
+            #expect(log.items == expected)
+        }
+    }
+
+    /// Unpairing part-way through recording delivered banners: nothing the
+    /// run records afterwards survives into the cleared history.
+    @Test func unpairDuringReconcileLeavesNothingBehind() async throws {
+        let env = try makePullEnvironment(client: stubClient())
+        let now = Date()
+        let delivered = (0..<40).map {
+            (payload: Self.payload("m-\($0)"), receivedAt: now.addingTimeInterval(TimeInterval(-60 - $0)))
+        }
+        let reconcile = Task { await env.repository.reconcileDeliveredPushes(delivered, now: now) }
+        while try allRows(env).isEmpty { await Task.yield() }
+        try env.pairingStore.clear()
+        try await env.repository.clearForUnpair()
+        await reconcile.value
+        #expect(try allRows(env).isEmpty)
+    }
+
+    /// Banners older than the heartbeat window are never recorded: nothing
+    /// that old can be pulled again, so history has no use for them.
+    @Test func bannersOutsideTheHeartbeatWindowAreNotRecorded() async throws {
+        let env = try makePullEnvironment(client: stubClient())
+        let now = Date()
+        await env.repository.reconcileDeliveredPushes([
+            (payload: Self.payload("old"), receivedAt: now.addingTimeInterval(-PullHeartbeatPolicy.heartbeatWindow - 60)),
+            (payload: Self.payload("new"), receivedAt: now.addingTimeInterval(-60)),
+        ], now: now, includingBeforeRegistration: true)
+        #expect(try await env.repository.history().map(\.messageId) == ["new"])
     }
 }
