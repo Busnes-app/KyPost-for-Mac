@@ -282,7 +282,7 @@ private struct ContactsEnvironment {
 
     @Test func aVerifiedPrimaryRevocationIsTaken() throws {
         #expect(!crypto.isPrimaryRevoked(armoredPublicKey: PinnedKeyFixtures.alicePinned))
-        let merged = try #require(crypto.withVerifiedRevocation(
+        let merged = try #require(crypto.withRevocations(
             pinned: PinnedKeyFixtures.alicePinned, synced: PinnedKeyFixtures.aliceRevokedPrimary
         ))
         #expect(crypto.isPrimaryRevoked(armoredPublicKey: merged))
@@ -291,7 +291,7 @@ private struct ContactsEnvironment {
     }
 
     @Test func aVerifiedSubkeyRevocationIsTakenAndLeavesNothingToEncryptTo() throws {
-        let merged = try #require(crypto.withVerifiedRevocation(
+        let merged = try #require(crypto.withRevocations(
             pinned: PinnedKeyFixtures.alicePinned, synced: PinnedKeyFixtures.aliceRevokedSubkey
         ))
         #expect(!crypto.isPrimaryRevoked(armoredPublicKey: merged))
@@ -307,36 +307,36 @@ private struct ContactsEnvironment {
     /// A revocation packet that does not verify against the pinned primary is
     /// never taken, and never counts as a revocation.
     @Test func aForgedRevocationIsRefused() {
-        #expect(crypto.withVerifiedRevocation(
+        #expect(crypto.withRevocations(
             pinned: PinnedKeyFixtures.alicePinned, synced: PinnedKeyFixtures.aliceForgedRevocation
         ) == nil)
         #expect(!crypto.isPrimaryRevoked(armoredPublicKey: PinnedKeyFixtures.aliceForgedRevocation))
     }
 
     @Test func aDifferentPrimaryCannotRevokeThePin() {
-        #expect(crypto.withVerifiedRevocation(
+        #expect(crypto.withRevocations(
             pinned: PinnedKeyFixtures.alicePinned, synced: PinnedKeyFixtures.bobRevoked
         ) == nil)
     }
 
     /// A synced copy can withdraw pinned keys, never add one.
     @Test func newMaterialInTheSyncedCopyNeverCrosses() {
-        #expect(crypto.withVerifiedRevocation(
+        #expect(crypto.withRevocations(
             pinned: PinnedKeyFixtures.alicePinned, synced: PinnedKeyFixtures.aliceWithExtraSubkey
         ) == nil)
     }
 
     @Test func anIdenticalCopyHasNothingToTake() {
-        #expect(crypto.withVerifiedRevocation(
+        #expect(crypto.withRevocations(
             pinned: PinnedKeyFixtures.alicePinned, synced: PinnedKeyFixtures.alicePinned
         ) == nil)
     }
 
     @Test func aRevocationAlreadyHeldIsNotTakenTwice() throws {
-        let merged = try #require(crypto.withVerifiedRevocation(
+        let merged = try #require(crypto.withRevocations(
             pinned: PinnedKeyFixtures.alicePinned, synced: PinnedKeyFixtures.aliceRevokedPrimary
         ))
-        #expect(crypto.withVerifiedRevocation(pinned: merged, synced: PinnedKeyFixtures.aliceRevokedPrimary) == nil)
+        #expect(crypto.withRevocations(pinned: merged, synced: PinnedKeyFixtures.aliceRevokedPrimary) == nil)
     }
 
     /// A primary that can also sign: a verified revocation of the signing
@@ -346,39 +346,89 @@ private struct ContactsEnvironment {
         (PinnedKeyFixtures.davePinned, PinnedKeyFixtures.daveRevokedSigningSubkey),
         (PinnedKeyFixtures.erinPinned, PinnedKeyFixtures.erinRevokedSigningSubkey),
         (PinnedKeyFixtures.frankPinned, PinnedKeyFixtures.frankRevokedSigningSubkey),
+        (PinnedKeyFixtures.ginaPinned, PinnedKeyFixtures.ginaRevokedSigningSubkey),
+        (PinnedKeyFixtures.hankPinned, PinnedKeyFixtures.hankRevokedSigningSubkey),
     ])
     func aSigningSubkeyRevocationIsTakenWhenThePrimaryAlsoSigns(pinned: String, synced: String) throws {
-        let merged = try #require(crypto.withVerifiedRevocation(pinned: pinned, synced: synced))
+        let merged = try #require(crypto.withRevocations(pinned: pinned, synced: synced))
         #expect(!crypto.isPrimaryRevoked(armoredPublicKey: merged))
         #expect(PgpFingerprint.compute(fromArmored: merged) == PgpFingerprint.compute(fromArmored: pinned))
-        #expect(crypto.withVerifiedRevocation(pinned: merged, synced: synced) == nil)
+        #expect(crypto.withRevocations(pinned: merged, synced: synced) == nil)
     }
 
+    /// A subkey revocation that does not verify may be carried, but it never
+    /// changes the key: same fingerprint, primary intact, still encryptable.
     @Test(arguments: [
         (PinnedKeyFixtures.carolPinned, PinnedKeyFixtures.carolForgedSigningSubkeyRevocation),
         (PinnedKeyFixtures.davePinned, PinnedKeyFixtures.daveForgedSigningSubkeyRevocation),
         (PinnedKeyFixtures.erinPinned, PinnedKeyFixtures.erinForgedSigningSubkeyRevocation),
         (PinnedKeyFixtures.frankPinned, PinnedKeyFixtures.frankForgedSigningSubkeyRevocation),
     ])
-    func aForgedSigningSubkeyRevocationIsRefused(pinned: String, synced: String) {
-        #expect(crypto.withVerifiedRevocation(pinned: pinned, synced: synced) == nil)
+    func aForgedSigningSubkeyRevocationChangesNothing(pinned: String, synced: String) throws {
+        let merged = crypto.withRevocations(pinned: pinned, synced: synced) ?? pinned
+        #expect(PgpFingerprint.compute(fromArmored: merged) == PgpFingerprint.compute(fromArmored: pinned))
+        #expect(!crypto.isPrimaryRevoked(armoredPublicKey: merged))
+        _ = try crypto.encryptAndSign(
+            plaintext: Data("x".utf8),
+            recipientKeys: [merged],
+            privateKey: Data(TestPgpFixtures.armoredPrivate.utf8)
+        )
     }
 
-    /// The direct check answers only for the subkey it signs over.
-    @Test func aSubkeyRevocationDoesNotVerifyOverAnotherSubkey() throws {
+    /// A genuine revocation of one subkey, presented under another, is
+    /// disregarded by the library for that other subkey.
+    @Test func aSubkeyRevocationMovedToAnotherSubkeyRevokesNeither() throws {
         let revoked = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.carolRevokedSigningSubkey))
-        let signing = try #require(revoked.subkeys.last)
-        let revocation = try #require(signing.first { $0.signatureType == OpenPgpPacket.subkeyRevocation })
-        let primary = revoked.primaryKeyBody
-        #expect(OpenPgpRevocationSignature.verifies(
-            signature: revocation.body, signerKeyBody: primary, over: [primary, signing[0].body]
+        let revocation = try #require(revoked.subkeys.last?.first {
+            $0.signatureType == OpenPgpPacket.subkeyRevocation
+        })
+        var moved = revoked
+        moved.subkeys[moved.subkeys.count - 1].removeAll { $0 == revocation }
+        moved.subkeys[0].append(revocation)
+
+        let merged = try #require(crypto.withRevocations(
+            pinned: PinnedKeyFixtures.carolPinned, synced: Self.armored(moved.data)
         ))
-        #expect(!OpenPgpRevocationSignature.verifies(
-            signature: revocation.body, signerKeyBody: primary, over: [primary, revoked.subkeys[0][0].body]
+        _ = try crypto.encryptAndSign(
+            plaintext: Data("x".utf8),
+            recipientKeys: [merged],
+            privateKey: Data(TestPgpFixtures.armoredPrivate.utf8)
+        )
+        let raw = crypto.verifyDetached(
+            signedBytes: Data(PinnedKeyFixtures.carolSignedText.utf8),
+            armoredSignature: PinnedKeyFixtures.carolSubkeySignature,
+            signerKeys: [merged]
+        )
+        #expect(raw.valid)
+    }
+
+    /// A synced copy cannot grow the pin without bound.
+    @Test func carriedSubkeyRevocationsAreBounded() throws {
+        let forged = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.carolForgedSigningSubkeyRevocation))
+        let template = try #require(forged.subkeys.last?.first {
+            $0.signatureType == OpenPgpPacket.subkeyRevocation
+        })
+        var synced = forged
+        for variant in 0..<10 {
+            var packet = template
+            packet.raw[packet.raw.count - 1] ^= UInt8(variant + 1)
+            packet.body[packet.body.count - 1] ^= UInt8(variant + 1)
+            synced.subkeys[synced.subkeys.count - 1].append(packet)
+        }
+        let merged = try #require(crypto.withRevocations(
+            pinned: PinnedKeyFixtures.carolPinned, synced: Self.armored(synced.data)
         ))
-        #expect(!OpenPgpRevocationSignature.verifies(
-            signature: revocation.body, signerKeyBody: signing[0].body, over: [primary, signing[0].body]
-        ))
+        let sections = try #require(OpenPgpKeySections(armored: merged))
+        let carried = sections.subkeys.last?.filter { $0.signatureType == OpenPgpPacket.subkeyRevocation }.count
+        #expect(carried == GopenPGPCrypto.maxRevocationsPerSubkey)
+        // Full: nothing more is taken.
+        #expect(crypto.withRevocations(pinned: merged, synced: Self.armored(synced.data)) == nil)
+    }
+
+    private static func armored(_ data: Data) -> String {
+        "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n"
+            + data.base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed])
+            + "\n-----END PGP PUBLIC KEY BLOCK-----\n"
     }
 
     @Test func theSplitterRefusesTwoKeysInOneBlob() throws {
@@ -438,38 +488,62 @@ private struct ContactsEnvironment {
 
     /// A primary that can also sign, and its signing subkey revoked by its
     /// owner: once the synced copy lands, mail that subkey signs is not
-    /// confirmed against the pin.
-    @Test func aSyncedSigningSubkeyRevocationStopsThatSubkeyVerifying() async throws {
-        let crypto = GopenPGPCrypto()
-        let signedBytes = Data(PinnedKeyFixtures.carolSignedText.utf8)
-        func verdict(_ pins: RecipientPinSnapshot) -> PgpSignatureState {
-            let keys = EncryptedMessageReader.signerKeys([], resolvedSender: "carol@example.invalid", pins: pins)
-            let raw = crypto.verifyDetached(
-                signedBytes: signedBytes,
-                armoredSignature: PinnedKeyFixtures.carolSubkeySignature,
-                signerKeys: keys.filter { !$0.conflict }.map(\.publicKey)
-            )
-            return signatureState(signature: raw, signerKeys: keys, fingerprint: crypto.fingerprint(ofArmoredPublicKey:))
-        }
-
-        let revokedKeyJSON = try String(
-            data: JSONEncoder().encode(PinnedKeyFixtures.carolRevokedSigningSubkey), encoding: .utf8
-        )!
+    /// confirmed against the pin — whatever hash the owner revoked with.
+    @Test(arguments: [
+        ("carol", PinnedKeyFixtures.carolPinned, PinnedKeyFixtures.carolRevokedSigningSubkey,
+         PinnedKeyFixtures.carolSubkeySignature),
+        ("gina", PinnedKeyFixtures.ginaPinned, PinnedKeyFixtures.ginaRevokedSigningSubkey,
+         PinnedKeyFixtures.ginaSubkeySignature),
+        ("hank", PinnedKeyFixtures.hankPinned, PinnedKeyFixtures.hankRevokedSigningSubkey,
+         PinnedKeyFixtures.hankSubkeySignature),
+    ])
+    func aSyncedSigningSubkeyRevocationStopsThatSubkeyVerifying(
+        name: String, pinned: String, revoked: String, signature: String
+    ) async throws {
+        let address = "\(name)@example.invalid"
+        let revokedKeyJSON = try String(data: JSONEncoder().encode(revoked), encoding: .utf8)!
         let json = """
         { "cursor": 2, "changed": [
-          { "uid": "srv-carol", "rev": 2, "fn": "Carol",
-            "emails": [{ "value": "carol@example.invalid" }], "pgpKey": \(revokedKeyJSON) }
+          { "uid": "srv-\(name)", "rev": 2, "fn": "\(name)",
+            "emails": [{ "value": "\(address)" }], "pgpKey": \(revokedKeyJSON) }
         ] }
         """
         let env = try ContactsEnvironment(client: stubClient(json: json))
-        env.pins.pin(addresses: ["carol@example.invalid"], publicKey: PinnedKeyFixtures.carolPinned)
+        env.pins.pin(addresses: [address], publicKey: pinned)
         // Control: the intact pin confirms the subkey's signature.
-        #expect(verdict(env.pins.snapshot(revocation: crypto)) == .verifiedConfirmed)
+        #expect(subkeyVerdict(env.pins, address: address, signature: signature) == .verifiedConfirmed)
 
         _ = try await env.repository.sync()
 
-        #expect(env.pins.pin(for: "carol@example.invalid")?.publicKey != PinnedKeyFixtures.carolPinned)
-        #expect(verdict(env.pins.snapshot(revocation: crypto)) != .verifiedConfirmed)
+        #expect(env.pins.pin(for: address)?.publicKey != pinned)
+        #expect(subkeyVerdict(env.pins, address: address, signature: signature) != .verifiedConfirmed)
+    }
+
+    /// A subkey revocation that does not verify may ride along in the pin, but
+    /// the library judges every revocation at use: the subkey still verifies.
+    @Test func aForgedSigningSubkeyRevocationLeavesThatSubkeyVerifying() async throws {
+        let address = "carol@example.invalid"
+        let env = try ContactsEnvironment()
+        env.pins.pin(addresses: [address], publicKey: PinnedKeyFixtures.carolPinned)
+        var carol = contact("Carol", email: address)
+        carol.pgpKey = PinnedKeyFixtures.carolForgedSigningSubkeyRevocation
+        try await env.repository.saveContact(carol)
+
+        let signature = PinnedKeyFixtures.carolSubkeySignature
+        #expect(subkeyVerdict(env.pins, address: address, signature: signature) == .verifiedConfirmed)
+    }
+
+    private func subkeyVerdict(_ pins: RecipientPinStore, address: String, signature: String) -> PgpSignatureState {
+        let crypto = GopenPGPCrypto()
+        let keys = EncryptedMessageReader.signerKeys(
+            [], resolvedSender: address, pins: pins.snapshot(revocation: crypto)
+        )
+        let raw = crypto.verifyDetached(
+            signedBytes: Data(PinnedKeyFixtures.carolSignedText.utf8),
+            armoredSignature: signature,
+            signerKeys: keys.filter { !$0.conflict }.map(\.publicKey)
+        )
+        return signatureState(signature: raw, signerKeys: keys, fingerprint: crypto.fingerprint(ofArmoredPublicKey:))
     }
 
     @Test func aForgedSyncedRevocationLeavesThePinIntact() async throws {

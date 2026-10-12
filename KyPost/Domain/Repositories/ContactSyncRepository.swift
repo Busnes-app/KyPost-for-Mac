@@ -111,8 +111,8 @@ final class ContactSyncRepository {
     }
 
     /// The one thing a non-QR copy of a key may do to a pin: revoke it. For
-    /// each pinned address, takes the verified revocations `syncedKey` carries
-    /// for the pinned key (`PgpKeyRevocation.withVerifiedRevocation`). Run on
+    /// each pinned address, takes the revocations `syncedKey` carries
+    /// for the pinned key (`PgpKeyRevocation.withRevocations`). Run on
     /// every contact write — sync and local — never on a lookup, so reads stay
     /// reads.
     private func recordRevocations(for addresses: [String], syncedKey: String?) {
@@ -120,7 +120,7 @@ final class ContactSyncRepository {
               let syncedKey, !syncedKey.isEmpty else { return }
         for address in addresses {
             guard let pin = recipientPins.pin(for: address),
-                  let revoked = keyRevocation.withVerifiedRevocation(pinned: pin.publicKey, synced: syncedKey)
+                  let revoked = keyRevocation.withRevocations(pinned: pin.publicKey, synced: syncedKey)
             else { continue }
             recipientPins.replaceRevoked(address: address, with: revoked)
         }

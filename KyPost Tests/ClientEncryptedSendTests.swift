@@ -181,7 +181,7 @@ private func makeSender(
     /// A match encrypts to the pinned bytes, not the relay's copy of them.
     @Test func aMatchingPinEncryptsToThePinnedBytes() async throws {
         let crypto = RecordingCrypto()
-        let pinnedBytes = try #require(GopenPGPCrypto().withVerifiedRevocation(
+        let pinnedBytes = try #require(GopenPGPCrypto().withRevocations(
             pinned: PinnedKeyFixtures.alicePinned, synced: PinnedKeyFixtures.aliceRevokedSubkey
         ))
         let fingerprint = try #require(PgpFingerprint.compute(fromArmored: pinnedBytes))

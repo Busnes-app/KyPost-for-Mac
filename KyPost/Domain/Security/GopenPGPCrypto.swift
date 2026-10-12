@@ -336,16 +336,21 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
 
     // MARK: - Pinned-key revocation
 
-    /// GopenPGP exposes no way to verify one certification packet. A primary
-    /// revocation is taken when it makes the pinned key read revoked
-    /// (`IsRevoked` verifies against the primary). A subkey revocation is
-    /// taken when its signature verifies against the pinned primary over that
-    /// subkey (`OpenPgpRevocationSignature`), or — for what that check does not
-    /// support — when it takes away an ability, encrypt or verify, from a copy
-    /// of the pin holding only that subkey. The capability check alone cannot
-    /// see every genuine subkey revocation. Either way the library re-verifies
-    /// every revocation in the pin whenever the key is used.
-    func withVerifiedRevocation(pinned: String, synced: String) -> String? {
+    /// GopenPGP verifies every revocation a key carries against its primary
+    /// each time the key is used, and disregards one that does not verify. That
+    /// check is the verdict; this only decides which packets the pin carries
+    /// for it to judge. There is no second verifier here, by design.
+    ///
+    /// - A primary revocation is taken when the pin reads revoked with it
+    ///   (`IsRevoked` verifies against the primary).
+    /// - A subkey revocation is carried whenever it is a well-formed signature
+    ///   of the key's version and the library still reads the pin, as the same
+    ///   key and with no ability gained, once it is added. Its effect cannot
+    ///   always be observed beforehand — a revoked signing subkey whose primary
+    ///   also signs leaves `CanVerify` true, and GopenPGP exposes no per-subkey
+    ///   query — so requiring an observed effect drops genuine revocations.
+    ///   One that does not verify changes nothing at use.
+    func withRevocations(pinned: String, synced: String) -> String? {
         guard let pinnedSections = OpenPgpKeySections(armored: pinned),
               let syncedSections = OpenPgpKeySections(armored: synced),
               let pinnedKey = CryptoKey(fromArmored: pinned),
@@ -357,6 +362,10 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         else { return nil }
 
         let now = Int64(Date().timeIntervalSince1970)
+        let keyVersion = pinnedSections.primaryKeyBody.first
+        var carried = pinnedSections.subkeys.map {
+            $0.filter { $0.signatureType == OpenPgpPacket.subkeyRevocation }.count
+        }
         var taken: [OpenPgpKeySections.Candidate] = []
         for candidate in candidates {
             switch candidate.target {
@@ -367,19 +376,17 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
                 else { continue }
                 taken.append(candidate)
             case .subkey(let index):
-                let isolated = pinnedSections.isolating(subkey: index)
-                let moved = OpenPgpKeySections.Candidate(target: .subkey(0), signature: candidate.signature)
-                guard let before = Self.key(isolated),
-                      let after = Self.key(isolated.adding([moved]))
+                let signature = candidate.signature.body
+                guard signature.first == keyVersion,
+                      signature.count <= Self.maxRevocationSignatureBytes,
+                      carried[index] < Self.maxRevocationsPerSubkey,
+                      let after = Self.key(pinnedSections.adding([candidate])),
+                      after.getFingerprint() == pinnedKey.getFingerprint(),
+                      !after.isRevoked(now) || pinnedKey.isRevoked(now),
+                      !after.canEncrypt(now) || pinnedKey.canEncrypt(now),
+                      !after.canVerify(now) || pinnedKey.canVerify(now)
                 else { continue }
-                let verified = OpenPgpRevocationSignature.verifies(
-                    signature: candidate.signature.body,
-                    signerKeyBody: pinnedSections.primaryKeyBody,
-                    over: [pinnedSections.primaryKeyBody, pinnedSections.subkeys[index][0].body]
-                )
-                let lostEncrypt = before.canEncrypt(now) && !after.canEncrypt(now)
-                let lostVerify = before.canVerify(now) && !after.canVerify(now)
-                guard verified || lostEncrypt || lostVerify else { continue }
+                carried[index] += 1
                 taken.append(candidate)
             }
         }
@@ -392,6 +399,11 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         else { return nil }
         return armored
     }
+
+    /// Bounds on what a synced copy can make the pin carry. A genuine
+    /// revocation is a few hundred bytes, and a subkey is revoked once.
+    static let maxRevocationSignatureBytes = 8 * 1024
+    static let maxRevocationsPerSubkey = 4
 
     func isPrimaryRevoked(armoredPublicKey: String) -> Bool {
         guard let key = CryptoKey(fromArmored: armoredPublicKey) else { return false }

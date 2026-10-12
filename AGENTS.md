@@ -233,18 +233,20 @@ is the server's pin, not this device's.
   changes. A contact with no email gets no pin. Sync never writes a pin.
 - **The one thing a synced copy may do is revoke it**, recorded on every
   contact write (sync and local), never on a lookup:
-  `PgpKeyRevocation.withVerifiedRevocation` takes only revocation signatures of
+  `PgpKeyRevocation.withRevocations` takes only revocation signatures of
   the pinned primary or of a subkey the pin holds, from a copy of the same
-  primary, each verified against the pinned primary; nothing else crosses.
-  `OpenPgpKeySections` moves packets and decides nothing. GopenPGP cannot
-  verify a lone certification, so a primary revocation is kept when the key
-  then reads `isRevoked`, and a subkey revocation when
-  `OpenPgpRevocationSignature` verifies it against the pinned primary over
-  that subkey (v4; RSA, ECDSA P-256/384/521, Ed25519) or, failing that, a
-  single-subkey copy loses encrypt or verify. **Never gate a verified
-  revocation on a capability change**: a genuine one need not change what the
-  whole key can do. That Swift check only decides what is stored; the library
-  re-verifies every revocation in the pin whenever the key is used.
+  primary; nothing else crosses. `OpenPgpKeySections` moves packets and
+  decides nothing. **GopenPGP is the only verifier**: it checks every
+  revocation in the pin against the pinned primary whenever the key is used
+  and disregards one that fails. A primary revocation is kept when the key
+  then reads `isRevoked`; a subkey revocation is carried whenever it is
+  well formed, bounded in size and count, and leaves the library reading the
+  same key with no ability gained. **Never gate a subkey revocation on an
+  observed capability change, and never add a hand-written signature check**:
+  a revoked signing subkey under a primary that also signs changes nothing
+  observable, GopenPGP has no per-subkey query, and a Swift verifier only
+  covers the algorithms and hashes someone remembered — every gap is a
+  genuine revocation dropped and a compromised subkey still confirmed.
 - **Reader:** where the resolved sender is pinned, the pin replaces the relay's
   `signerKeys` (`EncryptedMessageReader.signerKeys`) — intact is the only key
   and reads `verifiedConfirmed`; revoked or broken is a conflict, so a signed

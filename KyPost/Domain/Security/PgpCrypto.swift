@@ -150,11 +150,12 @@ protocol PgpEncrypting: Sendable {
 protocol PgpKeyRevocation: Sendable {
     /// `pinned` with the revocations taken from `synced`, or nil when there is
     /// none to take. `synced` must be a copy of the **same primary key**; it
-    /// may revoke that primary or a subkey the pin already holds, and each
-    /// revocation must verify against the pinned primary. Only those
+    /// may revoke that primary or a subkey the pin already holds. Only those
     /// signatures cross — no subkey, user id or other material — so a synced
-    /// copy can withdraw pinned keys but never change what they are.
-    func withVerifiedRevocation(pinned: String, synced: String) -> String?
+    /// copy can withdraw pinned keys but never change what they are. Whether
+    /// a carried revocation is genuine is decided by the crypto library, which
+    /// verifies it against the pinned primary each time the key is used.
+    func withRevocations(pinned: String, synced: String) -> String?
 
     /// The primary key carries a revocation that verifies against it. A
     /// revocation packet alone is not enough.
@@ -171,7 +172,7 @@ let maxDecompressedPlaintextBytes = 32 * 1024 * 1024
 /// user must open in webmail, and that is precisely the confusion the message
 /// states exist to avoid.
 struct UnavailablePgpCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspecting, PgpKeyRevocation {
-    func withVerifiedRevocation(pinned: String, synced: String) -> String? { nil }
+    func withRevocations(pinned: String, synced: String) -> String? { nil }
 
     /// Fails closed: a pin whose revocation cannot be checked is not usable.
     func isPrimaryRevoked(armoredPublicKey: String) -> Bool { true }

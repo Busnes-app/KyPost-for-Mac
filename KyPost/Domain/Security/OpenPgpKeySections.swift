@@ -2,15 +2,15 @@
 //  OpenPgpKeySections.swift
 //  KyPost
 //
-//  Packet-level plumbing for `PgpKeyRevocation.withVerifiedRevocation`: split
+//  Packet-level plumbing for `PgpKeyRevocation.withRevocations`: split
 //  one transferable public key into its primary and subkey sections, find the
 //  revocation signatures a synced copy carries that the pinned copy does not,
 //  and rebuild key bytes with chosen signatures added.
 //
 //  **Nothing here decides that a revocation is genuine.** It only moves
-//  packets; the crypto implementation verifies every candidate against the
-//  pinned primary before one is kept. No crypto import, by design — see
-//  `PgpCrypto.swift`.
+//  packets; the crypto library verifies every revocation the pin carries
+//  against the pinned primary whenever the key is used. No crypto import, by
+//  design — see `PgpCrypto.swift`.
 //
 
 import Foundation
