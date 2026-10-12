@@ -397,7 +397,7 @@ struct MacRootView: View {
                     .newMailPill(inboxViewModel)
                     .onChange(of: inboxViewModel.scrollToTopRequest) {
                         guard let first = inboxViewModel.filteredEmails.first else { return }
-                        withAnimation { proxy.scrollTo(first, anchor: .top) }
+                        withAnimation { proxy.scrollTo(first.id, anchor: .top) }
                     }
                 }
             }
@@ -675,7 +675,8 @@ struct MacRootView: View {
 }
 
 /// Accepts dragged email server ids (newline-joined, see `dragPayload`) and
-/// moves them to the folder `folder` resolves to at drop time, highlighting
+/// moves them to the folder `folder` resolves to at drop time (Archive runs
+/// the Archive action instead, see `InboxViewModel.drop`), highlighting
 /// the row while a drag hovers over it. A nil folder refuses the drop.
 private struct MoveDropTarget: ViewModifier {
     let viewModel: InboxViewModel
@@ -695,7 +696,7 @@ private struct MoveDropTarget: ViewModifier {
                     $0.split(separator: "\n").map(String.init)
                 }
                 guard !serverIds.isEmpty, let target = folder() else { return false }
-                viewModel.move(serverIds: serverIds, to: target)
+                viewModel.drop(serverIds: serverIds, onto: target)
                 return true
             } isTargeted: { targeted in
                 isTargeted = targeted

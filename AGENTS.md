@@ -720,7 +720,8 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
 - **Move targets** are INBOX, Inbox children, top-level folders, then Archive
   children (best effort), de-duplicated case-insensitively, minus the message's
   own folder; `Archive` itself is never a target (the Archive action resolves
-  the real archive server-side). Labels are raw paths, so two same-leaf folders
+  the real archive server-side), so a drag onto the Archive sidebar row goes
+  through `InboxViewModel.drop`, which runs Archive, not a move. Labels are raw paths, so two same-leaf folders
   stay distinguishable. Inbox children are an Apple-only addition: this client
   shows them in its sidebar.
 

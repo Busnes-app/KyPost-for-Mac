@@ -238,7 +238,9 @@ Domain.
   (`showsEmptyFolderState`); a loading or failed folder with an empty cache
   shows a spinner or nothing, never "empty". A refresh that finishes after a
   folder switch is not painted, and refreshes are tracked per folder so a slow
-  one for the folder just left cannot block the new one.
+  one for the folder just left cannot block the new one. Every pick bumps
+  `selectionGeneration`; a Sent/Drafts listing that answers after a newer pick
+  is dropped silently rather than selected.
 - **Row dates** come from `InboxRules.rowDate`: time for today, medium date
   otherwise, device zone, blank for a missing `atUtc` (`Email.unknownDate`,
   which sorts last — never "now"). List roots apply `relabelsAtMidnight()`.
@@ -260,7 +262,9 @@ Domain.
 - **A notification-tap target is consumed once**, at the start of the hunt:
   `router.pendingMessageId` is cleared before the resync, found or not.
   `prepareForPushTap` switches to Inbox and waits out an in-flight refresh so
-  the forced full resync actually runs.
+  the forced full resync actually runs; if the wait (30 s) expires or the
+  resync is skipped (`refresh` returns false), it reports failure and returns
+  nil, never the cached row.
 - `notice` is the inbox's transient toast (rejected actions, missing Sent
   folder, selection limit); it expires itself. `connectionNotice` keeps its
   own contract above.

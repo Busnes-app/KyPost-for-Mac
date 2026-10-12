@@ -19,6 +19,7 @@ final class InboxViewModel {
     private let initialRefreshRetryDelay: Duration
     private let undoWindow: Duration
     private let noticeDuration: Duration
+    private let pushTapRefreshWait: Duration
     private let now: () -> Date
     /// Whether the user's "show All" setting shapes the tab strip. On macOS
     /// the sidebar's Inbox row *is* the folder and its keyword rows sit under
@@ -56,6 +57,9 @@ final class InboxViewModel {
     /// The folder on screen once it has refreshed successfully; nil while it
     /// is loading or after a failure, when its emptiness is unknown.
     private(set) var loadedFolder: String?
+    /// Bumped by every folder selection, so an answer that arrives after a
+    /// newer pick (a Sent/Drafts listing) is discarded instead of selected.
+    private var selectionGeneration = 0
     /// The folder whose rows were last painted, so only a repaint of the same
     /// folder (and tab) can announce new mail.
     private var paintedFolder: String?
@@ -87,6 +91,7 @@ final class InboxViewModel {
         initialRefreshRetryDelay: Duration = .seconds(15),
         undoWindow: Duration = .seconds(5),
         noticeDuration: Duration = .seconds(4),
+        pushTapRefreshWait: Duration = .seconds(30),
         appliesAllTabSetting: Bool = InboxViewModel.platformHasTabStrip,
         now: @escaping () -> Date = Date.init
     ) {
@@ -96,6 +101,7 @@ final class InboxViewModel {
         self.initialRefreshRetryDelay = initialRefreshRetryDelay
         self.undoWindow = undoWindow
         self.noticeDuration = noticeDuration
+        self.pushTapRefreshWait = pushTapRefreshWait
         self.appliesAllTabSetting = appliesAllTabSetting
         self.now = now
     }
@@ -162,6 +168,7 @@ final class InboxViewModel {
     /// optionally landing on a keyword tab. Held actions keep their own pinned
     /// folder, so the switch neither sends nor drops them.
     func selectFolder(_ name: String, tab: String? = nil) async {
+        selectionGeneration += 1
         guard folder != name else {
             selectedTab = tab
             reconcileSelectedTab()
@@ -199,18 +206,24 @@ final class InboxViewModel {
 
     /// Opens Sent or Drafts by resolving the account's real path from a fresh
     /// top-level listing. Never guesses a name and never creates a folder: no
-    /// match is reported, and the folder on screen stays where it was.
+    /// match is reported, and the folder on screen stays where it was. A
+    /// listing that answers after the user picked something else is dropped
+    /// silently: selecting it then would paint this folder under that one.
     @discardableResult
     func openSpecialFolder(_ kind: SpecialFolder) async -> Bool {
+        selectionGeneration += 1
+        let generation = selectionGeneration
         let folders: [MailFolder]
         do {
             folders = try await mailRepository.listFolders(parent: nil)
         } catch {
+            guard generation == selectionGeneration else { return false }
             showNotice(MailOutcome.from(error).userMessage
                 ?? String(localized: "Unable to connect to the mail server."))
             return false
         }
         topLevelFolders = folders
+        guard generation == selectionGeneration else { return false }
         guard let path = InboxRules.resolveSpecialFolder(kind, in: folders.map(\.name)) else {
             showNotice(String(localized: "No \(kind.label) folder on this account"))
             return false
@@ -306,6 +319,17 @@ final class InboxViewModel {
 
     func move(serverIds: [String], to targetFolder: String) {
         hold(.move, serverIds: serverIds, target: targetFolder)
+    }
+
+    /// A drag onto a sidebar folder. Archive itself is never a move target:
+    /// a drop there is the Archive action, which the relay resolves to the
+    /// account's real archive. Every other folder is a plain move.
+    func drop(serverIds: [String], onto targetFolder: String) {
+        if targetFolder.caseInsensitiveCompare(StandardFolder.archive) == .orderedSame {
+            archive(serverIds: serverIds)
+        } else {
+            move(serverIds: serverIds, to: targetFolder)
+        }
     }
 
     func delete(serverIds: [String]) {
@@ -441,9 +465,12 @@ final class InboxViewModel {
         rebuildTabs()
     }
 
-    func refresh(forceFullResync: Bool = false, delaysTransientError: Bool = false) async {
+    /// Returns whether a request was issued: false when one for this folder
+    /// was already in flight and this call was skipped.
+    @discardableResult
+    func refresh(forceFullResync: Bool = false, delaysTransientError: Bool = false) async -> Bool {
         let requested = folder
-        guard !refreshingFolders.contains(requested) else { return }
+        guard !refreshingFolders.contains(requested) else { return false }
         delayedRefreshErrorTask?.cancel()
         delayedRefreshErrorTask = nil
         initialRefreshRetryTask?.cancel()
@@ -457,15 +484,15 @@ final class InboxViewModel {
             )
             // A refresh that completes after a folder switch must not paint
             // one mailbox's mail under another's title and actions.
-            guard requested == folder else { return }
+            guard requested == folder else { return true }
             markRefreshed(rows)
         } catch MailSourceError.notPaired {
-            guard requested == folder else { return }
+            guard requested == folder else { return true }
             loadedFolder = nil
             connectionNotice = nil
             errorMessage = "Pair this device (Settings → Connection) to load mail."
         } catch {
-            guard requested == folder else { return }
+            guard requested == folder else { return true }
             // A failed fetch un-confirms the folder: its emptiness is unknown.
             loadedFolder = nil
             let message = "Unable to connect to the mail server."
@@ -489,6 +516,7 @@ final class InboxViewModel {
                 connectionNotice = message
             }
         }
+        return true
     }
 
     private func markRefreshed(_ rows: [Email]) {
@@ -574,20 +602,25 @@ final class InboxViewModel {
     /// detail screen from stale data — an out-of-date `bodyMode`, or PGP state
     /// that no longer matches what the server holds. A delta fetch is not
     /// enough: the row may predate the cursor entirely. A refresh already in
-    /// flight is waited out rather than skipped, so the forced one runs.
+    /// flight is waited out rather than skipped, so the forced one runs; if
+    /// it outlasts `pushTapRefreshWait`, or the forced resync cannot run, the
+    /// tap reports failure and returns nil rather than the cached row.
     func prepareForPushTap(messageId: String) async -> Email? {
+        selectionGeneration += 1
         if folder != StandardFolder.inbox {
             resetForFolder(StandardFolder.inbox, tab: nil)
         } else {
             selectedTab = nil
             reconcileSelectedTab()
         }
-        var waited = 0
-        while refreshingFolders.contains(folder), waited < 300 {
+        let deadline = ContinuousClock.now + pushTapRefreshWait
+        while refreshingFolders.contains(folder), ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(100))
-            waited += 1
         }
-        await refresh(forceFullResync: true)
+        guard await refresh(forceFullResync: true) else {
+            showNotice(String(localized: "Unable to connect to the mail server."))
+            return nil
+        }
         return email(withServerId: messageId)
     }
 

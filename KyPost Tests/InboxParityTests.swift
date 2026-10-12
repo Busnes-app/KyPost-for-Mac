@@ -29,9 +29,14 @@ nonisolated final class FakeInboxRelay: @unchecked Sendable {
     /// Answer for an action request; defaults to "every id processed".
     let actionReply = Box<(@Sendable ([String]) -> (Int, String))?>(nil)
     let inboxFails = Box(false)
+    /// Awaited before answering a request, so a test can hold one open.
+    let gate = Box<(@Sendable (URLRequest) async -> Void)?>(nil)
 
     var client: HTTPClient {
-        HTTPClient { [self] request in try handle(request) }
+        HTTPClient { [self] request in
+            if let gate = gate.value { await gate(request) }
+            return try handle(request)
+        }
     }
 
     private func handle(_ request: URLRequest) throws -> (Data, HTTPURLResponse) {
@@ -75,10 +80,44 @@ nonisolated final class FakeInboxRelay: @unchecked Sendable {
     var actionCount: Int { actions.value.count }
 }
 
+/// Holds requests until released; records whether any is waiting.
+nonisolated final class RequestLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var entered = 0
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            entered += 1
+            if isOpen {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    var hasEntered: Bool { lock.lock(); defer { lock.unlock() }; return entered > 0 }
+
+    func release() {
+        lock.lock()
+        isOpen = true
+        let pending = waiters
+        waiters = []
+        lock.unlock()
+        pending.forEach { $0.resume() }
+    }
+}
+
 @MainActor
 private func makeInbox(
     relay: FakeInboxRelay,
     undoWindow: Duration = .milliseconds(150),
+    pushTapRefreshWait: Duration = .seconds(30),
     appliesAllTabSetting: Bool = true,
     defaults: UserDefaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
 ) throws -> (InboxViewModel, EmailDAO) {
@@ -93,6 +132,7 @@ private func makeInbox(
         mailRepository: repository,
         keywordRepository: KeywordRepository(settingsStore: KeywordSettingsStore(defaults: defaults)),
         undoWindow: undoWindow,
+        pushTapRefreshWait: pushTapRefreshWait,
         appliesAllTabSetting: appliesAllTabSetting
     )
     return (viewModel, dao)
@@ -168,6 +208,28 @@ private func ids(_ emails: [Email]) -> [String] { emails.map(\.serverId) }
         #expect(viewModel.notice == "No Drafts folder on this account")
         // Nothing was created: only the listing was asked for.
         #expect(relay.actionCount == 0)
+    }
+
+    @Test @MainActor func aSentListingThatAnswersAfterANewerPickIsDiscarded() async throws {
+        let relay = FakeInboxRelay()
+        relay.folders.value = ["": ["Junk", "Sent", "Trash"]]
+        relay.mailboxes.value = ["Sent": ["s1"], "Junk": ["j1"]]
+        let latch = RequestLatch()
+        relay.gate.value = { request in
+            if request.url?.path == "/api/inbox/folders" { await latch.wait() }
+        }
+        let (viewModel, _) = try makeInbox(relay: relay)
+
+        let sent = Task { await viewModel.openSpecialFolder(.sent) }
+        #expect(await eventually { latch.hasEntered })
+        await viewModel.selectFolder("Junk")
+        latch.release()
+
+        #expect(await sent.value == false)
+        #expect(viewModel.folder == "Junk")
+        #expect(ids(viewModel.emails) == ["j1"])
+        #expect(!relay.inboxRequests.value.contains { $0.0 == "Sent" })
+        #expect(viewModel.notice == nil)
     }
 }
 
@@ -416,6 +478,55 @@ private func ids(_ emails: [Email]) -> [String] { emails.map(\.serverId) }
         #expect(relay.inboxRequests.value.last.map { $0.0 } == "INBOX")
         #expect(relay.inboxRequests.value.last.map { $0.1 } == "0")
     }
+
+    @Test @MainActor func aPushTapNeverReturnsTheCachedRowWhileARefreshOutlastsTheWait() async throws {
+        let relay = FakeInboxRelay()
+        relay.mailboxes.value = ["INBOX": ["n1"]]
+        let (viewModel, _) = try makeInbox(relay: relay, pushTapRefreshWait: .milliseconds(200))
+        await viewModel.load()
+        #expect(viewModel.email(withServerId: "n1") != nil)
+
+        let latch = RequestLatch()
+        relay.gate.value = { request in
+            if request.url?.path == "/api/inbox" { await latch.wait() }
+        }
+        relay.inboxRequests.value = []
+        let stuck = Task { await viewModel.refresh() }
+        #expect(await eventually { latch.hasEntered })
+
+        let target = await viewModel.prepareForPushTap(messageId: "n1")
+        #expect(target == nil)
+        #expect(viewModel.notice == "Unable to connect to the mail server.")
+        // No forced resync was issued behind the held refresh.
+        #expect(latch.entered == 1)
+
+        latch.release()
+        _ = await stuck.value
+    }
+
+    @Test @MainActor func aPushTapWaitsOutARefreshThenRunsTheForcedResync() async throws {
+        let relay = FakeInboxRelay()
+        relay.mailboxes.value = ["INBOX": ["n1"]]
+        let (viewModel, _) = try makeInbox(relay: relay)
+        await viewModel.load()
+
+        let latch = RequestLatch()
+        relay.gate.value = { request in
+            if request.url?.path == "/api/inbox" { await latch.wait() }
+        }
+        relay.inboxRequests.value = []
+        let stuck = Task { await viewModel.refresh() }
+        #expect(await eventually { latch.hasEntered })
+
+        let tap = Task { await viewModel.prepareForPushTap(messageId: "n1") }
+        try await Task.sleep(for: .milliseconds(300))
+        latch.release()
+
+        #expect(await tap.value?.serverId == "n1")
+        _ = await stuck.value
+        #expect(latch.entered == 2)
+        #expect(relay.inboxRequests.value.last.map { $0.1 } == "0")
+    }
 }
 
 // MARK: - Relay-confirmed actions (#173, #174)
@@ -577,6 +688,25 @@ private func ids(_ emails: [Email]) -> [String] { emails.map(\.serverId) }
         #expect(await eventually { viewModel.emails.count == 1 })
         #expect(viewModel.undoMessage == nil)
         #expect(ids(try await dao.getFolder(folder: "INBOX", limit: 10)) == ["3"])
+    }
+
+    @Test @MainActor func aDropOntoArchiveIsTheArchiveActionAndOtherFoldersMove() async throws {
+        let relay = FakeInboxRelay()
+        relay.mailboxes.value = ["INBOX": ["1", "2", "3"]]
+        let (viewModel, _) = try makeInbox(relay: relay, undoWindow: .milliseconds(60))
+        await viewModel.load()
+
+        viewModel.drop(serverIds: ["1"], onto: StandardFolder.archive)
+        #expect(await eventually { relay.actionCount == 1 })
+        let archived = relay.actions.value[0]
+        #expect(archived["action"] as? String == "archive")
+        #expect(archived["targetMailbox"] == nil)
+
+        viewModel.drop(serverIds: ["2"], onto: "Work")
+        #expect(await eventually { relay.actionCount == 2 })
+        let moved = relay.actions.value[1]
+        #expect(moved["action"] as? String == "move")
+        #expect(moved["targetMailbox"] as? String == "Work")
     }
 
     @Test @MainActor func undoRestoresTheRowsAndNothingIsEverSent() async throws {
