@@ -428,6 +428,7 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
             opener: FakeOpener(outcome: .notEnrolled),
             payloads: FakePayloads(result: .success(PgpPayload(encryptedPayload: ciphertext)), thrown: nil),
             crypto: GopenPGPCrypto(),
+            pins: .none,
             session: session,
             mime: { DecryptedBody(html: nil, plain: String(decoding: $0, as: UTF8.self), protectedSubject: nil) }
         )

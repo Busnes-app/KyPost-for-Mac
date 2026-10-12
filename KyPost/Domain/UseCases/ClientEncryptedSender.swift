@@ -205,6 +205,12 @@ nonisolated struct ClientEncryptedSender: Sendable {
             uniquingKeysWith: { first, _ in first }
         )
 
+        // This device's own pins first: whatever the relay says about a key
+        // (`key_changed`, unusable, absent), a pin its owner revoked is the
+        // reason the send cannot happen.
+        let revoked = addresses.filter { pins.state(for: $0) == .revoked }
+        guard revoked.isEmpty else { return .recipientKeyRevoked(revoked) }
+
         // A broken pin outranks a missing key, and is checked first.
         // `key_changed` means discovery found a key whose fingerprint does not
         // match the pinned one — which is what a rotation looks like, and also

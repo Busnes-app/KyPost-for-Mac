@@ -138,6 +138,23 @@ private func makeSender(
         #expect(outcome == .recipientKeyRevoked(["alice@b.com"]))
     }
 
+    /// Android 1938ed84: the revoked pin is reported whatever the relay says
+    /// about the key — `key_changed`, unusable, or absent.
+    @Test(arguments: [
+        [ResolvedRecipientKey(address: "alice@b.com", publicKey: "K", usable: true, tier: pgpTierKeyChanged)],
+        [ResolvedRecipientKey(address: "alice@b.com", publicKey: "", usable: false, tier: "")],
+        [],
+    ])
+    func aRevokedPinOutranksRelayKeyState(relay: [ResolvedRecipientKey]) async {
+        let sender = makeSender(
+            opener: .cancelled,
+            resolve: .success(relay),
+            pins: RecipientPinSnapshot(states: ["alice@b.com": .revoked])
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "alice@b.com"))
+        #expect(outcome == .recipientKeyRevoked(["alice@b.com"]))
+    }
+
     /// The relay's key cannot stand in for a pinned one.
     @Test func aRelayKeyThatIsNotThePinIsAKeyChange() async {
         let fingerprint = PgpFingerprint.compute(fromArmored: PinnedKeyFixtures.alicePinned)!
