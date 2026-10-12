@@ -101,7 +101,12 @@ import Testing
 // MARK: - Compose model
 
 @MainActor
-private func makeCompose(draft: ComposeDraft? = nil, signature: String = "") throws -> ComposeViewModel {
+private func makeCompose(
+    draft: ComposeDraft? = nil,
+    signature: String = "",
+    isLocked: @escaping () -> Bool = { false },
+    onRequest: (@Sendable (URLRequest) -> Void)? = nil
+) throws -> ComposeViewModel {
     let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
     let pairingStore = try makePairedStore()
     let db = try AppDatabase(inMemory: true)
@@ -116,12 +121,16 @@ private func makeCompose(draft: ComposeDraft? = nil, signature: String = "") thr
         sendEmail: SendEmailUseCase(repository: MailRepository(
             securePairingStore: pairingStore,
             emailDAO: EmailDAO(modelContainer: db.container),
-            httpClient: stubClient()
+            httpClient: stubClient(json: #"{"ok": true}"#, onRequest: onRequest)
         )),
         contacts: contacts,
-        pgp: PgpSendService(client: PgpSendClient(httpClient: stubClient()), securePairingStore: pairingStore),
+        pgp: PgpSendService(
+            client: PgpSendClient(httpClient: stubClient(onRequest: onRequest)),
+            securePairingStore: pairingStore
+        ),
         draft: draft,
         signature: signature,
+        isLocked: isLocked,
         debounceInterval: .zero
     )
 }
@@ -153,6 +162,31 @@ private func makeCompose(draft: ComposeDraft? = nil, signature: String = "") thr
         let whitespace = try makeCompose()
         whitespace.body = AttributedString("  \n ")
         #expect(!whitespace.closingNeedsConfirmation)
+    }
+
+    /// A compose left open when the lock engaged sends nothing until unlock,
+    /// and keeps the draft: the lock cover is not the control.
+    @Test func nothingIsSentWhileLocked() async throws {
+        let requests = Box<[URLRequest]>([])
+        var locked = true
+        let compose = try makeCompose(
+            draft: ComposeDraft(to: "a@example.com", subject: "Hi", body: "Draft"),
+            isLocked: { locked },
+            onRequest: { request in requests.value = requests.value + [request] }
+        )
+        let traits: RichTextHTML.FontTraits = { _ in (false, false) }
+
+        await compose.send(fontTraits: traits)
+        await compose.handOffToWebmail(fontTraits: traits)
+        #expect(requests.value.isEmpty)
+        #expect(!compose.didSend && !compose.isSent)
+        #expect(compose.subject == "Hi")
+        #expect(compose.closingNeedsConfirmation)
+
+        locked = false
+        await compose.send(fontTraits: traits)
+        #expect(!requests.value.isEmpty)
+        #expect(compose.didSend)
     }
 
     /// Markup in a signature reaches the editor as the characters typed.
@@ -261,6 +295,22 @@ private func makeCompose(draft: ComposeDraft? = nil, signature: String = "") thr
         router.resumeDeferredAction()
         #expect(router.takeComposeRequest()?.to == "a@example.com")
         #expect(router.takeComposeRequest() == nil)
+    }
+
+    /// A link that arrives while a compose is on screen waits rather than
+    /// replacing it, and opens once that compose closes.
+    @Test func aSecondLinkWaitsForTheOpenCompose() throws {
+        let router = NavigationRouter(notificationCenter: NotificationCenter())
+        router.isLocked = { false }
+        router.handleURL(try #require(URL(string: "mailto:first@example.com")))
+        let first = try #require(router.takeComposeRequest(composeIsOpen: false))
+        #expect(first.to == "first@example.com")
+
+        router.handleURL(try #require(URL(string: "mailto:second@example.com")))
+        #expect(router.takeComposeRequest(composeIsOpen: true) == nil)
+        #expect(router.composeRequest?.to == "second@example.com")
+        #expect(router.takeComposeRequest(composeIsOpen: false)?.to == "second@example.com")
+        #expect(router.composeRequest == nil)
     }
 
     /// A wipe or unpair drops a compose deferred behind the lock.

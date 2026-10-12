@@ -122,10 +122,19 @@ Domain.
   `ComposeViewModel.closingNeedsConfirmation` — any recipient, pending
   recipient text, subject, attachment or non-blank body, a signature-only body
   included — until the message was sent or handed off. Cancel asks; iOS
-  disables the swipe-down; macOS answers `windowShouldClose` through
-  `WindowCloseGuard`, a proxy that forwards every other delegate call to
-  SwiftUI's. Closes the app forces (Hostile Location Protection, wipe) never
+  refuses the swipe-down and `SheetDismissGuard` turns the refused attempt into
+  the same prompt; macOS answers `windowShouldClose` through
+  `WindowCloseGuard`. Both are proxies that forward every other delegate call
+  to SwiftUI's. Closes the app forces (Hostile Location Protection, wipe) never
   ask.
+- **A compose open when the lock engages stays, covered, and sends nothing.**
+  The inbox owns the iOS compose sheets, so `dismissPresentedRoutes` cannot
+  reach them and the root `fullScreenCover` cannot present over them:
+  `ComposeView` overlays `UnlockView` on itself (navigation bar included) and
+  blocks the swipe-down while locked. `ComposeViewModel` takes `isLocked` and
+  refuses send, pickup re-send and webmail hand-off while it is true, on both
+  platforms. The lock also closes compose's own sheets and dialogs, which
+  would otherwise sit above the cover.
 - **The signature is plain text placed by compose** (Android #177,
   `MailSignatureStore`, ≤1000 characters): after an RFC 3676 `-- ` line and
   above any quote on new messages, replies and forwards, never above a
@@ -139,7 +148,10 @@ Domain.
   decoding, header fields flattened to one line, the body capped. They route
   as `NavigationAction.composeMail`, so the lock defers them like any deep
   link; the shell takes the request (`takeComposeRequest`) and owns the
-  window (macOS) or sheet (iOS) from then on. The message body's link policy
+  window (macOS) or sheet (iOS) from then on. iOS shows one compose at a
+  time, so a link arriving while one is open stays pending
+  (`takeComposeRequest(composeIsOpen:)`, latest wins) and opens when it
+  closes — never by swapping the open sheet's content. The message body's link policy
   still never hands a `mailto:` link to `openURL`.
 - **Uncommitted recipient text lives on the view model**, not in view `@State`,
   so `send()` can flush it. Typing an address and pressing ⌘↩ must still mail

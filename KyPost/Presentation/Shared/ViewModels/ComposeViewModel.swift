@@ -107,6 +107,10 @@ final class ComposeViewModel {
     private var toastTask: Task<Void, Never>?
     /// The draft this window opened with, for claiming a forward's files.
     private let draftID: UUID?
+    /// Whether the app lock is engaged. Every path that puts mail on the wire
+    /// checks it: a compose open when the lock engaged stays on screen under
+    /// the cover, and the cover is not the control.
+    private let isLocked: () -> Bool
 
     /// `debounceInterval` is injectable so tests don't sleep.
     init(
@@ -115,8 +119,10 @@ final class ComposeViewModel {
         pgp: PgpSendService,
         draft: ComposeDraft? = nil,
         signature: String = "",
+        isLocked: @escaping () -> Bool,
         debounceInterval: Duration = .milliseconds(150)
     ) {
+        self.isLocked = isLocked
         self.sendEmail = sendEmail
         self.contacts = contacts
         self.pgp = pgp
@@ -226,7 +232,7 @@ final class ComposeViewModel {
     /// this class clears `pendingPickup` through that binding's setter)
     /// synchronously, before this `Task { }`-wrapped action body ever runs.
     func confirmPickupFallback(_ pickup: PendingPickup) async {
-        guard !isSending, !isSent, !didSend else { return }
+        guard !isSending, !isSent, !didSend, !isLocked() else { return }
         // Claimed here rather than in `deliver`, so nothing can slip between
         // the guard above and the in-flight state (see `send`).
         isSending = true
@@ -249,7 +255,7 @@ final class ComposeViewModel {
     /// Client-custody account: the key exists only in the user's browser, so
     /// save the composed message as a server-side draft and send them there.
     func handOffToWebmail(fontTraits: @escaping RichTextHTML.FontTraits) async {
-        guard !isSending, !isSent, !didSend else { return }
+        guard !isSending, !isSent, !didSend, !isLocked() else { return }
         // A fresh attempt starts with a clean slate: an earlier notice or
         // keyless-address list must not linger over whatever this one produces.
         noticeMessage = nil
@@ -489,8 +495,8 @@ final class ComposeViewModel {
     func send(fontTraits: @escaping RichTextHTML.FontTraits) async {
         // `didSend` as well as `isSent`: the window dismisses on `didSend`
         // through an onChange, and a second ⌘↩ in that gap would post the
-        // message twice.
-        guard !isSending, !isSent, !didSend else { return }
+        // message twice. Nothing goes out while the app is locked.
+        guard !isSending, !isSent, !didSend, !isLocked() else { return }
         // Claimed here, not in `deliver`: the recipient preflight below is an
         // `await` on a network round-trip, and a guard that only closes after
         // it leaves a window in which a second ⌘↩ passes the check above and

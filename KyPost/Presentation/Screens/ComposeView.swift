@@ -53,9 +53,12 @@ struct ComposeView: View {
             contacts: SingletonGraph.shared.contactsViewModel,
             pgp: SingletonGraph.shared.pgpSendService,
             draft: draft,
-            signature: SingletonGraph.shared.mailSignatureStore.signature
+            signature: SingletonGraph.shared.mailSignatureStore.signature,
+            isLocked: { SingletonGraph.shared.appLockManager.isLocked }
         ))
     }
+
+    private var isLocked: Bool { SingletonGraph.shared.appLockManager.isLocked }
 
     var body: some View {
 #if os(macOS)
@@ -65,6 +68,17 @@ struct ComposeView: View {
         NavigationStack {
             content
                 .navigationBarTitleDisplayMode(.inline)
+        }
+        // The root lock cover is a `fullScreenCover`, which cannot present
+        // over this sheet, and the router cannot dismiss a sheet the inbox
+        // owns. So the sheet covers itself — over the navigation bar too, so
+        // Send is not reachable — and keeps the draft underneath for after
+        // unlock. macOS gets `LockedOverlay` from its compose scene.
+        .overlay {
+            if isLocked {
+                UnlockView(manager: SingletonGraph.shared.appLockManager)
+                    .background(theme.bg.ignoresSafeArea())
+            }
         }
 #endif
     }
@@ -221,8 +235,13 @@ struct ComposeView: View {
             Text("It has not been sent, and KyPost keeps no copy.")
         }
 #if os(iOS)
-        // A swipe down would otherwise drop the sheet without asking.
-        .interactiveDismissDisabled(needsDiscardConfirmation)
+        // A swipe down would otherwise drop the sheet without asking: it is
+        // refused, and the refusal raises the same prompt as Cancel. Locked,
+        // the sheet stays put so the draft survives to the unlock.
+        .interactiveDismissDisabled(needsDiscardConfirmation || isLocked)
+        .background(SheetDismissGuard {
+            if needsDiscardConfirmation, !isLocked { confirmingDiscard = true }
+        })
 #else
         // The window's close button and ⌘W, which never reach `Cancel`.
         .background(WindowCloseGuard(
@@ -230,6 +249,16 @@ struct ComposeView: View {
             confirm: { confirmingDiscard = true }
         ))
 #endif
+        // Anything this compose presents would sit above the lock cover
+        // (a sheet or dialog outranks an overlay on both platforms), so the
+        // lock closes it. The draft itself is kept.
+        .onChange(of: isLocked) { _, locked in
+            guard locked else { return }
+            showAddressBook = false
+            showFileImporter = false
+            confirmingDiscard = false
+            viewModel.cancelPickupFallback()
+        }
         .tint(theme.accent)
     }
 
@@ -661,6 +690,60 @@ private struct WindowCloseGuard: NSViewRepresentable {
                 return false
             }
             return original?.windowShouldClose?(sender) ?? true
+        }
+
+        override func responds(to selector: Selector!) -> Bool {
+            super.responds(to: selector) || (original?.responds(to: selector) ?? false)
+        }
+
+        override func forwardingTarget(for selector: Selector!) -> Any? {
+            original?.responds(to: selector) == true ? original : super.forwardingTarget(for: selector)
+        }
+    }
+}
+#endif
+
+#if os(iOS)
+import UIKit
+
+/// Reports a refused swipe-down on the sheet this view is in, so compose can
+/// ask Discard / Keep editing instead of silently ignoring the gesture.
+///
+/// UIKit reports the attempt as `presentationControllerDidAttemptToDismiss`
+/// on the presentation controller's delegate, which SwiftUI owns, so this
+/// installs a proxy that handles that one call and forwards everything else
+/// (including `presentationControllerShouldDismiss`, which carries
+/// `interactiveDismissDisabled`) to SwiftUI's delegate untouched. Re-installed
+/// on every update in case SwiftUI replaces its delegate.
+private struct SheetDismissGuard: UIViewControllerRepresentable {
+    let onAttempt: () -> Void
+
+    func makeCoordinator() -> DismissInterceptor { DismissInterceptor() }
+
+    func makeUIViewController(context: Context) -> UIViewController { UIViewController() }
+
+    func updateUIViewController(_ controller: UIViewController, context: Context) {
+        let interceptor = context.coordinator
+        interceptor.onAttempt = onAttempt
+        DispatchQueue.main.async { [weak controller] in
+            var root = controller
+            while let parent = root?.parent { root = parent }
+            guard let root, root.presentingViewController != nil,
+                  let presentation = root.presentationController,
+                  presentation.delegate !== interceptor
+            else { return }
+            interceptor.original = presentation.delegate
+            presentation.delegate = interceptor
+        }
+    }
+
+    final class DismissInterceptor: NSObject, UIAdaptivePresentationControllerDelegate {
+        weak var original: (any UIAdaptivePresentationControllerDelegate)?
+        var onAttempt: () -> Void = {}
+
+        func presentationControllerDidAttemptToDismiss(_ presentationController: UIPresentationController) {
+            original?.presentationControllerDidAttemptToDismiss?(presentationController)
+            onAttempt()
         }
 
         override func responds(to selector: Selector!) -> Bool {

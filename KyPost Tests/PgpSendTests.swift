@@ -344,6 +344,7 @@ private func makeCompose(
             client: PgpSendClient(httpClient: client),
             securePairingStore: pairingStore
         ),
+        isLocked: { false },
         debounceInterval: .zero
     )
 }

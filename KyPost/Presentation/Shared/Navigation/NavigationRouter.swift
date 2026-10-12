@@ -130,8 +130,14 @@ final class NavigationRouter {
         composeRequest = nil
     }
 
-    /// Hands a pending compose to the shell, once.
-    func takeComposeRequest() -> ComposeDraft? {
+    /// Hands a pending compose to the shell, once. A shell that shows one
+    /// compose at a time (the iOS sheet) passes `composeIsOpen`: the request
+    /// then stays pending until that compose closes, because swapping the
+    /// sheet's content would drop the message being written without asking.
+    /// Pending holds one request — a newer link replaces an unopened one,
+    /// never an open compose.
+    func takeComposeRequest(composeIsOpen: Bool = false) -> ComposeDraft? {
+        guard !composeIsOpen else { return nil }
         defer { composeRequest = nil }
         return composeRequest
     }
