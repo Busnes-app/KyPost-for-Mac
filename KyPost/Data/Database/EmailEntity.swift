@@ -29,6 +29,11 @@ final class EmailEntity {
     var cc: String = ""
     var keywords: [String]
     var receivedAt: Date
+    /// Relay `wokenAt` and the list order `wokenAt ?? receivedAt`, stored
+    /// because a SortDescriptor cannot coalesce; added in AppSchemaV9. Rows
+    /// from before V9 are backfilled by EmailDAO.backfillSortDates.
+    var wokenAt: Date?
+    var sortDate: Date = Date.distantPast
     var read: Bool
     var starred: Bool
     /// Relay `bodyMode`/`hasAttachments`; added in AppSchemaV4.
@@ -60,6 +65,7 @@ final class EmailEntity {
         cc: String = "",
         keywords: [String],
         receivedAt: Date,
+        wokenAt: Date? = nil,
         read: Bool,
         starred: Bool,
         bodyMode: String = "",
@@ -82,6 +88,8 @@ final class EmailEntity {
         self.cc = cc
         self.keywords = keywords
         self.receivedAt = receivedAt
+        self.wokenAt = wokenAt
+        self.sortDate = wokenAt ?? receivedAt
         self.read = read
         self.starred = starred
         self.bodyMode = bodyMode
@@ -111,6 +119,7 @@ extension EmailEntity {
             cc: email.cc,
             keywords: email.keywords.sorted(),
             receivedAt: email.receivedAt,
+            wokenAt: email.wokenAt,
             read: email.read,
             starred: email.starred,
             bodyMode: email.bodyMode,
@@ -136,6 +145,7 @@ extension EmailEntity {
             cc: cc,
             keywords: Set(keywords),
             receivedAt: receivedAt,
+            wokenAt: wokenAt,
             read: read,
             starred: starred,
             bodyMode: bodyMode,

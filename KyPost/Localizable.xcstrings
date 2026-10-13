@@ -1345,6 +1345,9 @@
     "Signed in" : {
 
     },
+    "Snoozed" : {
+      "comment" : "A badge on an inbox row for a snoozed email that has returned to the inbox."
+    },
     "Status" : {
 
     },

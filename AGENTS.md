@@ -678,6 +678,11 @@ old sentence edited out.
   stops a crafted name colliding with another folder's key, and keeps the
   user's folder taxonomy out of a plaintext defaults file. Under Hostile
   Location Protection the store is memory-only for the same reason.
+- **`wokenAt` pins a woken snoozed message to the top.** List order is
+  `EmailEntity.sortDate` (`wokenAt ?? receivedAt`), stored because a
+  `SortDescriptor` cannot coalesce; every write of either date rewrites it.
+  The displayed date stays `receivedAt`. An "updated" row without `wokenAt`
+  means the pin was removed, so the merge writes nil through.
 - **A push tap forces a full resync before opening its target.** The cached row
   is fine for the list; rendering the detail screen from it can show a stale
   `bodyMode` or stale PGP state.
