@@ -1,10 +1,61 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "RSVP may not have been sent: %@. Check your Sent folder before trying again." : {
+
+    },
+    "RSVP not sent: %@" : {
+
+    },
+    "RSVP sent" : {
+
+    },
+    "Send RSVP unencrypted?" : {
+
+    },
+    "Send unencrypted" : {
+
+    },
+    "Organizer: " : {
+
+    },
     "Signature" : {
 
     },
+    "The organizer (%@) is not the sender of this email. Anyone can name any organizer." : {
+
+    },
+    "The organizer is not the sender of this email, so this reply goes to an address the sender chose." : {
+
+    },
+    "There's no calendar to add this event to." : {
+
+    },
+    "This event was cancelled. Check your calendar." : {
+
+    },
+    "This invite was updated. Check your calendar." : {
+
+    },
+    "This message is flagged as phishing. Check the invite before you add it." : {
+
+    },
+    "Time zone \"%@\" isn't recognised, so this time is read as your own zone and may be wrong." : {
+
+    },
+    "This invite gives no time zone, so this time is read as your own zone." : {
+
+    },
+    "This event wasn't added." : {
+
+    },
     "Remove Signature" : {
+
+    },
+    "Repeats" : {
+
+    },
+    "Reply \"%@\" to %@ as %@.\\n\\nRSVPs are always sent unencrypted and unsigned, because the organizer's calendar can't read an encrypted reply. The reply carries your answer, your address and the event's ID." : {
 
     },
     "" : {
@@ -13,10 +64,37 @@
     "  ·  Copyright © 2026 Busnes.app" : {
 
     },
+    "Accept" : {
+
+    },
+    "Add to Calendar" : {
+
+    },
     "Added below a “-- ” line on new messages, replies and forwards, above any quoted text. Plain text only. %lld/%lld" : {
 
     },
+    "Added to %@." : {
+
+    },
+    "Added to %@. This event repeats in a way your calendar can't express, so only its first occurrence was added." : {
+
+    },
+    "Calendar invite" : {
+
+    },
+    "Calendar invite · %@" : {
+
+    },
     "Cc: %@" : {
+
+    },
+    "Couldn't add this event: %@" : {
+
+    },
+    "Couldn't confirm your account address, so no RSVP was sent. Try again." : {
+
+    },
+    "Decline" : {
 
     },
     "Discard" : {
@@ -25,10 +103,22 @@
     "Discard this message?" : {
 
     },
+    "Hand off to your calendar?" : {
+
+    },
+    "Hostile Location Protection is on. Your calendar will store this event outside KyPost, where a wipe can't remove it." : {
+
+    },
     "It has not been sent, and KyPost keeps no copy." : {
 
     },
     "Keep editing" : {
+
+    },
+    "KyPost can't add events without calendar access. Allow it in Settings → Privacy & Security → Calendars." : {
+
+    },
+    "Maybe" : {
 
     },
     "Not available for encrypted mail" : {
@@ -143,6 +233,15 @@
 
     },
     "To: %@" : {
+
+    },
+    "Untitled event" : {
+
+    },
+    "Where: %@" : {
+
+    },
+    "Your server didn't send this as a calendar reply. The organizer got a plain email; update your server." : {
 
     },
     "Open KyPost to review this sign-in." : {

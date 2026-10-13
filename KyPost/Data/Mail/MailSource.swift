@@ -152,6 +152,23 @@ enum MailOutcome: Equatable, Sendable {
     /// unlike the other failures here.
     case upstreamFailure(String)
 
+    /// A short reason for a user-facing sentence, or "" when there is none.
+    var reason: String {
+        switch self {
+        case .success, .sentWithWarning: ""
+        case .invalid(let message), .failure(let message),
+             .notConfigured(let message), .upstreamFailure(let message):
+            message
+        case .unauthorized: "the server rejected this device's credentials"
+        case .notPaired: "this device isn't paired"
+        case .clientSideNeeded: "the server refused to send it"
+        case .keylessRecipients: "the server refused to send it"
+        case .rateLimited(let retryAfter):
+            retryAfter.map { "too many attempts — try again in \(NetworkError.formatRetryAfter($0))" }
+                ?? "too many attempts — try again later"
+        }
+    }
+
     static func from(_ error: Error) -> MailOutcome {
         switch error {
         case NetworkError.unauthorized:

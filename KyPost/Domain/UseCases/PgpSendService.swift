@@ -100,6 +100,19 @@ final class PgpSendService {
         }
     }
 
+    /// The account's addresses, fetched fresh rather than from this
+    /// session's cache: an RSVP names one of them as the attendee, and a cache
+    /// filled before an unpair and re-pair would answer as the old account.
+    /// Nil when unpaired or the fetch failed.
+    func fetchAccountAddresses() async -> [String]? {
+        guard let credentials = pairingCredentials else { return nil }
+        guard let response = try? await client.fetchBootstrap(
+            serverUrl: credentials.serverUrl,
+            auth: credentials.auth
+        ) else { return nil }
+        return response.suggestedUserIDs ?? []
+    }
+
     /// Addresses among `addresses` with no usable key **in the user's
     /// contacts**.
     ///

@@ -208,6 +208,12 @@ Domain.
   when any of those boundaries passes stores nothing and opens no compose
   window (`ForwardAttachmentHandoff.begin`/`isCurrent`). The reader cancels it
   on disappear.
+- **The invite card is only as reliable as the relay's listing** (root
+  AGENTS.md, "Calendar invites and RSVP"). It loads after the attachment chips,
+  never for a client-protected message, and derives its RSVP buttons from
+  `RsvpTracker`. The RSVP alert's binding setter must not release the revision
+  directly: SwiftUI clears it before the tapped button runs
+  (`InviteCardModel.rsvpPromptDismissed`).
 - **The whole email row is the open target.** `EmailListRow` expands to the
   list width and supplies a rectangular content shape, including whitespace.
   The decrypt action uses visible button chrome rather than link styling.

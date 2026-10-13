@@ -41,6 +41,8 @@ struct EmailDetailView: View {
     /// Set when Reply/Reply All/Forward is pressed on a message they are not
     /// available for; drives the explanation.
     @State private var showsReplyUnavailable = false
+    /// The calendar-invite card's state; empty until an invite parses.
+    @State private var inviteCard = InviteCardModel()
     /// True while Forward downloads the attachments it carries.
     @State private var preparingForward = false
     /// The attachment listing in flight, so Forward can wait for it rather
@@ -83,6 +85,17 @@ struct EmailDetailView: View {
             // transport parts, not files the sender attached for the reader.
             if pgpState != .clientProtected, !attachments.isEmpty {
                 attachmentBar
+            }
+
+            if let invite = inviteCard.invite {
+                InviteCardView(
+                    model: inviteCard,
+                    invite: invite,
+                    senderEmail: email.senderEmail,
+                    phishing: isPhishing
+                )
+                .padding(.horizontal)
+                .padding(.top, 8)
             }
 
             // The decrypted message's own files, from memory. Shown with the
@@ -181,6 +194,14 @@ struct EmailDetailView: View {
             await prepareEncryptedRead()
             await inboxViewModel.markRead(email)
             attachments = await listing.value ?? []
+            // After the chips: a slow or hostile invite must not hold up the
+            // attachment list. A client-protected message's listing is its
+            // PGP/MIME transport, never an invite.
+            if pgpState != .clientProtected {
+                await inviteCard.load(listing: attachments) { part in
+                    await inboxViewModel.attachmentData(part, of: email)
+                }
+            }
         }
         .onChange(of: isLocked) { _, locked in
             guard locked else { return }
