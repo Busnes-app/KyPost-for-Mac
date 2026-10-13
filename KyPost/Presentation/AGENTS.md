@@ -169,7 +169,11 @@ Domain.
   measured 800dp, so unfolding or rotating never narrows the list; measured
   widths in its doc comment) shows Inbox as a collapsible folder sidebar,
   the list and the reader, and Contacts as list and detail. Anything
-  narrower keeps the stacks exactly; Settings is always a stack. The
+  narrower keeps the stacks exactly; Settings is always a stack.
+  **The unfolded iPhone Duo in portrait (669 pt) does not split, by the
+  maintainer's decision** (2026-10-13): keep 800 pt, as Android does, even
+  though Apple's Duo listing screenshot is portrait. Do not lower the
+  threshold to make the Duo portrait split. The
   `TabView` is `.sidebarAdaptable` (iPhone: the same tab bar).
   - **Everything either layout shows lives in `MailShellState`**, owned by
     `MainTabView` above the switch: the open message (the row, by (folder,
