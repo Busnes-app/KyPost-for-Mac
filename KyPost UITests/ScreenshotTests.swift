@@ -326,6 +326,10 @@ final class ScreenshotTests: XCTestCase {
 
     // MARK: - Compose
 
+    private func hasKeyboardFocus(_ element: XCUIElement) -> Bool {
+        (element.value(forKey: "hasKeyboardFocus") as? Bool) ?? false
+    }
+
     /// An empty compose window says nothing about composing. Fills enough that
     /// the Encrypt/Sign controls sit above real content.
     private func fillCompose(_ app: XCUIApplication) {
@@ -348,9 +352,17 @@ final class ScreenshotTests: XCTestCase {
                 settle()
             }
         }
+        // On the folded iPhone Duo the first tap on the body can land while
+        // the subject still holds focus; typing then fails the whole run.
+        // Tap until the editor owns the keyboard, and skip the body if never.
         let editor = app.textViews.firstMatch
         if editor.exists {
-            editor.tap()
+            for _ in 0..<3 where !hasKeyboardFocus(editor) {
+                editor.tap()
+                settle(0.5)
+            }
+        }
+        if editor.exists, hasKeyboardFocus(editor) {
             editor.typeText(
                 "Read your new fingerprint back to me on the call and I'll pin it. "
                 + "Sending this one encrypted and signed."
@@ -366,21 +378,23 @@ final class ScreenshotTests: XCTestCase {
         for name in ["Encrypt", "Sign"] {
             let container = app.switches[name]
             guard container.waitForExistence(timeout: 3) else { continue }
-            guard (container.value as? String) != "1" else { continue }
-            let control = container.switches.firstMatch
-            if control.exists, !control.isHittable {
-                // The folded iPhone Duo's side rail is a window-sized toolbar
-                // over the compose sheet, so XCUITest calls the switch
-                // unhittable though it is in plain view. Tap the inner
-                // switch's own centre, which is still not the gap.
-                control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            // Verified after each try: one tap can land while the previous
+            // switch is still animating and toggle nothing.
+            for _ in 0..<3 where (container.value as? String) != "1" {
+                let control = container.switches.firstMatch
+                if control.exists, !control.isHittable {
+                    // The folded iPhone Duo's side rail is a window-sized
+                    // toolbar over the compose sheet, so XCUITest calls the
+                    // switch unhittable though it is in plain view. Tap the
+                    // inner switch's own centre, which is still not the gap.
+                    control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                } else {
+                    let target = control.exists ? control : container
+                    guard target.isHittable else { break }
+                    target.tap()
+                }
                 settle()
-                continue
             }
-            let target = control.exists ? control : container
-            guard target.isHittable else { continue }
-            target.tap()
-            settle()
         }
     }
 }
