@@ -191,6 +191,101 @@ import Testing
             #expect(InlineImages.inlineCidImages(html: open, attachments: [png]) == open)
         }
     }
+
+    /// An ordinary newsletter-shaped body: only the visible images change,
+    /// byte for byte, and everything around them is left exactly as written.
+    @Test func anOrdinaryHTMLBodyIsRewrittenExactlyAsBefore() {
+        let logo = DecryptedAttachment(name: "logo.png", mimeType: "image/png", data: Data([1, 2, 3]), contentId: "logo@x")
+        let photo = DecryptedAttachment(name: "p.jpg", mimeType: "image/jpeg", data: Data([4, 5]), contentId: "photo%201@x")
+        let html = """
+            <!DOCTYPE html><html><head><title>News <img src="cid:logo@x"></title>
+            <style type="text/css">td > img { border: 0 } /* <img src="cid:logo@x"> */</style>
+            <!--[if mso]><img src="cid:logo@x"><![endif]-->
+            </head><body><table><tr><td align='center'>
+            <IMG alt="a > b" SRC = 'cid:logo@x' width=120 />
+            <img src=cid:photo%201@x data-src="cid:logo@x">
+            <img src="https://example.com/remote.png"><img src="cid:missing@x">
+            <script>var s = '<img src="cid:logo@x">';</script>
+            <p>caption</p>
+            </td></tr></table></body></html>
+            """
+        let expected = """
+            <!DOCTYPE html><html><head><title>News <img src="cid:logo@x"></title>
+            <style type="text/css">td > img { border: 0 } /* <img src="cid:logo@x"> */</style>
+            <!--[if mso]><img src="cid:logo@x"><![endif]-->
+            </head><body><table><tr><td align='center'>
+            <IMG alt="a > b" SRC = "data:image/png;base64,AQID" width=120 />
+            <img src="data:image/jpeg;base64,BAU=" data-src="cid:logo@x">
+            <img src="https://example.com/remote.png"><img src="cid:missing@x">
+            <script>var s = '<img src="cid:logo@x">';</script>
+            <p>caption</p>
+            </td></tr></table></body></html>
+            """
+        #expect(InlineImages.inlineCidImages(html: html, attachments: [logo, photo]) == expected)
+    }
+
+    /// Malformed markup — tags, quotes and comments that never close — is
+    /// scanned in time proportional to its length, so a large broken body
+    /// cannot hold up the reader.
+    @Test func malformedMarkupIsScannedInLinearTime() {
+        let length = 64 * 1024
+        let units = ["<img a", "<img a=\"", "<IMG '", "<script a", "<style x='", "<!--", "<title", "<img"]
+        for unit in units {
+            let html = String(repeating: unit, count: length / unit.utf16.count)
+            let clock = ContinuousClock()
+            var output = ""
+            let elapsed = clock.measure {
+                output = InlineImages.inlineCidImages(html: html, attachments: [png])
+            }
+            #expect(output == html)
+            #expect(elapsed < .seconds(1), "\(unit.debugDescription) × \(length / unit.utf16.count) took \(elapsed)")
+        }
+    }
+
+    /// A body over the scan limit renders as it came, without inline images.
+    @Test func aBodyOverTheScanLimitIsLeftAsItCame() {
+        let img = #"<img src="cid:logo@x">"#
+        let padding = String(repeating: "a", count: InlineImages.maxScannedLength - img.utf16.count)
+        #expect(InlineImages.inlineCidImages(html: padding + img, attachments: [png])
+            == padding + #"<img src="data:image/png;base64,AQID">"#)
+        #expect(InlineImages.inlineCidImages(html: padding + "a" + img, attachments: [png]) == padding + "a" + img)
+    }
+
+    /// The tag scanner finds exactly the tags the single regular expression it
+    /// replaced found, over random markup built from the constructs that
+    /// matter: every ASCII character, every skipped element, comment forms,
+    /// quotes, Unicode spaces and marks, and names ICU case-folds (`ſ`, `ﬆ`).
+    @Test func theScannerAgreesWithThePatternItReplaced() {
+        let previous = try! NSRegularExpression(
+            pattern: #"<!--(?:-?>|[\s\S]*?(?:--!?>|\z))"#
+                + #"|<plaintext(?=[\s/>])[\s\S]*"#
+                + #"|<(script|style|textarea|title|xmp|iframe|noembed|noframes)(?=[\s/>])"#
+                + #"(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?(?:</\1(?=[\s/>])[^>]*>|\z)"#
+                + #"|(<img\b(?:[^>"']|"[^"]*"|'[^']*')*>)"#,
+            options: [.caseInsensitive]
+        )
+        let names = ["img", "script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "plaintext"]
+        let tokens = (0..<128).map { String(UnicodeScalar(UInt8($0))) }
+            + names.flatMap { ["<\($0)", "</\($0)", "<\($0.uppercased())", "</\($0.uppercased())", "<\($0)s"] }
+            + ["<ſcript", "</ſcript", "<ﬆyle", "</ﬆyle", "</noframeſ", "<iMg", "<img>", "<img ", "<img-", "<img_"]
+            + ["<!--", "<!-->", "<!--->", "-->", "--!>", "--", ">", "\"", "'", " ", "<", "</", "src=cid:x"]
+            + ["\u{A0}", "\u{2028}", "\u{301}", "\u{200D}", "\u{AD}", "é", "K", "😀"]
+        var state: UInt64 = 0x5EED
+        func random(_ bound: Int) -> Int {  // SplitMix64: the same inputs on every run
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return Int((z ^ (z >> 31)) % UInt64(bound))
+        }
+        for _ in 0..<5_000 {
+            let html = (0..<random(48)).map { _ in tokens[random(tokens.count)] }.joined()
+            let expected = previous.matches(in: html, range: NSRange(location: 0, length: html.utf16.count))
+                .map { $0.range(at: 2) }
+                .filter { $0.location != NSNotFound }
+            #expect(InlineImages.imageTags(in: html as NSString) == expected, "\(html.debugDescription)")
+        }
+    }
 }
 
 // MARK: - Staged previews
@@ -322,6 +417,19 @@ JVBERg==\r
         #expect(body.attachments.map(\.name) == ["attachment", "report.pdf"])
         #expect(subject.renderedHTML?.contains(#"src="data:image/png;base64,AQID""#) == true)
         #expect(subject.attachmentsOmittedMessage == nil)
+    }
+
+    /// The rendered HTML is stored with the body, built from it once, and
+    /// goes with it.
+    @Test func renderedHTMLArrivesWithTheBodyAndLeavesWithIt() async throws {
+        let subject = model()
+        #expect(subject.renderedHTML == nil)
+        await subject.decrypt()
+        let body = try #require(subject.body)
+        let html = try #require(body.html)
+        #expect(subject.renderedHTML == InlineImages.inlineCidImages(html: html, attachments: body.attachments))
+        subject.forget()
+        #expect(subject.renderedHTML == nil)
     }
 
     /// The preview file is plaintext on disk: closed previews and a screen

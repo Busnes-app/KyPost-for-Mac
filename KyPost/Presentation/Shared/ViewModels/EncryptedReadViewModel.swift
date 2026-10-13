@@ -26,6 +26,11 @@ final class EncryptedReadViewModel {
 
     /// The decrypted content, held only while this view model is alive.
     private(set) var body: DecryptedBody?
+    /// The decrypted HTML with `cid:` images resolved to bounded `data:` URIs
+    /// from the message's own parts, or nil for a plain-text message. Built
+    /// once per read, off the main actor, before `body` is published: the
+    /// screen reads it on every redraw.
+    private(set) var renderedHTML: String?
     /// The address the signature verdict is about, as the **server** resolved
     /// it. Rendered instead of the raw `From`, which is separable from it.
     private(set) var resolvedSender = ""
@@ -97,13 +102,6 @@ final class EncryptedReadViewModel {
         body?.attachmentsOmitted == true
             ? "Some attachments in this message could not be shown on this device."
             : nil
-    }
-
-    /// The decrypted HTML with `cid:` images resolved to bounded `data:` URIs
-    /// from the message's own parts, or nil for a plain-text message.
-    var renderedHTML: String? {
-        guard let html = body?.html, !html.isEmpty else { return nil }
-        return InlineImages.inlineCidImages(html: html, attachments: body?.attachments ?? [])
     }
 
     /// Writes one decrypted attachment for Quick Look. Tracked so `forget()`
@@ -178,13 +176,27 @@ final class EncryptedReadViewModel {
         // `forget()` ran meanwhile (the lock engaged, or the screen went):
         // keep nothing, and leave Decrypt on offer.
         guard generation == started else { return }
-        outcome = result
 
         if case .decrypted(let body, let signature, let resolvedSender) = result {
+            // Rendered before anything is published, so the screen never
+            // shows a decrypted outcome without its body. `isWorking` stays
+            // set meanwhile.
+            let html = await Self.render(body)
+            guard generation == started else { return }
             self.body = body
+            self.renderedHTML = html
             self.signature = signature
             self.resolvedSender = resolvedSender
         }
+        outcome = result
+    }
+
+    /// `renderedHTML` for `body`. `@concurrent` so it runs off the main
+    /// actor: a long body takes real time to scan.
+    @concurrent
+    private nonisolated static func render(_ body: DecryptedBody) async -> String? {
+        guard let html = body.html, !html.isEmpty else { return nil }
+        return InlineImages.inlineCidImages(html: html, attachments: body.attachments)
     }
 
     /// Drops the plaintext. Called when the view goes away, so a decrypted
@@ -194,6 +206,7 @@ final class EncryptedReadViewModel {
         for url in stagedFiles { files.remove(url) }
         stagedFiles = []
         body = nil
+        renderedHTML = nil
         signature = .none
         resolvedSender = ""
         outcome = nil
