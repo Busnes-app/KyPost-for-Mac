@@ -359,14 +359,36 @@ struct ComposeView: View {
         .foregroundStyle(theme.ink)
     }
 
+    private var encryptToggle: some View {
+        Toggle(isOn: $viewModel.encrypt) {
+            Text("Encrypt").lineLimit(1).fixedSize()
+        }
+        .fixedSize()
+    }
+
+    private var signToggle: some View {
+        Toggle(isOn: $viewModel.sign) {
+            Text("Sign").lineLimit(1).fixedSize()
+        }
+        .fixedSize()
+    }
+
     @ViewBuilder
     private var serverCustodyControls: some View {
         switch viewModel.pgpCustody {
         case .serverHeld:
-            HStack(spacing: 16) {
-                Toggle("Encrypt", isOn: $viewModel.encrypt)
-                Toggle("Sign", isOn: $viewModel.sign)
-                Spacer(minLength: 0)
+            // The two-column compose gives this a narrow column: stack the
+            // switches rather than let a label wrap mid-word.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    encryptToggle
+                    signToggle
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    encryptToggle
+                    signToggle
+                }
             }
             .font(AppFont.ui(12, weight: .medium))
             .foregroundStyle(theme.ink)
