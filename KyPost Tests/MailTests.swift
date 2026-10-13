@@ -538,9 +538,6 @@ private func makeOutgoing(
     @Test func errorMapping() {
         #expect(MailOutcome.from(NetworkError.unauthorized) == .unauthorized)
         #expect(MailOutcome.from(MailSourceError.notPaired) == .notPaired)
-        if case .failure = MailOutcome.from(MailSourceError.unsupported) {} else {
-            Issue.record("unsupported should map to failure")
-        }
         if case .failure = MailOutcome.from(NetworkError.serviceUnavailable) {} else {
             Issue.record("503 should map to failure")
         }

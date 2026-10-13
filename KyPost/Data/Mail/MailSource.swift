@@ -40,7 +40,6 @@ protocol MailSource: Sendable {
     /// (`GET /api/mail/search`). Rows carry no body and are stamped with
     /// `folder`: an id means nothing outside the folder it came from.
     func searchMail(folder: String, query: String, limit: Int) async throws -> [Email]
-    func setKeywords(folder: String, messageId: String, keywords: [String]) async throws
     /// The four verbs that take a message out of `mailbox` return the relay's
     /// per-id report. A 200 is transport success only — see MailActionReport.
     @discardableResult
@@ -214,9 +213,6 @@ enum MailSourceError: Error, Equatable {
     /// credential gate is on and the app is locked. Not an error state —
     /// background work retries after the next unlock, like `notPaired`.
     case credentialUnavailable
-    /// The relay has no endpoint for this operation (client-side keyword
-    /// edits).
-    case unsupported
     /// A 200 whose body is not the documented shape. Carries the sentence.
     case malformedResponse(String)
     /// The relay answered definitively that this message cannot be opened

@@ -521,7 +521,6 @@ struct DemoMailSource: MailSource {
                     || $0.senderName.localizedCaseInsensitiveContains(query))
         }
     }
-    func setKeywords(folder: String, messageId: String, keywords: [String]) async throws {}
     func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport {
         MailActionReport(processed: Set(messageIds).count, failed: [])
     }
