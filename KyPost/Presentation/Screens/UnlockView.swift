@@ -12,7 +12,8 @@
 //  behaves as it always did: auto-attempt on appear, button to retry.
 //
 //  Presentation is per-platform: iOS uses a fullScreenCover from
-//  MainTabView; macOS overlays each window's root via LockedOverlay.
+//  MainTabView, and the privacy-cover window (AppDelegate) hosts one when the
+//  app returns locked; macOS overlays each window's root via LockedOverlay.
 //
 
 import SwiftUI
@@ -21,6 +22,10 @@ struct UnlockView: View {
     @Environment(\.theme) private var theme
 
     let manager: AppLockManager
+    /// Without a PIN, raise the system prompt on appear. The iOS privacy
+    /// cover hosts a second copy over the in-tree one and passes false, so
+    /// one return never raises two prompts.
+    var promptsOnAppear = true
 
     @State private var resetConfirmationShown = false
     @State private var resetMessage: String?
@@ -97,7 +102,7 @@ struct UnlockView: View {
         }
         .task {
             // Only without a PIN. See the file header.
-            if !manager.hasPin { await manager.requestUnlock() }
+            if promptsOnAppear, !manager.hasPin { await manager.requestUnlock() }
         }
         .task(id: manager.hasPin) {
             guard manager.hasPin else { return }

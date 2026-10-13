@@ -127,7 +127,8 @@ notifications instead. Those fire once per app-level transition however many
 scenes are open, and are handled synchronously on the main queue so the lock
 engages before the background snapshot. Do not add those delegate methods
 back; they are dead code here. `PrivacySnapshotCover` uses the per-scene
-`UIScene` notifications because it covers each scene's own window.
+`UIScene` notifications because it covers each scene's own window, and lifts
+on return only while unlocked (`KyPost/Presentation/AGENTS.md`).
 
 ## Lock ordering at launch
 
@@ -168,7 +169,8 @@ macOS wake observer, and `onForeground`. Each resolves a pending grace-period
 deadline (`resolvePendingLock` / `returnedWithinGrace`) before reading
 `isLocked`, because a suspended iOS app never ran the timer. On macOS the
 screen-unlock notification cancels the deadline only when
-`CGSessionCopyCurrentDictionary` confirms the screen is unlocked, and
+`CGSessionCopyCurrentDictionary` confirms the screen is unlocked and the
+session is the one on the console, and
 `shutdown()` stops the pending-lock timer. `presentLocally`
 withholds sender and subject while locked, from the banner *and* its stored
 `userInfo`. "Require Unlock to Open" reads as "nobody sees my mail without

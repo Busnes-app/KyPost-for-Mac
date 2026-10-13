@@ -161,6 +161,7 @@ private enum PushLifecycle {
 }
 
 #if os(iOS)
+import SwiftUI
 import UIKit
 import BackgroundTasks
 
@@ -292,9 +293,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 /// A window rather than a SwiftUI overlay: an overlay lives inside the root
 /// view's tree, and anything presented from it (reply, forward, pairing, MFA)
 /// renders above it. A window at `.alert + 1` sits above every presentation.
-/// Installed when the scene enters the background — before the snapshot — and
-/// removed on return only after the grace deadline has been resolved, so a
-/// lock that expired while away is already engaged when the content reappears.
+/// Installed when the scene enters the background — before the snapshot. On
+/// return the grace deadline is resolved first, and the cover lifts only if
+/// the app is unlocked; a locked app keeps it, showing the unlock screen, until
+/// an unlock (or a reset) clears the lock. The in-tree lock presentation is
+/// not something to lift it for: it animates in, and is not guaranteed to sit
+/// above a presentation that was open when the app left.
 @MainActor
 private enum PrivacySnapshotCover {
     private static var covers: [ObjectIdentifier: UIWindow] = [:]
@@ -321,8 +325,13 @@ private enum PrivacySnapshotCover {
         ) { note in
             let scene = note.object as? UIWindowScene
             MainActor.assumeIsolated {
-                SingletonGraph.shared.appLockManager.returnedWithinGrace()
-                if let scene { uncover(scene) }
+                let mayUncover = SingletonGraph.shared.appLockManager.sceneReturningMayUncover()
+                guard let scene else { return }
+                if mayUncover {
+                    uncover(scene)
+                } else {
+                    showUnlock(on: scene)
+                }
             }
         }
     }
@@ -349,10 +358,56 @@ private enum PrivacySnapshotCover {
         covers[key] = window
     }
 
+    /// Turns a scene's cover into the unlock screen. The cover stays opaque
+    /// and above every presentation; only its content changes.
+    private static func showUnlock(on scene: UIWindowScene) {
+        guard let window = covers[ObjectIdentifier(scene)],
+              !(window.rootViewController is UIHostingController<LockedCoverContent>)
+        else { return }
+        let palette = ThemeManager(defaults: SingletonGraph.launchUserDefaults).palette
+        let controller = UIHostingController(rootView: LockedCoverContent(palette: palette) {
+            uncoverReturnedScenes()
+        })
+        controller.view.backgroundColor = UIColor(palette.bg)
+        window.rootViewController = controller
+        window.accessibilityElementsHidden = false
+        window.makeKeyAndVisible()
+    }
+
     private static func uncover(_ scene: UIWindowScene) {
         guard let window = covers.removeValue(forKey: ObjectIdentifier(scene)) else { return }
+        let wasKey = window.isKeyWindow
         window.isHidden = true
         window.rootViewController = nil
+        if wasKey {
+            scene.windows.first { $0 !== window && !$0.isHidden }?.makeKey()
+        }
+    }
+
+    /// After an unlock: every scene on screen loses its cover. A scene still
+    /// in the background keeps it until its own return.
+    private static func uncoverReturnedScenes() {
+        for window in Array(covers.values) {
+            guard let scene = window.windowScene, scene.activationState != .background else { continue }
+            uncover(scene)
+        }
+    }
+}
+
+/// The unlock screen inside a privacy cover. Reads the lock through the
+/// current graph, so a reset that rebuilds the graph unlocked lifts it too.
+private struct LockedCoverContent: View {
+    let palette: ThemePalette
+    let onUnlocked: () -> Void
+
+    var body: some View {
+        let manager = SingletonGraph.shared.appLockManager
+        let locked = manager.isLocked
+        UnlockView(manager: manager, promptsOnAppear: false)
+            .environment(\.theme, palette)
+            .onChange(of: locked, initial: true) { _, isLocked in
+                if !isLocked { onUnlocked() }
+            }
     }
 }
 
@@ -423,9 +478,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The login session's own record of the screen lock. Fails closed: no
-    /// session dictionary means "not verified", so a pending deadline stands.
+    /// session dictionary, or a session that is not the one on the console
+    /// (another user switched in), means "not verified", so a pending
+    /// deadline stands.
     private static func sessionReportsScreenUnlocked() -> Bool {
-        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+              (session[kCGSessionOnConsoleKey] as? Bool) == true
+        else { return false }
         return (session["CGSSessionScreenIsLocked"] as? Bool) != true
     }
 
