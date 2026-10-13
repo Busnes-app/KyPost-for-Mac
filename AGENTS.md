@@ -339,6 +339,14 @@ is the server's pin, not this device's.
   `noembed`, `noframes`, `plaintext`) is text, as an HTML parser reads it: it
   is never rewritten and spends no budget. `data:` images render with `loadsSubresources` off (verified against
   WebKit), so remote content stays blocked.
+  **The scan must stay linear on any input** (`MarkupScanner`): no
+  backtracking pattern over an open-ended tag or body; malformed markup made
+  the old single regex slow down quadratically. Tag names match as ICU
+  case-insensitive matching does (`<ſcript>` is a script), so the test
+  diffs the scanner against that old pattern. A body over
+  `InlineImages.maxScannedLength` (1 Mi UTF-16 units) renders without inline
+  images. `EncryptedReadViewModel.renderedHTML` is computed once per read,
+  off the main actor (`@concurrent`), never in a view's body.
 - **A nested MIME signature is detected, not verified** (#111). With no packet
   signature the verdict is `unchecked` ("Signature not checked") when a
   `multipart/signed; protocol=application/pgp-signature` wrapper exists at any
