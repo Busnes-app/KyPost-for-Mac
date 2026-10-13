@@ -24,65 +24,145 @@ nonisolated enum PgpMimeReader {
     /// cannot recurse until the stack gives out.
     private static let maxDepth = 12
 
-    static func read(_ mime: Data) -> DecryptedBody? {
-        let part = parse(mime)
+    /// Total decoded attachment bytes retained from one message (Android
+    /// `MemoryBudget.DECRYPTED_ATTACHMENT_BYTES`). They live for the life of
+    /// the reader screen, so the sender does not get to choose how much.
+    static let attachmentByteCap = 4 * 1024 * 1024
 
-        var html: String?
-        var plain: String?
-        collect(part, depth: 0, html: &html, plain: &plain)
+    /// A sender chooses the part count too; retained objects are capped as
+    /// well as bytes (`DECRYPTED_ATTACHMENT_PART_COUNT`).
+    static let attachmentPartCap = 50
+
+    static func read(_ mime: Data) -> DecryptedBody? {
+        let root = parse(mime)
+
+        var walk = Walk()
+        walk.noteSignature(root)
+        if root.children.isEmpty {
+            // A single-part message: its disposition, then its own content
+            // type decides, with RFC 2045's text/plain default for a missing
+            // header. A text part marked as an attachment is a file.
+            if root.isAttachment {
+                walk.keepAttachment(root)
+            } else {
+                walk.takeLeaf(root)
+            }
+        } else {
+            walk.collect(root, depth: 0)
+        }
 
         // A body with no recognised Content-Type is RFC 2045's default of
         // text/plain. An empty one there came from the default rather than
         // from anything parsed, so it is treated as absent — whereas an empty
         // body under a Content-Type header that *was* present is real content
         // ("no body, attachment only" is a legitimate message).
-        if part.contentType == nil, plain?.isEmpty == true, html == nil {
-            plain = nil
+        if root.contentType == nil, walk.plain?.isEmpty == true, walk.html == nil {
+            walk.plain = nil
         }
 
-        guard html != nil || plain != nil else { return nil }
+        // Attachments are content: a files-only message renders an empty body
+        // and its files, rather than failing as unreadable. That holds when
+        // every file was dropped for size too — the omission is then the one
+        // thing the screen has to say.
+        if walk.html == nil, walk.plain == nil {
+            guard !walk.attachments.isEmpty || walk.omitted else { return nil }
+            walk.plain = ""
+        }
 
         return DecryptedBody(
-            html: html,
-            plain: plain,
-            bodyMode: html != nil ? "html" : "plain",
-            protectedSubject: part.headerValue("subject")
+            html: walk.html,
+            plain: walk.plain,
+            bodyMode: walk.html != nil ? "html" : "plain",
+            protectedSubject: root.headerValue("subject")
                 .map(decodeEncodedWords)
-                .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+                .flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 },
+            attachments: walk.attachments,
+            attachmentsOmitted: walk.omitted,
+            hasDetachedSignature: walk.hasDetachedSignature
         )
     }
 
     // MARK: - Walking
 
-    /// Fills the html and plain slots from a part tree.
-    ///
-    /// A blank part is real content — a multipart whose only text part is
-    /// empty must yield `""` rather than nil. But it must not *lock* the slot:
-    /// a later sibling with actual content has to win, or the message renders
-    /// blank with no error and nothing to explain it.
-    private static func collect(
-        _ part: Part,
-        depth: Int,
-        html: inout String?,
-        plain: inout String?
-    ) {
-        guard depth <= maxDepth else { return }
+    private struct Walk {
+        var html: String?
+        var plain: String?
+        var attachments: [DecryptedAttachment] = []
+        var omitted = false
+        var retained = 0
+        var hasDetachedSignature = false
 
-        if !part.children.isEmpty {
-            for child in part.children {
-                collect(child, depth: depth + 1, html: &html, plain: &plain)
-            }
-            return
+        /// A declared PGP/MIME signature wrapper, at the root or nested. It is
+        /// detected, not verified: presence establishes neither validity nor a
+        /// signer, only that "not signed" would be false.
+        mutating func noteSignature(_ part: Part) {
+            guard part.mimeType == "multipart/signed",
+                  parameter("protocol", of: part.contentType)?
+                      .caseInsensitiveCompare("application/pgp-signature") == .orderedSame
+            else { return }
+            hasDetachedSignature = true
         }
 
-        let type = part.mimeType
-        // An attachment is not the body, however textual it is.
-        guard !part.isAttachment else { return }
+        /// Fills the html and plain slots and the attachment list from a
+        /// multipart's children.
+        ///
+        /// A blank part is real content — a multipart whose only text part is
+        /// empty must yield `""` rather than nil. But it must not *lock* the
+        /// slot: a later sibling with actual content has to win, or the
+        /// message renders blank with no error and nothing to explain it.
+        mutating func collect(_ part: Part, depth: Int) {
+            guard depth <= maxDepth else { return }
+            let isSigned = part.mimeType == "multipart/signed"
+            for child in part.children {
+                noteSignature(child)
+                // The detached signature of a multipart/signed is transport,
+                // like the outer PGP/MIME parts — not a file the sender
+                // attached for the reader.
+                if isSigned, child.mimeType == "application/pgp-signature" { continue }
+                if child.isAttachment {
+                    keepAttachment(child)
+                } else if !child.children.isEmpty {
+                    collect(child, depth: depth + 1)
+                } else {
+                    takeLeaf(child)
+                }
+            }
+        }
 
-        if type == "text/html" {
-            if html == nil || html?.isEmpty == true { html = part.text }
-        } else if type == "text/plain" || part.contentType == nil {
-            if plain == nil || plain?.isEmpty == true { plain = part.text }
+        mutating func takeLeaf(_ part: Part) {
+            switch part.mimeType {
+            case "text/html":
+                if html == nil || html?.isEmpty == true { html = part.text }
+            case "text/plain":
+                if plain == nil || plain?.isEmpty == true { plain = part.text }
+            default:
+                // A multipart that would not split (no boundary) has nothing
+                // this reader can show; anything else non-text is a file.
+                if !part.mimeType.hasPrefix("multipart/") { keepAttachment(part) }
+            }
+        }
+
+        /// Keeps one attachment within the part and byte caps. A part that
+        /// would cross the byte ceiling is dropped whole rather than
+        /// truncated — a partial file is worse than a missing one — and the
+        /// drop is recorded so the screen can say so.
+        mutating func keepAttachment(_ part: Part) {
+            guard attachments.count < attachmentPartCap else {
+                omitted = true
+                return
+            }
+            let bytes = part.decodedBody
+            guard bytes.count <= attachmentByteCap - retained else {
+                omitted = true
+                return
+            }
+            retained += bytes.count
+            attachments.append(DecryptedAttachment(
+                name: part.fileName ?? "attachment",
+                mimeType: part.contentType == nil ? "application/octet-stream" : part.mimeType,
+                data: bytes,
+                contentId: part.contentId
+            ))
         }
     }
 
@@ -106,19 +186,53 @@ nonisolated enum PgpMimeReader {
                 .map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? "text/plain"
         }
 
+        /// A `text/html` or `text/plain` leaf is a body candidate unless its
+        /// disposition says attachment: a `name=` parameter or a `Content-ID`
+        /// on a text part never makes it a file — many mailers stamp both on
+        /// every part, the body included. Non-text, non-multipart leaves are
+        /// attachments whatever their headers say.
         var isAttachment: Bool {
-            guard let disposition = headerValue("content-disposition") else { return false }
-            return disposition.lowercased().hasPrefix("attachment")
+            if headerValue("content-disposition")?.lowercased().hasPrefix("attachment") == true {
+                return true
+            }
+            if mimeType == "text/html" || mimeType == "text/plain" { return false }
+            return children.isEmpty && !mimeType.hasPrefix("multipart/")
         }
 
-        /// The decoded, charset-interpreted text of a leaf part.
-        var text: String {
-            let decoded = decodeTransfer(
+        /// The transfer-decoded bytes of a leaf part.
+        var decodedBody: Data {
+            decodeTransfer(
                 body,
                 encoding: headerValue("content-transfer-encoding")?
                     .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
             )
-            return decodeText(decoded, charset: parameter("charset", of: contentType))
+        }
+
+        /// The decoded, charset-interpreted text of a leaf part.
+        var text: String {
+            decodeText(decodedBody, charset: parameter("charset", of: contentType))
+        }
+
+        /// The sender's filename: Content-Disposition `filename` (RFC 2231
+        /// `filename*` included), else Content-Type `name`. Display text only
+        /// — every sink that writes a file sanitises it itself.
+        var fileName: String? {
+            let disposition = headerValue("content-disposition")
+            let raw = parameter("filename", of: disposition)
+                ?? parameter("filename*", of: disposition).map(decodeRFC2231)
+                ?? parameter("name", of: contentType)
+            let name = raw.map(decodeEncodedWords)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name?.isEmpty == false ? name : nil
+        }
+
+        /// `Content-ID` without its angle brackets, for `cid:` references.
+        var contentId: String? {
+            guard var value = headerValue("content-id")?.trimmingCharacters(in: .whitespaces)
+            else { return nil }
+            if value.hasPrefix("<") { value.removeFirst() }
+            if value.hasSuffix(">") { value.removeLast() }
+            value = value.trimmingCharacters(in: .whitespaces)
+            return value.isEmpty ? nil : value
         }
     }
 
@@ -251,6 +365,28 @@ nonisolated enum PgpMimeReader {
         return nil
     }
 
+    /// RFC 2231 `charset'language'percent-encoded` — single-segment only;
+    /// continuations (`filename*0*=`) are rare enough to fall back to the
+    /// Content-Type name or "attachment".
+    private static func decodeRFC2231(_ value: String) -> String {
+        let pieces = value.split(separator: "'", maxSplits: 2, omittingEmptySubsequences: false)
+        guard pieces.count == 3 else { return value }
+        let charset = String(pieces[0])
+        var bytes: [UInt8] = []
+        var scalars = Array(pieces[2].utf8)[...]
+        while let byte = scalars.popFirst() {
+            if byte == 0x25, scalars.count >= 2,
+               let high = hexValue(scalars[scalars.startIndex]),
+               let low = hexValue(scalars[scalars.startIndex + 1]) {
+                bytes.append(high << 4 | low)
+                scalars = scalars.dropFirst(2)
+            } else {
+                bytes.append(byte)
+            }
+        }
+        return decodeText(Data(bytes), charset: charset)
+    }
+
     private static func decodeTransfer(_ data: Data, encoding: String) -> Data {
         switch encoding {
         case "base64":
@@ -329,8 +465,8 @@ nonisolated enum PgpMimeReader {
 
     /// Decodes RFC 2047 `=?charset?B?...?=` / `?Q?...?=` words.
     ///
-    /// Only for the protected subject. A subject is the one header this reader
-    /// surfaces, and non-ASCII subjects arrive encoded far more often than not.
+    /// For the protected subject and attachment filenames, which arrive
+    /// encoded far more often than not when they are non-ASCII.
     static func decodeEncodedWords(_ value: String) -> String {
         guard value.contains("=?") else { return value }
         var result = ""
@@ -343,10 +479,14 @@ nonisolated enum PgpMimeReader {
             result += rest[rest.startIndex..<open.lowerBound]
             let after = rest[open.upperBound...]
 
+            // The terminator is searched for only after the encoding's own
+            // "?", which a payload starting with "=" would otherwise match.
             guard let charsetEnd = after.firstIndex(of: "?"),
                   case let afterCharset = after[after.index(after: charsetEnd)...],
                   let encodingEnd = afterCharset.firstIndex(of: "?"),
-                  let close = afterCharset.range(of: "?=")
+                  case let encoded = afterCharset[afterCharset.index(after: encodingEnd)...],
+                  let close = encoded.range(of: "?="),
+                  encoded.startIndex <= close.lowerBound
             else {
                 // Not a well-formed encoded word; keep it verbatim rather than
                 // dropping text the user was meant to read.
@@ -356,7 +496,7 @@ nonisolated enum PgpMimeReader {
 
             let charset = String(after[after.startIndex..<charsetEnd])
             let encoding = afterCharset[afterCharset.startIndex..<encodingEnd]
-            let payload = afterCharset[afterCharset.index(after: encodingEnd)..<close.lowerBound]
+            let payload = encoded[encoded.startIndex..<close.lowerBound]
 
             let decoded: Data? = switch encoding.first {
             case "B", "b":
@@ -370,7 +510,7 @@ nonisolated enum PgpMimeReader {
             }
 
             result += decoded.map { decodeText($0, charset: charset) } ?? String(payload)
-            rest = afterCharset[close.upperBound...]
+            rest = encoded[close.upperBound...]
         }
         result += rest
         return result

@@ -326,6 +326,38 @@ is the server's pin, not this device's.
   zeroing a bound payload copy triggers copy-on-write and misses the original.
 - **Decrypt with every held key** (`HeldKeyMaterial.decryptionKeys`): mail
   encrypted to a retired key, or to a hidden recipient, only opens that way.
+- **Decrypted attachments stay in memory** (`DecryptedBody.attachments`,
+  Android #109). `PgpMimeReader` keeps at most 50 parts and 4 MiB decoded,
+  drops an over-cap part whole (never truncated) and sets
+  `attachmentsOmitted`, which the screen says out loud. A
+  `multipart/signed`'s `application/pgp-signature` part is transport, not a
+  file. Quick Look needs a file, so `DecryptedAttachmentFiles` stages one per
+  preview under `attachments/decrypted` (inside the root the wipe and the HLP
+  purge delete); the view model deletes it when the preview closes and in
+  `forget()`. Save As goes only where the user picks, and is refused under
+  Hostile Location Protection like any attachment. When the app lock engages
+  the reader closes the preview and the save panel and calls `forget()`;
+  Decrypt is offered again after unlock. `forget()` also voids a read still
+  in flight, so a decrypt finishing after it keeps nothing.
+- **`cid:` images become `data:` URIs** (`InlineImages`) for png/jpeg/gif/webp
+  only, within 128 KiB per message; anything else keeps its unresolvable
+  `cid:`. Markup inside an HTML comment or a raw-text/RCDATA
+  element (`script`, `style`, `textarea`, `title`, `xmp`, `iframe`,
+  `noembed`, `noframes`, `plaintext`) is text, as an HTML parser reads it: it
+  is never rewritten and spends no budget. `data:` images render with `loadsSubresources` off (verified against
+  WebKit), so remote content stays blocked.
+- **A nested MIME signature is detected, not verified** (#111). With no packet
+  signature the verdict is `unchecked` ("Signature not checked") when a
+  `multipart/signed; protocol=application/pgp-signature` wrapper exists at any
+  depth, else `unsigned` ("Encrypted, not signed"). Both are message-level:
+  shown without a resolved sender and never marking a row.
+- **Reply, Reply All and Forward are closed on client-protected mail**
+  (`mayReplyOrForward`): quoting the plaintext would put it in an archived
+  `ComposeDraft`, and the webmail handoff uploads a server draft. The buttons
+  stay pressable and explain.
+- **The reader has no webmail fallback** (`KyPost/Presentation/AGENTS.md`): no
+  "Open in webmail" link, not on a failed decrypt, the reply gate, or dropped
+  attachments.
 
 ### Signature attribution is entity-level (`Domain/Security/GopenPGPCrypto.swift`)
 
@@ -451,7 +483,8 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
 - This app has two address parsers and **neither may reach a verdict**:
   `RelayMailSource.splitSender` fills display fields, and `EmailAddress.parse`
   builds outgoing recipients. Audited 2026-08-18; keep them apart.
-- Six states, not verified/unverified. The line that matters is **identity**
+- Eight states, not verified/unverified (`unsigned` and `unchecked` describe
+  the message, the other six its sender). The line that matters is **identity**
   (`verifiedConfirmed` — confirmed out of band) versus **continuity**
   (`verifiedSeenBefore` — same key as last time). Most keys arrive by Autocrypt
   harvest, so a flat "verified" overclaims for nearly all of them. The wording

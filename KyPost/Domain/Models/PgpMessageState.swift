@@ -121,6 +121,17 @@ nonisolated func showsSignaturePill(state: PgpMessageState, signed: Bool) -> Boo
     state == .decryptedByServer && signed
 }
 
+/// Whether Reply, Reply All and Forward may open compose for a message.
+///
+/// False only for `.clientProtected`. A reply to one would either quote the
+/// decrypted plaintext into a `ComposeDraft` — a scene value state
+/// restoration archives to disk — or hand off through a server-side draft
+/// (`/api/mail/draft`), which uploads it. Decided from the row's state, so it
+/// holds before, during and after an on-device decrypt.
+nonisolated func mayReplyOrForward(_ state: PgpMessageState) -> Bool {
+    state != .clientProtected
+}
+
 /// `/read` URL components for the paired server, or nil when `serverUrl` isn't
 /// a usable absolute URL — callers render "no button" rather than a dead one.
 ///

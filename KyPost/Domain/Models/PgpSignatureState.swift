@@ -9,13 +9,25 @@
 
 import Foundation
 
-/// Six states, not a verified/unverified pair. The distinction that matters is
+/// Eight states, not a verified/unverified pair. The distinction that matters is
 /// between *identity* (someone confirmed this key out of band) and *continuity*
 /// (same key as last time), because most keys arrive by Autocrypt harvest and a
 /// flat "verified" would overclaim for nearly all of them.
 nonisolated enum PgpSignatureState: Equatable, Sendable {
-    /// Unsigned, or no opinion expressed. Nothing to say.
+    /// No opinion expressed. Nothing to say.
     case none
+
+    /// Decrypted on this device and carrying neither a packet signature nor
+    /// a declared PGP/MIME signature wrapper. A message-level notice, not a
+    /// sender verdict: it needs no resolved sender and marks no row.
+    case unsigned
+
+    /// Decrypted on this device with no packet signature, but carrying a
+    /// declared `multipart/signed` (`application/pgp-signature`) wrapper,
+    /// root or nested. Detected, **not verified** — so neither "not signed"
+    /// (false) nor any verdict (unearned). Malformed signature contents land
+    /// here too.
+    case unchecked
 
     /// Signed by a key bound to the sender that the user confirmed out of band
     /// — by reading a fingerprint aloud or scanning a QR code. **The only
@@ -142,7 +154,7 @@ nonisolated func signatureState(
 nonisolated func signatureRowSymbol(_ state: PgpSignatureState) -> String? {
     switch state {
     case .keyChanged, .invalid: "exclamationmark.triangle.fill"
-    case .none, .verifiedConfirmed, .verifiedSeenBefore, .signerUnknown: nil
+    case .none, .unsigned, .unchecked, .verifiedConfirmed, .verifiedSeenBefore, .signerUnknown: nil
     }
 }
 
@@ -154,12 +166,21 @@ nonisolated func signatureRowSymbol(_ state: PgpSignatureState) -> String? {
 nonisolated func signatureLabel(_ state: PgpSignatureState) -> String? {
     switch state {
     case .none: nil
+    case .unsigned: "Encrypted, not signed"
+    case .unchecked: "Signature not checked"
     case .verifiedConfirmed: "Signed — you confirmed this key"
     case .verifiedSeenBefore: "Signed — same key as last time"
     case .signerUnknown: "Signed by a key you haven't saved"
     case .keyChanged: "This sender's key has changed"
     case .invalid: "Signature doesn't match"
     }
+}
+
+/// Whether the state describes the message rather than its sender. These two
+/// are shown even when the server resolved no sender, and without one beside
+/// them; every other label is a verdict about the resolved sender.
+nonisolated func signatureIsMessageLevel(_ state: PgpSignatureState) -> Bool {
+    state == .unsigned || state == .unchecked
 }
 
 /// Whether the state is an alarm rather than information.

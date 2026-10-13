@@ -193,15 +193,19 @@ nonisolated struct EncryptedMessageReader: Sendable {
             return .decryptFailed("this message could not be read once decrypted")
         }
 
-        return .decrypted(
-            body: body,
-            signature: signatureState(
+        // No packet signature: say which kind of absence. A nested MIME
+        // signature is detected, not verified — checking it would mean
+        // verifying the exact signed-part bytes, which this reader does not
+        // do — so it reads "not checked", never "not signed".
+        let signature: PgpSignatureState = decrypted.signature.present
+            ? signatureState(
                 signature: decrypted.signature,
                 signerKeys: payload.signerKeys,
                 fingerprint: crypto.fingerprint(ofArmoredPublicKey:)
-            ),
-            resolvedSender: payload.resolvedSender
-        )
+            )
+            : body.hasDetachedSignature ? .unchecked : .unsigned
+
+        return .decrypted(body: body, signature: signature, resolvedSender: payload.resolvedSender)
     }
 
     /// A signed-but-not-encrypted message: nothing to decrypt, but a detached

@@ -38,6 +38,16 @@ struct EmailDetailView: View {
     /// Drives the Decrypt affordance. Built in `.task` because constructing it
     /// reads the pairing out of the Keychain, which `body` must not do.
     @State private var encryptedRead: EncryptedReadViewModel?
+    /// Set when Reply/Reply All/Forward is pressed on a message they are not
+    /// available for; drives the explanation.
+    @State private var showsReplyUnavailable = false
+    /// True while Forward downloads the attachments it carries.
+    @State private var preparingForward = false
+    /// The attachment listing in flight, so Forward can wait for it rather
+    /// than read the still-empty `attachments`. Nil on failure.
+    @State private var attachmentListing: Task<[EmailAttachment]?, Never>?
+    /// The Forward in progress; cancelled when the screen goes away.
+    @State private var forwardTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -73,6 +83,18 @@ struct EmailDetailView: View {
             // transport parts, not files the sender attached for the reader.
             if pgpState != .clientProtected, !attachments.isEmpty {
                 attachmentBar
+            }
+
+            // The decrypted message's own files, from memory. Shown with the
+            // body they came out of and gone with it.
+            if let decrypted = encryptedRead?.body, !decrypted.attachments.isEmpty {
+                decryptedAttachmentBar(decrypted.attachments)
+            }
+            if let model = encryptedRead, model.body != nil,
+               model.signatureLine != nil || model.attachmentsOmittedMessage != nil {
+                decryptedNotices(model)
+                    .padding(.horizontal)
+                    .padding(.top, 6)
             }
 
             if let decrypted = encryptedRead?.body {
@@ -124,10 +146,15 @@ struct EmailDetailView: View {
         }
 #endif
         .quickLookPreview($quickLookURL)
-        // Hostile Location Protection: the preview file must not outlive
-        // the Quick Look session (the disclosed brief-disk-touch gap).
         .onChange(of: quickLookURL) { old, new in
-            guard new == nil, let old, hostileLocationProtectionActive else { return }
+            guard let old, old != new else { return }
+            // A decrypted attachment's file is plaintext: deleted the moment
+            // its preview closes, whatever mode the app is in, and by
+            // `forget()` if it never does. A no-op for any other file.
+            encryptedRead?.discardPreview(old)
+            // Hostile Location Protection: the preview file must not outlive
+            // the Quick Look session (the disclosed brief-disk-touch gap).
+            guard new == nil, hostileLocationProtectionActive else { return }
             try? FileManager.default.removeItem(at: old.deletingLastPathComponent())
         }
         .fileExporter(
@@ -143,14 +170,32 @@ struct EmailDetailView: View {
                 Log.mail.error("Attachment save failed: \(error.localizedDescription)")
             }
         }
+        .alert("Not available for encrypted mail", isPresented: $showsReplyUnavailable) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Replying to encrypted mail isn't available in the app yet.")
+        }
         .task {
+            let listing = Task { await inboxViewModel.attachmentListing(for: email) }
+            attachmentListing = listing
             await prepareEncryptedRead()
             await inboxViewModel.markRead(email)
-            attachments = await inboxViewModel.attachments(for: email)
+            attachments = await listing.value ?? []
+        }
+        .onChange(of: isLocked) { _, locked in
+            guard locked else { return }
+            // Nothing decrypted stays on screen, or on disk, behind the lock:
+            // the preview and the save panel can sit above the lock cover,
+            // and the held key is gone anyway. Decrypt is offered again.
+            quickLookURL = nil
+            attachmentExport = nil
+            encryptedRead?.forget()
         }
         .onDisappear {
             // The plaintext does not outlive the screen showing it.
             encryptedRead?.forget()
+            attachmentListing?.cancel()
+            forwardTask?.cancel()
         }
     }
 
@@ -158,24 +203,34 @@ struct EmailDetailView: View {
     /// archive, junk, delete.
     @ViewBuilder
     private var mailActionButtons: some View {
-        Button {
-            compose(.reply(to: email))
-        } label: {
-            Label("Reply", systemImage: "arrowshape.turn.up.left")
+        // Not `.disabled`: a disabled button cannot say why it is disabled.
+        // Dimmed instead, and pressing it explains.
+        Group {
+            Button {
+                replyOrExplain { compose(.reply(to: email)) }
+            } label: {
+                Label("Reply", systemImage: "arrowshape.turn.up.left")
+            }
+            .help(replyAvailable ? "Reply to the sender" : replyUnavailableHelp)
+            Button {
+                replyOrExplain { compose(.replyAll(to: email, ownAddress: ownAddress)) }
+            } label: {
+                Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
+            }
+            .help(replyAvailable ? "Reply to the sender and all recipients" : replyUnavailableHelp)
+            Button {
+                replyOrExplain { forward() }
+            } label: {
+                if preparingForward {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Forward", systemImage: "arrowshape.turn.up.right")
+                }
+            }
+            .disabled(preparingForward)
+            .help(replyAvailable ? "Forward this email" : replyUnavailableHelp)
         }
-        .help("Reply to the sender")
-        Button {
-            compose(.replyAll(to: email, ownAddress: ownAddress))
-        } label: {
-            Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
-        }
-        .help("Reply to the sender and all recipients")
-        Button {
-            compose(.forward(email))
-        } label: {
-            Label("Forward", systemImage: "arrowshape.turn.up.right")
-        }
-        .help("Forward this email")
+        .opacity(replyAvailable ? 1 : 0.4)
         Button {
             Task {
                 await inboxViewModel.archive(serverIds: [email.serverId])
@@ -265,6 +320,48 @@ struct EmailDetailView: View {
 #endif
     }
 
+    private var replyAvailable: Bool { mayReplyOrForward(pgpState) }
+
+    private var replyUnavailableHelp: String {
+        String(localized: "Replying to encrypted mail isn't available in the app yet.")
+    }
+
+    private func replyOrExplain(_ action: () -> Void) {
+        guard replyAvailable else {
+            showsReplyUnavailable = true
+            return
+        }
+        action()
+    }
+
+    /// Forward carries the original's attachments. They travel beside the
+    /// draft through `ForwardAttachmentHandoff`, never inside it — the draft
+    /// is a scene value state restoration writes to disk.
+    ///
+    /// Waits for the attachment listing when it has not landed yet, and opens
+    /// nothing if a session boundary passes meanwhile (`runForward`).
+    private func forward() {
+        guard forwardTask == nil else { return }
+        let draft = ComposeDraft.forward(email)
+        let pendingListing = attachmentListing
+        preparingForward = true
+        forwardTask = Task {
+            await runForward(
+                draftID: draft.id,
+                listing: {
+                    if let pendingListing { return await pendingListing.value }
+                    return await inboxViewModel.attachmentListing(for: email)
+                },
+                fetch: { attachment in await inboxViewModel.attachmentData(attachment, of: email) },
+                open: { compose(draft) }
+            )
+            preparingForward = false
+            forwardTask = nil
+        }
+    }
+
+    private var isLocked: Bool { SingletonGraph.shared.appLockManager.isLocked }
+
     /// Our own relay address (the pairing's sub), excluded from Reply All.
     private var ownAddress: String? {
         (try? SingletonGraph.shared.securePairingStore.loadPairing())?.sub
@@ -318,7 +415,7 @@ struct EmailDetailView: View {
     /// nothing here writes it back to the store.
     @ViewBuilder
     private func decryptedBodyView(_ decrypted: DecryptedBody) -> some View {
-        if let html = decrypted.html, !html.isEmpty {
+        if let html = encryptedRead?.renderedHTML ?? decrypted.html, !html.isEmpty {
             EmailBodyWebView(html: themedHTML(html))
         } else {
             ScrollView {
@@ -369,20 +466,86 @@ struct EmailDetailView: View {
                         .foregroundStyle(theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if model.body != nil, !model.resolvedSender.isEmpty,
-                   let label = signatureLabel(model.signature) {
-                    // The verdict is shown against the address the SERVER
-                    // resolved, never the raw From — the two are separable by
-                    // an attacker, and a correct verdict beside the wrong
-                    // address is still a lie.
-                    Text("\(label) — \(model.resolvedSender)")
-                        .font(AppFont.ui(12))
-                        .foregroundStyle(
-                            signatureIsAlarming(model.signature) ? SemanticColors.danger : theme.ink
-                        )
-                        .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// What stays visible once plaintext is on screen: the signature line and
+    /// a dropped-attachment notice.
+    private func decryptedNotices(_ model: EncryptedReadViewModel) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let line = model.signatureLine {
+                // A sender verdict is shown against the address the SERVER
+                // resolved, never the raw From — the two are separable by an
+                // attacker, and a correct verdict beside the wrong address is
+                // still a lie.
+                Text(line)
+                    .font(AppFont.ui(12))
+                    .foregroundStyle(
+                        signatureIsAlarming(model.signature) ? SemanticColors.danger : theme.ink
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let omitted = model.attachmentsOmittedMessage {
+                Text(omitted)
+                    .font(AppFont.ui(12))
+                    .foregroundStyle(theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Chips for the decrypted message's own files. Tap previews through a
+    /// staged temp file; Save As writes only where the user chooses, and is
+    /// refused under Hostile Location Protection like any other attachment.
+    private func decryptedAttachmentBar(_ parts: [DecryptedAttachment]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(parts) { part in
+                    Button {
+                        if let model = encryptedRead, let url = model.stageForPreview(part) {
+                            quickLookURL = url
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "paperclip")
+                                .font(.system(size: 11))
+                            // Flattened: a sender-chosen name must not reverse
+                            // itself with a bidi override.
+                            Text(displayHeaderText(part.name))
+                                .font(AppFont.ui(12, weight: .medium))
+                                .foregroundStyle(theme.inkStrong)
+                                .lineLimit(1)
+                            Text(part.data.count.formatted(.byteCount(style: .file)))
+                                .font(AppFont.ui(10))
+                                .foregroundStyle(theme.ink.opacity(0.7))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(theme.panel, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Click to preview; right-click to save")
+                    .contextMenu {
+                        if hostileLocationProtectionActive {
+                            Button("Saving is off during Hostile Location Protection") {}
+                                .disabled(true)
+                        } else {
+                            Button {
+                                attachmentExport = AttachmentDocument(
+                                    name: safeAttachmentFileName(part.name),
+                                    data: part.data
+                                )
+                            } label: {
+                                Label("Save As…", systemImage: "square.and.arrow.down")
+                            }
+                        }
+                    }
                 }
             }
+            .padding(.horizontal)
+            .padding(.top, 8)
         }
     }
 
@@ -401,6 +564,7 @@ struct EmailDetailView: View {
                     Text(email.senderEmail)
                         .font(AppFont.mono(12))
                         .foregroundStyle(theme.ink.opacity(0.8))
+                    recipientLines
                 }
                 Spacer()
                 Text(email.receivedAt, format: .dateTime.day().month().hour().minute())
@@ -420,6 +584,28 @@ struct EmailDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// To and Cc under the sender, flattened to one line each so a display
+    /// name cannot forge a labelled line or reverse an address. Hidden when
+    /// the row carries no recipients.
+    @ViewBuilder
+    private var recipientLines: some View {
+        let lines = detailRecipientLines(to: email.sentTo, cc: email.cc)
+        if let to = lines.to {
+            Text("To: \(to)")
+                .font(AppFont.ui(12))
+                .foregroundStyle(theme.ink.opacity(0.8))
+                .lineLimit(3)
+                .textSelection(.enabled)
+        }
+        if let cc = lines.cc {
+            Text("Cc: \(cc)")
+                .font(AppFont.ui(12))
+                .foregroundStyle(theme.ink.opacity(0.8))
+                .lineLimit(3)
+                .textSelection(.enabled)
         }
     }
 

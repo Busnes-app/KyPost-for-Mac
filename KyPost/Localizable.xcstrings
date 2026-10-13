@@ -7,6 +7,12 @@
     "  ·  Copyright © 2026 Busnes.app" : {
 
     },
+    "Cc: %@" : {
+
+    },
+    "Not available for encrypted mail" : {
+
+    },
     "%lld Failed Attempts" : {
 
     },
@@ -110,6 +116,12 @@
 
     },
     "OK" : {
+
+    },
+    "Replying to encrypted mail isn't available in the app yet." : {
+
+    },
+    "To: %@" : {
 
     },
     "Open KyPost to review this sign-in." : {

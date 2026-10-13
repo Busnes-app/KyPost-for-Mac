@@ -9,6 +9,10 @@
 //  scene value that state restoration would archive. When this object goes, so
 //  does the plaintext.
 //
+//  Its decrypted attachments follow the same rule. The one exception is the
+//  Quick Look file a preview needs, which this object stages, tracks, and
+//  deletes when the preview closes and in `forget()`.
+//
 
 import Foundation
 import Observation
@@ -27,6 +31,13 @@ final class EncryptedReadViewModel {
     private(set) var resolvedSender = ""
     private(set) var signature: PgpSignatureState = .none
 
+    /// Quick Look files staged from `body.attachments`, deleted by `forget()`.
+    private var stagedFiles: [URL] = []
+    /// Advanced by `forget()`. A read that started under an earlier value
+    /// finished after the plaintext was meant to be gone, and is discarded.
+    private var generation = 0
+    private let files: DecryptedAttachmentFiles
+
     private let reader: EncryptedMessageReader?
     private let mailbox: String
     private let messageId: String
@@ -36,8 +47,10 @@ final class EncryptedReadViewModel {
         reader: EncryptedMessageReader?,
         mailbox: String,
         messageId: String,
-        sender: String
+        sender: String,
+        files: DecryptedAttachmentFiles = DecryptedAttachmentFiles()
     ) {
+        self.files = files
         self.reader = reader
         self.mailbox = mailbox
         self.messageId = messageId
@@ -66,6 +79,48 @@ final class EncryptedReadViewModel {
     var showsRetryButton: Bool {
         guard let outcome, !isWorking else { return false }
         return readOutcomeAllowsRetry(outcome)
+    }
+
+    /// The signature line, or nil when there is nothing to say. Sender
+    /// verdicts need the server's resolved sender and are rendered against it;
+    /// the two message-level notices (`unsigned`, `unchecked`) are shown on
+    /// their own, resolved sender or not.
+    var signatureLine: String? {
+        guard body != nil, let label = signatureLabel(signature) else { return nil }
+        if signatureIsMessageLevel(signature) { return label }
+        guard !resolvedSender.isEmpty else { return nil }
+        return "\(label) — \(resolvedSender)"
+    }
+
+    /// Said out loud when a part was dropped for size or count.
+    var attachmentsOmittedMessage: String? {
+        body?.attachmentsOmitted == true
+            ? "Some attachments in this message could not be shown on this device."
+            : nil
+    }
+
+    /// The decrypted HTML with `cid:` images resolved to bounded `data:` URIs
+    /// from the message's own parts, or nil for a plain-text message.
+    var renderedHTML: String? {
+        guard let html = body?.html, !html.isEmpty else { return nil }
+        return InlineImages.inlineCidImages(html: html, attachments: body?.attachments ?? [])
+    }
+
+    /// Writes one decrypted attachment for Quick Look. Tracked so `forget()`
+    /// deletes it even when the preview is never closed normally.
+    func stageForPreview(_ attachment: DecryptedAttachment) -> URL? {
+        guard body?.attachments.contains(where: { $0.id == attachment.id }) == true,
+              let url = try? files.stage(attachment)
+        else { return nil }
+        stagedFiles.append(url)
+        return url
+    }
+
+    /// Deletes one staged preview file, once its preview has closed.
+    func discardPreview(_ url: URL) {
+        guard let index = stagedFiles.firstIndex(of: url) else { return }
+        stagedFiles.remove(at: index)
+        files.remove(url)
     }
 
     /// The sentence for the current outcome, or nil when there is nothing to
@@ -112,6 +167,7 @@ final class EncryptedReadViewModel {
         guard let reader, !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
+        let started = generation
 
         let result = await reader.read(
             mailbox: mailbox,
@@ -119,6 +175,9 @@ final class EncryptedReadViewModel {
             sender: sender,
             unlockIfNeeded: unlockIfNeeded
         )
+        // `forget()` ran meanwhile (the lock engaged, or the screen went):
+        // keep nothing, and leave Decrypt on offer.
+        guard generation == started else { return }
         outcome = result
 
         if case .decrypted(let body, let signature, let resolvedSender) = result {
@@ -131,6 +190,9 @@ final class EncryptedReadViewModel {
     /// Drops the plaintext. Called when the view goes away, so a decrypted
     /// message does not survive navigating back to the list.
     func forget() {
+        generation &+= 1
+        for url in stagedFiles { files.remove(url) }
+        stagedFiles = []
         body = nil
         signature = .none
         resolvedSender = ""
