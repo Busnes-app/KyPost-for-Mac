@@ -100,11 +100,13 @@ private func armored(_ packets: Data, headers: String = "Version: KyPostTest\n")
         // Primary key, user id, self-signature, subkey, binding signature —
         // the packet sequence gpg --export actually emits. The single-key rule
         // must not reject an ordinary key.
-        let packets = Data([0xC6, UInt8(keyBody.count)]) + keyBody
-            + Data([0xCD, 0x03]) + Data("uid".utf8)      // 13 user id
-            + Data([0xC2, 0x02]) + Data([0x00, 0x01])    // 2  signature
-            + Data([0xCE, UInt8(keyBody.count)]) + keyBody // 14 public subkey
-            + Data([0xC2, 0x02]) + Data([0x00, 0x02])    // 2  binding signature
+        // Appended step by step: one long `+` chain times out the type
+        // checker under Xcode 27.1.
+        var packets = Data([0xC6, UInt8(keyBody.count)]) + keyBody
+        packets += Data([0xCD, 0x03]) + Data("uid".utf8)       // 13 user id
+        packets += Data([0xC2, 0x02]) + Data([0x00, 0x01])     // 2  signature
+        packets += Data([0xCE, UInt8(keyBody.count)]) + keyBody // 14 public subkey
+        packets += Data([0xC2, 0x02]) + Data([0x00, 0x02])     // 2  binding signature
 
         #expect(PgpFingerprint.compute(fromArmored: armored(packets)) == expectedFingerprint(for: keyBody))
     }
