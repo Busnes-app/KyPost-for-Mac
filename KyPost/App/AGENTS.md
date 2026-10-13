@@ -55,8 +55,10 @@ Protection turns on and at every launch while it is on (`PushLifecycle.onLaunch`
 A `UserDefaults`-backed store that goes memory-only under the mode erases its
 persisted copy there; switching reads to memory does not remove it.
 
-`shutdown()` also **drops** the inbox's held list actions (the undo window)
-rather than sending them: the superseded graph's session is cancelled, and a
+`shutdown()` also **drops** the inbox's held list actions (the undo window),
+its older-mail paging state and the rows it shows, voiding any refresh in
+flight (`InboxViewModel.forgetAccount`) rather than
+sending them: the superseded graph's session is cancelled, and a
 rebuild is a Hostile Location Protection switch or a wipe. The lock sites
 (`PushLifecycle.onBackground`, the macOS screen-lock observer) instead
 **commit** them — on iOS the `didEnterBackgroundNotification` observer in
@@ -64,6 +66,30 @@ rebuild is a Hostile Location Protection switch or a wipe. The lock sites
 and must do so before `appLockManager.lockAfterGrace()` (a grace period
 does not extend the undo window) — see the root "Inbox list actions"
 contract.
+
+**Leaving an account is one list, `AccountTeardown`** (enrollment vault,
+session and pending reports; notification history and pull cursor; recipient
+pins; mail signature; cached mail and cursors; the inbox's held actions and
+rows). `SettingsViewModel.unpair` runs it after clearing the pairing, and a
+registration that stores a pairing for another `sub` or server over the
+current one runs it first (`DeviceRegistrationService.onAccountReplaced`,
+wired to `SingletonGraph.makeAccountTeardown`); an unreadable previous
+pairing counts as another account. A new account-scoped store adds its clear
+there, not at either call site. Held list actions are dropped before the first
+`await` (and the inbox cleared again at the end), so an undo deadline passing
+mid-teardown sends nothing. `run()` returns false when a step failed: unpair
+says so instead of "Pairing removed", and a replacement does not store the new
+pairing (the previous one stays, so a retry re-runs the teardown).
+
+**The pairing being left is retired, not just outlived.** A replacement keeps
+the old pairing readable until the new one is saved, so each teardown step
+that moves its own session or epoch (`MailRepository.forgetAccount`,
+`PushRepository.clearForUnpair`) first calls
+`SecurePairingStore.retireCurrentPairing`, and work that reaches the relay for
+the account (mail requests, notification pulls, re-registration) reads
+`loadActivePairing`, which refuses it until another pairing is saved. Capture
+the session/epoch *before* loading the pairing, or a request can pair the old
+credentials with the new session.
 
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.

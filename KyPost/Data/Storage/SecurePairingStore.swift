@@ -72,6 +72,9 @@ final class SecurePairingStore: @unchecked Sendable {
 
     private let keychain: KeychainStorage
     private weak var storedSecretGate: (any PairingSecretGate)?
+    /// The pairing an account teardown has started erasing
+    /// (`retireCurrentPairing`), as (sub, srv, pairedAt). In memory only.
+    private var retired: (sub: String, srv: String, pairedAt: Date)?
 
     /// Set by CredentialGateService while "Require unlock for notifications
     /// & MFA" is on; nil means the plain deviceSecret item is used.
@@ -107,6 +110,7 @@ final class SecurePairingStore: @unchecked Sendable {
     func savePairing(_ pairing: Pairing) throws {
         lock.lock()
         defer { lock.unlock() }
+        retired = nil
         do {
             try writePairing(pairing)
         } catch {
@@ -177,6 +181,45 @@ final class SecurePairingStore: @unchecked Sendable {
             lastDeviceId: try keychain.string(forKey: Key.lastDeviceId),
             pairedAt: pairedAt
         )
+    }
+
+    /// Marks the stored pairing as torn down: `loadActivePairing` refuses it
+    /// until another pairing is saved. A pairing to another account stores
+    /// the new pairing only after the whole teardown has run, so the old one
+    /// stays readable meanwhile; work that reaches the relay with it would
+    /// fetch the old account's data after the step that erased it. Every
+    /// teardown step that bumps its own session or epoch calls this first, so
+    /// work that starts under the new session cannot load the old pairing.
+    func retireCurrentPairing() {
+        lock.lock()
+        defer { lock.unlock() }
+        // The identifying fields only: the device secret may be behind the
+        // credential gate, and a pairing whose secret is unreadable is still
+        // the one being left.
+        guard let sub = try? keychain.string(forKey: Key.sub), !sub.isEmpty,
+              let srv = try? keychain.string(forKey: Key.srv), !srv.isEmpty
+        else { return }
+        retired = (sub, srv, storedPairedAt())
+    }
+
+    private func storedPairedAt() -> Date {
+        (try? keychain.string(forKey: Key.pairedAtTimestamp))
+            .flatMap(TimeInterval.init)
+            .map(Date.init(timeIntervalSince1970:)) ?? .distantPast
+    }
+
+    /// The stored pairing, or nil when there is none or it has been retired.
+    /// For work that reaches the relay on the account's behalf (mail,
+    /// notification pulls, re-registration).
+    func loadActivePairing() throws -> Pairing? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let pairing = try loadPairing() else { return nil }
+        if let retired, retired.sub == pairing.sub, retired.srv == pairing.srv,
+           retired.pairedAt == pairing.pairedAt {
+            return nil
+        }
+        return pairing
     }
 
     var isPaired: Bool {

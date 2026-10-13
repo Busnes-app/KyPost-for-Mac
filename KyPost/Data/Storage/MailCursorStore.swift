@@ -20,6 +20,8 @@ protocol MailCursorProviding: Sendable {
     func saveCursor(pairingId: String, folder: String, cursor: String)
     func shouldForceFullResync(pairingId: String, folder: String) -> Bool
     func recordFullResync(pairingId: String, folder: String)
+    /// Forgets every cursor and resync stamp.
+    func clear()
 }
 
 /// Scoped to pairing + folder so re-pairing, or switching mailboxes, cannot

@@ -50,7 +50,7 @@ enum SecurityWipeSteps {
             // List actions still in their undo window are dropped, not sent:
             // the wipe's own steps await, and a window closing mid-wipe must
             // not act on an account the user is erasing from this machine.
-            graph.inboxViewModel.discardHeldActions()
+            graph.inboxViewModel.forgetAccount()
         })
 
         // Message bodies, contacts and the push history. Deleted while the

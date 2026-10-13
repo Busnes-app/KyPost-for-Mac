@@ -505,6 +505,15 @@ struct DemoMailSource: MailSource {
         )
     }
 
+    func fetchOlder(folder: String, limit: Int, before: String) async throws -> MailPage {
+        MailPage(emails: [], hasMore: false, nextBefore: nil)
+    }
+
+    func fetchBody(folder: String, messageId: String) async throws -> MailMessageBody {
+        let email = DemoContent.emails.first { $0.folder == folder && $0.serverId == messageId }
+        return MailMessageBody(body: email?.body ?? "", bodyMode: email?.bodyMode ?? "")
+    }
+
     func search(folder: String, query: String) async throws -> [String] { [] }
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws {}
     func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport {

@@ -259,6 +259,20 @@ Domain.
   and otherwise counts them on the "N new messages" pill, which scrolls up on
   tap and clears on reaching the top or switching tab/folder. A first paint or
   folder switch announces nothing.
+- **"Load older mail" is the list's last row** (`LoadOlderFooter`, both
+  shells): not selectable, no swipes, hidden while selecting on iOS. It shows
+  under a non-empty folder until that folder has nothing older or its server
+  cannot page; the per-folder paging state lives in `InboxViewModel` and is
+  dropped by `forgetAccount()` (wipe, rebuild, unpair, pairing another
+  account), with the rows on screen and the folder lists. A page that lands
+  after a folder switch is not painted; a refresh or page that lands after
+  `forgetAccount()` changes nothing (`accountGeneration`).
+- **The reader fetches a missing body before rendering**
+  (`EmailDetailView.loadBodyIfNeeded`): a spinner while it loads, the failure's
+  own sentence and "Try again" if it fails — never an empty screen passing for
+  a short message. Reply/Forward quote the fetched body, so they open no draft
+  until it has arrived (`draftBodyReadiness`): pressed while it loads or after
+  it failed, they explain instead.
 - **A notification-tap target is consumed once**, at the start of the hunt:
   `router.pendingMessageId` is cleared before the resync, found or not.
   `prepareForPushTap` switches to Inbox and waits out an in-flight refresh so
@@ -349,8 +363,9 @@ Recorded so they aren't re-litigated as bugs:
 
 - Unit: `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (Swift Testing; `ContactSearchTests`, `ComposeRecipientTests`,
-  `ThemeTests`, and `InboxParityTests.swift` for the inbox-list rules and the
-  undo window).
+  `ThemeTests`, `InboxParityTests.swift` for the inbox-list rules and the undo
+  window, `OlderMailTests.swift` for older mail, delta overflow and bodies on
+  open, `MailIdentityTests.swift` for the (folder, id) key).
 - Pass `debounceInterval: .zero` to `ComposeViewModel` in tests, and poll for
   the result rather than sleeping a fixed span — the search lands a scheduling
   hop later even at zero, so a fixed sleep goes flaky under load.

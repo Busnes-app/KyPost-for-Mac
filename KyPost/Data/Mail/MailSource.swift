@@ -29,6 +29,13 @@ protocol MailSource: Sendable {
         to: Int,
         since: String
     ) async throws -> MailFetchResult
+    /// One page of mail older than `before`, a list-row id in `folder`
+    /// (`GET /api/inbox?before=`). Metadata only — no body, attachment or PGP
+    /// flags — and it never touches the cursor.
+    func fetchOlder(folder: String, limit: Int, before: String) async throws -> MailPage
+    /// One message's body (`GET /api/mail/body`), for a row that arrived
+    /// without one: a page of older mail, or a search result.
+    func fetchBody(folder: String, messageId: String) async throws -> MailMessageBody
     func search(folder: String, query: String) async throws -> [String]
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws
     /// The four verbs that take a message out of `mailbox` return the relay's
@@ -96,6 +103,29 @@ struct MailFetchResult: Equatable, Sendable {
     /// against. Pruning is the only self-heal for a removal we were never
     /// told about.
     var isFullWindow = false
+    /// Ids that fell below the relay's window but still exist: keep them,
+    /// out of the window. Absent on a relay predating KyPost-Server #349.
+    var agedOutIds: [String] = []
+    /// More new mail arrived than the window holds; the rest is paged with
+    /// `before=nextBefore` (`MailRepository.fetchOverflow`).
+    var hasMore = false
+    var nextBefore: String?
+}
+
+/// One `before=` page, newest first. `hasMore` is nil when the server ignored
+/// `before=` and answered with its newest window instead (a relay predating
+/// KyPost-Server #348) — which is not older mail, and is never stored.
+struct MailPage: Equatable, Sendable {
+    var emails: [Email]
+    var hasMore: Bool?
+    var nextBefore: String?
+}
+
+/// `GET /api/mail/body`: the body and its mode, nothing else. No recipients
+/// and no PGP flags — those come from the row.
+nonisolated struct MailMessageBody: Equatable, Sendable {
+    var body: String
+    var bodyMode: String
 }
 
 /// The list actions that take a message out of its folder, as the relay's
@@ -143,6 +173,15 @@ enum MailSourceError: Error, Equatable {
     case credentialUnavailable
     /// The relay has no endpoint for this operation (e.g. server-side search).
     case unsupported
+    /// The relay answered definitively that this message cannot be opened
+    /// (404 gone, 413 too large). Not a connectivity failure: retrying will
+    /// not help, and saying "couldn't reach the server" would be a lie.
+    case messageUnavailable(String)
+    /// The server ignored `before=`: it predates older-mail paging.
+    case olderMailUnsupported
+    /// A delta announced more new mail than its window held, then would not
+    /// page it (no `nextBefore`, or a page without `hasMore`).
+    case overflowUnreachable
     /// Relay 400 whose plain-text body says IMAP configuration is required.
     /// The account exists but has no mail set up; only the web app can fix it.
     case notConfigured(String)
@@ -230,6 +269,12 @@ enum MailOutcome: Equatable, Sendable {
                 ?? .failure(Self.message(for: .badRequest(body: body)))
         case MailSourceError.notConfigured(let message):
             .notConfigured(message)
+        case MailSourceError.messageUnavailable(let message):
+            .failure(message)
+        case MailSourceError.olderMailUnsupported:
+            .failure(String(localized: "This server can't load older mail. Update KyPost Server to use this."))
+        case MailSourceError.overflowUnreachable:
+            .failure(String(localized: "The server reported more new mail than it would page."))
         case NetworkError.server(statusCode: 502):
             .upstreamFailure(Self.message(for: .server(statusCode: 502)))
         case let networkError as NetworkError:

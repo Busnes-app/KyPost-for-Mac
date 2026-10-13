@@ -10,8 +10,14 @@ import SwiftData
 
 @Model
 final class EmailEntity {
-    /// Relay message id.
-    @Attribute(.unique) var serverId: String
+    /// Unique per (folder, id), not per id: the relay's id is an IMAP UID,
+    /// unique only within one mailbox (see `MailRowKey`). Keyed on the id
+    /// alone, caching Sent overwrote the Inbox row with the same UID. Changed
+    /// in AppSchemaV7.
+    #Unique<EmailEntity>([\.folder, \.serverId])
+
+    /// Relay message id — meaningful only together with `folder`.
+    var serverId: String
     var folder: String
     var senderName: String
     var senderEmail: String
@@ -36,6 +42,11 @@ final class EmailEntity {
     var pgpVerified: Bool = false
     var pgpSignerFingerprint: String = ""
     var pgpDecryptError: String = ""
+    /// False once the row is older than the relay's window: paged in by
+    /// "Load older mail", or reported `agedOut`. A snapshot lists only the
+    /// window, so absence from one proves nothing about these rows. Added in
+    /// AppSchemaV8; every earlier row came from the window.
+    var inWindow: Bool = true
     var createdAt: Date
 
     init(
@@ -58,6 +69,7 @@ final class EmailEntity {
         pgpVerified: Bool = false,
         pgpSignerFingerprint: String = "",
         pgpDecryptError: String = "",
+        inWindow: Bool = true,
         createdAt: Date = Date()
     ) {
         self.serverId = serverId
@@ -79,6 +91,7 @@ final class EmailEntity {
         self.pgpVerified = pgpVerified
         self.pgpSignerFingerprint = pgpSignerFingerprint
         self.pgpDecryptError = pgpDecryptError
+        self.inWindow = inWindow
         self.createdAt = createdAt
     }
 }
@@ -106,7 +119,8 @@ extension EmailEntity {
             pgpSigned: email.pgpSigned,
             pgpVerified: email.pgpVerified,
             pgpSignerFingerprint: email.pgpSignerFingerprint,
-            pgpDecryptError: email.pgpDecryptError
+            pgpDecryptError: email.pgpDecryptError,
+            inWindow: email.inWindow
         )
     }
 
@@ -130,7 +144,8 @@ extension EmailEntity {
             pgpSigned: pgpSigned,
             pgpVerified: pgpVerified,
             pgpSignerFingerprint: pgpSignerFingerprint,
-            pgpDecryptError: pgpDecryptError
+            pgpDecryptError: pgpDecryptError,
+            inWindow: inWindow
         )
     }
 }

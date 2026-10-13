@@ -65,7 +65,8 @@ final class SettingsViewModel {
     /// Inbox row is the folder itself).
     private(set) var allTabVisible = true
     /// Runs after the pairing is cleared, for account-scoped state outside
-    /// this view model — the inbox's held list actions.
+    /// this view model — the inbox's held list actions, rows on screen, and
+    /// in-flight refreshes (`InboxViewModel.forgetAccount`).
     private let onUnpaired: (() -> Void)?
 
     init(
@@ -141,34 +142,20 @@ final class SettingsViewModel {
         _ = await deregisterDeviceUseCase()
         // A sign-on still in flight would otherwise re-pair right after this.
         AppEnvironment.postSessionReset()
-        try? securePairingStore.clear()
-        // Unpairing is a session boundary for the OpenPGP key as much as for
-        // the credential. The envelope is the account's private key sealed to
-        // *this* device, and leaving it behind means the key outlives the
-        // pairing that authorised putting it here — on a Mac the account no
-        // longer knows about, so no revocation reaches it. The in-memory copy
-        // goes with it; destroying the sealed blob while an unsealed one sits
-        // in this process would be theatre.
-        enrollmentVault?.destroy()
-        // No device row is left to correct, and a pending marker must not
-        // speak for whatever device is paired next.
-        enrollmentVault?.forgetPendingReports()
-        EnrollmentSession.shared.clear()
-        // Notification history is the account's sender and subject lines,
-        // and the pull cursor is a position in the account's queue.
-        do {
-            try await pushRepository?.clearForUnpair()
-        } catch {
-            Log.push.error("Could not clear notification history on unpair: \(error)")
-        }
-        // Keys verified by QR belong to this account's address book.
-        recipientPinStore?.clear()
-        // The signature belongs to the account being unpaired, not the next.
-        mailSignatureStore?.clear()
-        // A list action still in its undo window belongs to the account just
-        // removed; it is dropped rather than sent.
-        onUnpaired?()
-        statusMessage = "Pairing removed"
+        let pairingCleared = (try? securePairingStore.clear()) != nil
+        // Everything else the account left on this device — the same list a
+        // pairing to another account runs.
+        let tornDown = await AccountTeardown(
+            enrollmentVault: enrollmentVault,
+            pushRepository: pushRepository,
+            recipientPinStore: recipientPinStore,
+            mailSignatureStore: mailSignatureStore,
+            mailRepository: mailRepository,
+            forgetInbox: onUnpaired
+        ).run()
+        statusMessage = pairingCleared && tornDown
+            ? "Pairing removed"
+            : "Pairing removed, but some of this account's data could not be erased from this device."
     }
 
     func testConnection() async {

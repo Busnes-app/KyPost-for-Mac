@@ -34,17 +34,25 @@ final class MailRepository {
         self.overrideSource = overrideSource
     }
 
-    /// The relay source; requires a stored pairing.
+    /// The relay source; requires a stored pairing whose mail has not been
+    /// forgotten.
     func makeSource() throws -> any MailSource {
         if let overrideSource { return overrideSource }
-        guard let pairing = try securePairingStore.loadPairing() else {
-            throw MailSourceError.notPaired
-        }
+        let pairing = try currentPairing()
         return RelayMailSource(
             httpClient: httpClient,
             serverUrl: pairing.srv,
             auth: RelayAuth(pairing: pairing)
         )
+    }
+
+    /// The stored pairing, unless an account teardown retired it
+    /// (`SecurePairingStore.retireCurrentPairing`).
+    private func currentPairing() throws -> Pairing {
+        guard let pairing = try securePairingStore.loadActivePairing() else {
+            throw MailSourceError.notPaired
+        }
+        return pairing
     }
 
     func listFolders(parent: String? = nil) async throws -> [MailFolder] {
@@ -77,52 +85,68 @@ final class MailRepository {
         }
     }
 
+    /// One window size for every `/api/inbox` request, refresh and page
+    /// alike: the relay keeps a window and cursor per `limit`, and a cursor
+    /// sent with another limit is one that window never issued.
+    static let windowLimit = 50
+
+    /// ponytail: an overflow walk stops after this many pages and commits the
+    /// cursor anyway, leaving anything older unlisted. Upgrade path: persist
+    /// the paging frontier and resume from it.
+    static let maxOverflowPages = 20
+
     /// Fetches a folder from the server and reconciles it into the cache.
     ///
     /// Sends the stored cursor when there is one, so the relay can answer with
     /// just what changed. `forceFullResync` asks for the whole window
     /// regardless — the documented self-heal for a removal this device was
     /// never told about, and what a push tap must do before opening its target.
+    ///
+    /// A delta that reports more new mail than its window held (`hasMore`) is
+    /// followed down with `before=` pages until one reaches mail already held;
+    /// the window and those pages are stored together, and only then is the
+    /// cursor committed. A walk that fails or contradicts itself throws and
+    /// stores nothing, so the retry walks every page again.
+    ///
+    /// Returns every cached row of the folder, older mail included.
     @discardableResult
-    func refreshFolder(
-        _ folder: String,
-        from: Int = 0,
-        to: Int = 50,
-        forceFullResync: Bool = false
-    ) async throws -> [Email] {
+    func refreshFolder(_ folder: String, forceFullResync: Bool = false) async throws -> [Email] {
         // The override has no pairing and no cursor to advance; snapshot it
         // straight into the cache and let the rest of the app read normally.
+        // Before any network step: a request that outlives `forgetAccount`
+        // must not write the forgotten account's mail back.
+        let epoch = await emailDAO.accountEpoch
         if let overrideSource {
             let result = try await overrideSource.fetchEmails(
-                folder: folder, from: from, to: to, since: ""
+                folder: folder, from: 0, to: Self.windowLimit, since: ""
             )
-            try await emailDAO.replaceFolderSnapshot(folder: folder, emails: result.emails)
-            return try await emailDAO.getFolder(folder: folder, limit: max(to, 1))
+            try await emailDAO.replaceFolderSnapshot(folder: folder, emails: result.emails, epoch: epoch)
+            return try await emailDAO.getFolder(folder: folder)
         }
-        guard let pairing = try securePairingStore.loadPairing() else {
-            throw MailSourceError.notPaired
-        }
-        let pairingId = pairing.sub
-        let wantsFullWindow = forceFullResync
+        let pairingId = try currentPairing().sub
+        // A cursor describes rows this device holds. With none held — a fresh
+        // or discarded store, a schema change, a Hostile Location Protection
+        // switch — a delta would only list what changed since, and the folder
+        // would stay empty until the daily resync.
+        let holdsRows = try await emailDAO.hasRows(folder: folder)
+        let wantsFullWindow = forceFullResync || !holdsRows
             || cursorStore?.shouldForceFullResync(pairingId: pairingId, folder: folder) ?? true
         let since = wantsFullWindow
             ? ""
             : cursorStore?.cursor(pairingId: pairingId, folder: folder) ?? ""
 
-        let result = try await makeSource()
-            .fetchEmails(folder: folder, from: from, to: to, since: since)
-
-        if result.isDelta {
-            try await emailDAO.applyDelta(
-                folder: folder,
-                emails: result.emails,
-                updatedIds: result.updatedIds,
-                removedIds: result.removedIds,
-                pruneAgainstEmails: result.isFullWindow
-            )
-        } else {
-            try await emailDAO.replaceFolderSnapshot(folder: folder, emails: result.emails)
-        }
+        let source = try makeSource()
+        let result = try await source.fetchEmails(
+            folder: folder, from: 0, to: Self.windowLimit, since: since
+        )
+        // Fetched before anything is written, so "held" means held before
+        // this refresh.
+        let overflow = result.isDelta && !result.isFullWindow && result.hasMore
+            ? try await fetchOverflow(folder: folder, from: result.nextBefore, source: source)
+            : []
+        try await emailDAO.reconcile(folder: folder, result: result, overflow: overflow, epoch: epoch)
+        // Nor its cursor.
+        guard await emailDAO.accountEpoch == epoch else { throw EmailDAO.AccountForgotten() }
 
         // Only after the rows are committed: a crash between the two costs a
         // refetch, where advancing first would lose the messages for good.
@@ -130,17 +154,148 @@ final class MailRepository {
         if result.isFullWindow {
             cursorStore?.recordFullResync(pairingId: pairingId, folder: folder)
         }
-        return try await emailDAO.getFolder(folder: folder, limit: max(to, 1))
+        return try await emailDAO.getFolder(folder: folder)
     }
 
-    /// Cached emails for offline/instant display.
-    func cachedFolder(_ folder: String, limit: Int = 50, offset: Int = 0) async throws -> [Email] {
-        try await emailDAO.getFolder(folder: folder, limit: limit, offset: offset)
+    /// More new mail arrived than the window holds: page down from
+    /// `nextBefore` until a page holds an id the folder already had. Any
+    /// failure throws — nothing of the walk may be stored.
+    private func fetchOverflow(
+        folder: String,
+        from nextBefore: String?,
+        source: any MailSource
+    ) async throws -> [Email] {
+        let held = try await emailDAO.heldIds(folder: folder)
+        var pages: [Email] = []
+        var before = nextBefore
+        for _ in 0..<Self.maxOverflowPages {
+            guard let anchor = before, !anchor.isEmpty else {
+                throw MailSourceError.overflowUnreachable
+            }
+            let page = try await source.fetchOlder(folder: folder, limit: Self.windowLimit, before: anchor)
+            // This server announced overflow, so a page without hasMore
+            // contradicts it.
+            guard let hasMore = page.hasMore else { throw MailSourceError.overflowUnreachable }
+            pages += page.emails
+            if !hasMore || page.emails.contains(where: { held.contains($0.serverId) }) {
+                return pages
+            }
+            before = page.nextBefore == anchor ? nil : page.nextBefore
+        }
+        return pages
+    }
+
+    /// Erases the account's mail from this device: every cached row (window,
+    /// older mail, fetched bodies) and every cursor. For an unpair and for a
+    /// pairing that replaces the account. A refresh, page or body fetch still
+    /// in flight is refused when it comes back (`EmailDAO.accountEpoch`), and
+    /// the pairing still stored is refused from here on (`currentPairing`).
+    /// Recorded before the epoch moves, so a request that captures the new
+    /// epoch can no longer reach the old account.
+    func forgetAccount() async throws {
+        securePairingStore.retireCurrentPairing()
+        defer { cursorStore?.clear() }
+        try await emailDAO.forgetAccount()
+    }
+
+    /// Cached rows of a folder, newest first — every row unless `limit` caps
+    /// it — for offline/instant display.
+    func cachedFolder(_ folder: String, limit: Int? = nil) async throws -> [Email] {
+        try await emailDAO.getFolder(folder: folder, limit: limit)
     }
 
     /// Search runs against the local cache (the relay has no search endpoint).
     func search(folder: String, query: String) async throws -> [Email] {
         try await emailDAO.search(folder: folder, query: query)
+    }
+
+    /// What one "Load older mail" press produced.
+    enum OlderMailOutcome: Equatable {
+        /// A page was stored. `nextBefore` is where the next one starts; nil
+        /// when there is nothing older left.
+        case loaded(nextBefore: String?)
+        /// The folder holds no row to page from.
+        case nothingToPageFrom
+        /// The server ignored `before=`; nothing was stored.
+        case unsupported(String)
+        /// Nothing was stored. `staleAnchor` means the relay refused the
+        /// anchor itself (400) — retry from the oldest row held; any other
+        /// failure retries the same page.
+        case failed(String, staleAnchor: Bool)
+    }
+
+    /// One page older than `frontier` — the previous page's `nextBefore` — or,
+    /// with no frontier yet, than the oldest row the folder holds. The page
+    /// lands out of the window, so no snapshot ever prunes it.
+    func loadOlder(folder: String, frontier: String?) async -> OlderMailOutcome {
+        let epoch = await emailDAO.accountEpoch
+        let notSaved = String(localized: "Couldn't save older mail on this device. Free up storage and try again.")
+        let anchor: String
+        if let frontier, !frontier.isEmpty {
+            anchor = frontier
+        } else {
+            // A failed read is not an empty folder: report it, so the caller
+            // keeps offering a retry.
+            do {
+                guard let oldest = try await emailDAO.oldestRowId(folder: folder) else {
+                    return .nothingToPageFrom
+                }
+                anchor = oldest
+            } catch {
+                return .failed(notSaved, staleAnchor: false)
+            }
+        }
+        let page: MailPage
+        do {
+            page = try await makeSource().fetchOlder(folder: folder, limit: Self.windowLimit, before: anchor)
+        } catch {
+            let outcome = MailOutcome.from(error)
+            let message = outcome.userMessage ?? String(localized: "Unable to connect to the mail server.")
+            if let networkError = error as? NetworkError, case .badRequest = networkError,
+               case .failure = outcome {
+                return .failed(message, staleAnchor: true)
+            }
+            return .failed(message, staleAnchor: false)
+        }
+        guard let hasMore = page.hasMore else {
+            return .unsupported(
+                String(localized: "This server can't load older mail. Update KyPost Server to use this.")
+            )
+        }
+        do {
+            try await emailDAO.storeOlderMail(folder: folder, emails: page.emails, epoch: epoch)
+        } catch {
+            return .failed(notSaved, staleAnchor: false)
+        }
+        let next = page.nextBefore.flatMap { $0.isEmpty || $0 == anchor ? nil : $0 }
+        return .loaded(nextBefore: hasMore ? next : nil)
+    }
+
+    /// Whether the reader must fetch `email`'s body: it arrived without one
+    /// (older mail, a delta overflow page, a search result). A blank body on a
+    /// `pgpEncrypted` row is the client-protected shape, not a missing body —
+    /// fetching there would hide the decrypt path behind the server's answer.
+    nonisolated static func needsBodyFetch(_ email: Email) -> Bool {
+        email.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !email.pgpEncrypted
+    }
+
+    /// The body for the reader when the row has none, via `/api/mail/body`;
+    /// nil when the row's own body stands. Cached only on a window row: an
+    /// out-of-window row carries no PGP flags, so its body could be server
+    /// plaintext of encrypted mail stored under no marker. Out-of-window and
+    /// uncached messages fetch again on every open.
+    func loadBody(for email: Email) async throws -> MailMessageBody? {
+        guard Self.needsBodyFetch(email) else { return nil }
+        let epoch = await emailDAO.accountEpoch
+        let fetched = try await makeSource().fetchBody(folder: email.folder, messageId: email.serverId)
+        if let row = try? await emailDAO.getEmail(folder: email.folder, serverId: email.serverId),
+           row.inWindow {
+            try? await emailDAO.updateBody(
+                folder: email.folder, serverId: email.serverId,
+                body: fetched.body, bodyMode: fetched.bodyMode, epoch: epoch
+            )
+        }
+        return fetched
     }
 
     /// The relay's per-request cap on `/api/inbox/actions` (server
@@ -229,7 +384,7 @@ final class MailRepository {
     func markRead(messageIds: [String], from mailbox: String) async throws {
         try await makeSource().markRead(messageIds: messageIds, mailbox: mailbox)
         for messageId in messageIds {
-            try await emailDAO.updateEmail(serverId: messageId, read: true)
+            try await emailDAO.updateEmail(folder: mailbox, serverId: messageId, read: true)
         }
     }
 
@@ -243,12 +398,12 @@ final class MailRepository {
         try await makeSource().downloadAttachment(folder: folder, messageId: messageId, index: index)
     }
 
-    /// Updates the local read flag and (when marking read from a known
-    /// mailbox) syncs it to the relay so other devices see it — the relay has
-    /// a "read" action but no "unread" counterpart.
-    func markRead(serverId: String, folder: String? = nil, read: Bool = true) async throws {
-        try await emailDAO.updateEmail(serverId: serverId, read: read)
-        if read, let folder {
+    /// Updates the local read flag of the row in `folder` and, when marking
+    /// read, syncs it to the relay so other devices see it — the relay has a
+    /// "read" action but no "unread" counterpart.
+    func markRead(serverId: String, folder: String, read: Bool = true) async throws {
+        try await emailDAO.updateEmail(folder: folder, serverId: serverId, read: read)
+        if read {
             try await makeSource().markRead(messageIds: [serverId], mailbox: folder)
         }
     }

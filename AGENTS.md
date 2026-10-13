@@ -606,13 +606,69 @@ old sentence edited out.
 
 ### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
 
+- **A message is (folder, messageId), never the id alone** (`MailRowKey`,
+  `Email.id`). The relay's id is a bare IMAP UID on IMAP accounts, unique only
+  within one mailbox, so INBOX and Sent can both hold `42`. `EmailEntity` is
+  `#Unique` on the pair (AppSchemaV7); every DAO lookup, merge, removal, read
+  flag, action, held row, attachment staging path and pop-out window uses the
+  pair. A delta's `removed` ids delete only from the fetched folder. A push
+  (and a notification-history tap, which replays one) names its message by id
+  alone and always means INBOX, via `prepareForPushTap`. Readers built from a
+  row (`EncryptedReadViewModel`, the invite card's attachment fetch, Forward's
+  attachment collection) take the row's own folder, never an assumed one.
+- **A folder with no cached row ignores its cursor** and fetches the whole
+  window. A cursor describes rows this device holds; after the store is
+  discarded or re-keyed, a delta would leave the folder empty until the daily
+  resync. This is what keeps the local store disposable.
 - **`isFullWindow` is derived from what we asked for, never from the wire's
   `delta` flag.** A relay predating the matching server fix labels a `since=0`
   response `delta: true` all the same, and only a full window can say what is
   *absent*.
-- **Only a full window may prune.** A partial delta describes what changed;
-  everything it omits is still legitimately in the mailbox. Pruning against one
-  deletes the folder.
+- **Only a full window may prune, and only window rows.** A partial delta
+  describes what changed; everything it omits is still legitimately in the
+  mailbox. Pruning against one deletes the folder.
+- **Mail older than the window is kept** (KyPost-Server `before=` paging and
+  `agedOut`/`hasMore`/`nextBefore`; Android #183). `EmailEntity.inWindow` is
+  false for rows paged in by "Load older mail" (`MailRepository.loadOlder`) or
+  reported `agedOut`, and no snapshot prunes them; `removed` still deletes any
+  row. A full window first takes absent rows dated before its oldest row out
+  of the window (they aged out unreported) and prunes only absent rows inside
+  its range. A page is metadata only: a held row takes just its read state and
+  labels, a new one is stored bodiless and out of the window.
+- **Every `/api/inbox` request uses `MailRepository.windowLimit` (50).** The
+  relay keeps a window and cursor per `limit`; a cursor sent with another limit
+  is one that window never issued.
+- **A delta with `hasMore` is walked before its cursor is committed** (deltas
+  only, never a full window): `before=nextBefore` pages until one holds an id
+  the folder already had, then window and pages are written in one
+  `EmailDAO.reconcile` save (rolled back on error), then the cursor. A failed
+  or contradictory walk — no usable `nextBefore`, a page without `hasMore` —
+  throws, stores nothing (not even the window: a stored row would count as
+  held and the retry would stop at it) and keeps the old cursor. ponytail: the
+  walk stops after `maxOverflowPages` (20) and commits.
+- **A `before=` answer without `hasMore` is a server that ignored it** (its
+  newest window, not older mail): stored nothing, "This server can't load older
+  mail…", and the footer hides for that folder. A 400 there is a stale anchor:
+  the next press starts again from the oldest row held.
+- **A row without a body fetches one on open** (`GET /api/mail/body`,
+  `MailRepository.loadBody`): blank body and not `pgpEncrypted` — a blank
+  encrypted row is the client-protected shape and keeps its decrypt path. The
+  fetched body is cached only on a window row; a page carries no PGP flags, so
+  an out-of-window row fetches again on every open. 404 and 413 are their own
+  sentences, never "couldn't reach the server".
+- **Leaving an account erases its mail** (`MailRepository.forgetAccount`):
+  every row in or out of the window, cached bodies, and every cursor. It is one
+  step of `AccountTeardown` — out-of-window rows are never pruned, so nothing
+  else would remove them.
+  `EmailDAO.accountEpoch` is captured before a refresh, page or body fetch goes
+  to the network and checked by its write; one that started under a forgotten
+  account stores nothing, cursor included. The pairing being left is refused
+  from then on (`SecurePairingStore.retireCurrentPairing`, see
+  `KyPost/App/AGENTS.md`).
+- Known gaps, all needing server help: out-of-window rows never learn of a
+  deletion (opening one says it is gone) and are not healed after a
+  UIDVALIDITY reset; encrypted mail stored from a page has no PGP flags, so it
+  opens through `/api/mail/body` with no decrypt path.
 - **An "updated" row carries no body.** Merge into the existing row and keep
   the cached body; a blank incoming `bodyMode` never overwrites a known one. If
   there is no existing row, **skip it** — storing it creates a row whose empty

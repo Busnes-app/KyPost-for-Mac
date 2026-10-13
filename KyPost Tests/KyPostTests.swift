@@ -146,12 +146,13 @@ private func makeEmail(
         let rest = try await dao.getFolder(folder: "INBOX", limit: 2, offset: 2)
         #expect(rest.map(\.serverId) == ["1"])
 
-        // A fresh snapshot replaces stale rows for that folder only.
+        // A fresh snapshot replaces stale rows inside its date range, for that
+        // folder only.
         try await dao.replaceFolderSnapshot(folder: "Archive", emails: [
             makeEmail(serverId: "a1", folder: "Archive"),
         ])
         try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [
-            makeEmail(serverId: "3", subject: "Newest"),
+            makeEmail(serverId: "3", subject: "Newest", receivedAt: now.addingTimeInterval(-300)),
         ])
         #expect(try await dao.getFolder(folder: "INBOX", limit: 10).count == 1)
         #expect(try await dao.getFolder(folder: "Archive", limit: 10).count == 1)
@@ -162,11 +163,11 @@ private func makeEmail(
         let dao = EmailDAO(modelContainer: db.container)
         try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [makeEmail(serverId: "42")])
 
-        try await dao.updateEmail(serverId: "42", read: true, starred: true)
-        let email = try #require(try await dao.getEmail(serverId: "42"))
+        try await dao.updateEmail(folder: "INBOX", serverId: "42", read: true, starred: true)
+        let email = try #require(try await dao.getEmail(folder: "INBOX", serverId: "42"))
         #expect(email.read)
         #expect(email.starred)
-        #expect(try await dao.getEmail(serverId: "missing") == nil)
+        #expect(try await dao.getEmail(folder: "INBOX", serverId: "missing") == nil)
     }
 
     @Test func searchMatchesSubjectCaseInsensitively() async throws {
@@ -186,7 +187,7 @@ private func makeEmail(
         try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [
             makeEmail(serverId: "1", keywords: ["Important", "Work"]),
         ])
-        let email = try #require(try await dao.getEmail(serverId: "1"))
+        let email = try #require(try await dao.getEmail(folder: "INBOX", serverId: "1"))
         #expect(email.keywords == ["Important", "Work"])
     }
 }

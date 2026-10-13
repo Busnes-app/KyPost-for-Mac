@@ -288,6 +288,7 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         var repository: PushRepository
         var cursorStore: NotificationCursorStore
         var settings: PushSettingsStore
+        var pairingStore: SecurePairingStore
     }
 
     private func makeEnvironment(client: HTTPClient, paired: Bool = true) throws -> Environment {
@@ -306,7 +307,37 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
             securePairingStore: pairingStore,
             pushSettingsStore: settings
         )
-        return Environment(repository: repository, cursorStore: cursorStore, settings: settings)
+        return Environment(
+            repository: repository, cursorStore: cursorStore, settings: settings, pairingStore: pairingStore
+        )
+    }
+
+    /// Pairing another account over this one stores the new pairing only
+    /// after the teardown, so the previous one is still readable meanwhile.
+    /// A pull started in that window must not use it: no request, no rows,
+    /// no cursor. Once the new pairing is saved, pulls work again.
+    @MainActor
+    @Test func aPullAfterTheTeardownNeverUsesThePairingBeingLeft() async throws {
+        let json = #"{"notifications":[{"seq":4,"messageId":"m-4","senderName":"A","emailSubject":"s4"}],"cursor":4}"#
+        let requests = Box(0)
+        let env = try makeEnvironment(client: stubClient(json: json) { _ in requests.mutate { $0 += 1 } })
+
+        #expect(await AccountTeardown(pushRepository: env.repository).run())
+        #expect(try env.pairingStore.loadPairing()?.sub == "u1")
+
+        await #expect(throws: MailSourceError.notPaired) { try await env.repository.pullOnce() }
+        #expect(requests.value == 0)
+        #expect(try await env.repository.history().isEmpty)
+        #expect(env.cursorStore.lastCursor == 0)
+
+        try env.pairingStore.savePairing(Pairing(
+            sub: "u2", deviceSecret: "s2", srv: server, registrationUrl: nil,
+            pairingToken: "pt2", lastDeviceId: "dev-2", pairedAt: Date().addingTimeInterval(1)
+        ))
+        try await env.repository.pullOnce()
+        #expect(requests.value == 1)
+        #expect(try await env.repository.history().map(\.messageId) == ["m-4"])
+        #expect(env.cursorStore.lastCursor == 4)
     }
 
     @Test func pushArrivalsGetUniqueSynthesizedSeqs() async throws {
@@ -465,6 +496,55 @@ private final class PinArmingRecorder: @unchecked Sendable {
         #expect(env.settings.deliveryMode == .pull)
         // pullEndpoint absent in response → derived from srv (spec §3).
         #expect(env.settings.pullEndpoint == "\(server)/api/notifications/native/pull")
+    }
+
+    /// Pairing another account over this one, with no unpair in between,
+    /// erases the previous account's state first; re-pairing the same one
+    /// does not.
+    @Test func pairingAnotherAccountRunsTheReplacementHookFirst() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true)
+        let subsSeen = Box<[String?]>([])
+        env.service.onAccountReplaced = { [pairingStore = env.pairingStore] in
+            // Still the previous pairing: the hook runs before the save.
+            subsSeen.mutate { $0.append(try? pairingStore.loadPairing()?.sub) }
+            return true
+        }
+
+        _ = await env.service.pair(params: params, deviceToken: "t1")
+        #expect(subsSeen.value.isEmpty)
+
+        _ = await env.service.pair(params: PairingParams(sub: "u2", srv: server, pt: "pt-2"), deviceToken: "t1")
+        #expect(subsSeen.value == ["u1"])
+        #expect(try env.pairingStore.loadPairing()?.sub == "u2")
+
+        _ = await env.service.pair(params: PairingParams(sub: "u2", srv: "https://other.example", pt: "pt-3"), deviceToken: "t1")
+        #expect(subsSeen.value == ["u1", "u2"])
+    }
+
+    /// A teardown that could not erase the previous account's data leaves
+    /// the new pairing unsaved, and the previous one in place so a retry
+    /// runs the teardown again.
+    @Test func anIncompleteTeardownLeavesTheNewPairingUnsaved() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true)
+        let runs = Box(0)
+        env.service.onAccountReplaced = {
+            runs.mutate { $0 += 1 }
+            return runs.value > 1
+        }
+        let other = PairingParams(sub: "u2", srv: server, pt: "pt-2")
+
+        let first = await env.service.pair(params: other, deviceToken: "t1")
+        guard case .failure = first else {
+            Issue.record("Expected failure, got \(first)")
+            return
+        }
+        #expect(try env.pairingStore.loadPairing()?.sub == "u1")
+
+        _ = await env.service.pair(params: other, deviceToken: "t1")
+        #expect(runs.value == 2)
+        #expect(try env.pairingStore.loadPairing()?.sub == "u2")
     }
 
     @Test func failedPairingSavesNothing() async throws {

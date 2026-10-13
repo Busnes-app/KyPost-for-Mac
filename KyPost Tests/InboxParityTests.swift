@@ -484,7 +484,7 @@ private func ids(_ emails: [Email]) -> [String] { emails.map(\.serverId) }
         relay.mailboxes.value = ["INBOX": ["n1"]]
         let (viewModel, _) = try makeInbox(relay: relay, pushTapRefreshWait: .milliseconds(200))
         await viewModel.load()
-        #expect(viewModel.email(withServerId: "n1") != nil)
+        #expect(viewModel.email(for: MailRowKey(folder: StandardFolder.inbox, serverId: "n1")) != nil)
 
         let latch = RequestLatch()
         relay.gate.value = { request in

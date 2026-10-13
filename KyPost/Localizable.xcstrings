@@ -64,6 +64,33 @@
     "  ·  Copyright © 2026 Busnes.app" : {
 
     },
+    "Can't quote this message yet" : {
+
+    },
+    "Couldn't save older mail on this device. Free up storage and try again." : {
+
+    },
+    "This message is still loading. Reply and Forward are available once it has." : {
+
+    },
+    "This message's text couldn't be loaded, so it can't be quoted. Use Try again, then reply or forward." : {
+
+    },
+    "Load older mail" : {
+
+    },
+    "The server reported more new mail than it would page." : {
+
+    },
+    "This message is no longer on the server." : {
+
+    },
+    "This message is too large for the server to open." : {
+
+    },
+    "This server can't load older mail. Update KyPost Server to use this." : {
+
+    },
     "Accept" : {
 
     },

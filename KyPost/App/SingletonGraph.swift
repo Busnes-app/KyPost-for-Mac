@@ -346,6 +346,12 @@ final class SingletonGraph {
         service.reconcileExistingPairingPushes = { [weak self] in
             await self?.pullPollingScheduler.reconcileDeliveredPushesForExistingPairing()
         }
+        // Pairing another account over this one erases what the previous
+        // account left here, exactly as an unpair does. Weak: the graph owns
+        // the service.
+        service.onAccountReplaced = { [weak self] in
+            await self?.makeAccountTeardown().run() ?? false
+        }
         return service
     }()
     lazy var desktopPairingService = DesktopPairingService(
@@ -391,6 +397,19 @@ final class SingletonGraph {
         lockManager: appLockManager
     )
 
+    /// The account teardown over this graph's stores, for a pairing that
+    /// replaces the account (unpair builds the same list from its own).
+    func makeAccountTeardown() -> AccountTeardown {
+        AccountTeardown(
+            enrollmentVault: enrollmentVault,
+            pushRepository: pushRepository,
+            recipientPinStore: recipientPinStore,
+            mailSignatureStore: mailSignatureStore,
+            mailRepository: mailRepository,
+            forgetInbox: { [weak self] in self?.inboxViewModel.forgetAccount() }
+        )
+    }
+
     // MARK: - Lifecycle
 
     /// Stops every long-lived task this graph owns, so a superseded graph
@@ -409,7 +428,7 @@ final class SingletonGraph {
         // the rebuild is a Hostile Location Protection switch or a wipe — in
         // neither should a superseded graph act on the account. The mail stays
         // where it was, which is the safe direction.
-        inboxViewModel.discardHeldActions()
+        inboxViewModel.forgetAccount()
         // Drops in-flight requests, the connection pool, and the session's
         // strong reference to its delegate. Not `finishTasksAndInvalidate`:
         // a superseded graph's requests write to a database that is going

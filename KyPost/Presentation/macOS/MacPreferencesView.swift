@@ -29,7 +29,7 @@ struct MacPreferencesView: View {
         pushRepository: SingletonGraph.shared.pushRepository,
         recipientPinStore: SingletonGraph.shared.recipientPinStore,
         mailSignatureStore: SingletonGraph.shared.mailSignatureStore,
-        onUnpaired: { SingletonGraph.shared.inboxViewModel.discardHeldActions() }
+        onUnpaired: { SingletonGraph.shared.inboxViewModel.forgetAccount() }
     )
 
     var body: some View {
