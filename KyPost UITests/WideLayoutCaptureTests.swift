@@ -29,7 +29,12 @@ final class WideLayoutCaptureTests: XCTestCase {
     private func shot(_ name: String) {
         Thread.sleep(forTimeInterval: 1.2)
         step += 1
-        let image = XCUIScreen.main.screenshot()
+        // On the iPhone Duo `XCUIScreen.main` is the outer display, dark while
+        // the device is unfolded; take whichever screen is lit (a dark one
+        // compresses to almost nothing).
+        let image = XCUIScreen.screens.map { $0.screenshot() }
+            .max { $0.pngRepresentation.count < $1.pngRepresentation.count }
+            ?? XCUIScreen.main.screenshot()
         let file = outputDir.appendingPathComponent(String(format: "%02d-%@.png", step, name))
         try? image.pngRepresentation.write(to: file)
         let attachment = XCTAttachment(screenshot: image)
@@ -43,8 +48,10 @@ final class WideLayoutCaptureTests: XCTestCase {
         Thread.sleep(forTimeInterval: 1.5)
     }
 
-    private func launch() -> XCUIApplication {
-        XCUIDevice.shared.orientation = .portrait
+    /// `keepPose`: leave the device as it is — for the iPhone Duo, whose
+    /// fold and rotation are set by hand before the run.
+    private func launch(keepPose: Bool = false) -> XCUIApplication {
+        if !keepPose { XCUIDevice.shared.orientation = .portrait }
         let app = XCUIApplication()
         app.launchArguments = ["-KyPostDemo"]
         app.launch()
@@ -277,10 +284,26 @@ final class WideLayoutCaptureTests: XCTestCase {
     /// (the iPhone Duo's fold). Leaves a message open and a search typed.
     @MainActor
     func testCaptureCurrentPose() {
-        let app = launch()
+        let app = launch(keepPose: true)
         shot("pose-inbox")
         tap(row(app, "Your ticket"))
         shot("pose-reader")
+        tap(row(app, "Q3 rollout"))
+        shot("pose-protected-message")
+        if tap(app.buttons["Compose"].firstMatch) {
+            let subject = app.textFields.element(boundBy: app.textFields.count > 3 ? 3 : 0)
+            if subject.waitForExistence(timeout: 3) {
+                subject.tap()
+                subject.typeText("Lisbon walkthrough")
+            }
+            shot("pose-compose")
+            tap(app.buttons["Cancel"].firstMatch)
+            tap(app.buttons["Discard"].firstMatch, timeout: 2)
+        }
+        if tap(tab(app, "Contacts")) {
+            tap(row(app, "Devon Okafor"))
+            shot("pose-contact")
+        }
         app.terminate()
     }
 }
