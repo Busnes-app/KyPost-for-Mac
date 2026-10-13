@@ -44,7 +44,14 @@ struct ComposeView: View {
     /// Set once the user chose Discard, so the close that follows is not
     /// asked about again.
     @State private var discardConfirmed = false
+    /// The compose's own width; at `twoColumnMinimumWidth` and up (iOS) the
+    /// header and the body sit side by side.
+    @State private var width: CGFloat = 0
     @FocusState private var focusedField: RecipientField?
+
+    /// Android's two-column compose threshold (KyPost-for-Android e247fc6e,
+    /// 600dp), measured against the sheet, not the window.
+    nonisolated static let twoColumnMinimumWidth: CGFloat = 600
 
     /// `draft` prefills reply/reply-all/forward compositions.
     init(draft: ComposeDraft? = nil) {
@@ -83,42 +90,43 @@ struct ComposeView: View {
 #endif
     }
 
+    /// Whether this compose is wide enough for two columns. iOS only: the
+    /// macOS window keeps its one column at every size.
+    private var isTwoColumn: Bool {
+#if os(iOS)
+        width >= Self.twoColumnMinimumWidth
+#else
+        false
+#endif
+    }
+
     private var content: some View {
-        VStack(spacing: 0) {
-            headerFields
-                .padding(.horizontal)
-                .padding(.vertical, 10)
-
-            pgpControls
-                .padding(.horizontal)
-                .padding(.bottom, 8)
-
-            Divider().overlay(theme.line)
-
-            TextEditor(text: $viewModel.body, selection: $selection)
-                .font(AppFont.mono(14))
-                .foregroundStyle(theme.ink)
-                .scrollContentBackground(.hidden)
-                .textInputFormattingControlVisibility(.visible, for: .all)
-                .padding(8)
-                .frame(minHeight: 160)
-
-            if !viewModel.attachments.isEmpty {
-                attachmentBar
-            }
-
-            if let warning = viewModel.keylessWarningText {
-                messageLine(warning, color: theme.ink)
-            }
-
-            if let notice = viewModel.noticeMessage {
-                messageLine(notice, color: theme.ink)
-            }
-
-            if let message = viewModel.errorMessage {
-                messageLine(message, color: SemanticColors.danger)
+        Group {
+            if isTwoColumn {
+                // Android's wide compose: the envelope (recipients, subject,
+                // protection, files, notices) on the left, the message on the
+                // right, 2:3.
+                HStack(spacing: 0) {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            envelope
+                            attachmentsAndNotices
+                        }
+                    }
+                    .frame(width: (width * 0.4).rounded())
+                    Divider().overlay(theme.line)
+                    bodyEditor
+                }
+            } else {
+                VStack(spacing: 0) {
+                    envelope
+                    Divider().overlay(theme.line)
+                    bodyEditor
+                    attachmentsAndNotices
+                }
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .background(theme.bg)
         // The dropdown is anchored from up here rather than overlaid on the
         // field itself: as a sibling of the whole stack it draws reliably
@@ -260,6 +268,47 @@ struct ComposeView: View {
             viewModel.cancelPickupFallback()
         }
         .tint(theme.accent)
+    }
+
+    private var envelope: some View {
+        VStack(spacing: 0) {
+            headerFields
+                .padding(.horizontal)
+                .padding(.vertical, 10)
+
+            pgpControls
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+        }
+    }
+
+    private var bodyEditor: some View {
+        TextEditor(text: $viewModel.body, selection: $selection)
+            .font(AppFont.mono(14))
+            .foregroundStyle(theme.ink)
+            .scrollContentBackground(.hidden)
+            .textInputFormattingControlVisibility(.visible, for: .all)
+            .padding(8)
+            .frame(minHeight: 160)
+    }
+
+    @ViewBuilder
+    private var attachmentsAndNotices: some View {
+        if !viewModel.attachments.isEmpty {
+            attachmentBar
+        }
+
+        if let warning = viewModel.keylessWarningText {
+            messageLine(warning, color: theme.ink)
+        }
+
+        if let notice = viewModel.noticeMessage {
+            messageLine(notice, color: theme.ink)
+        }
+
+        if let message = viewModel.errorMessage {
+            messageLine(message, color: SemanticColors.danger)
+        }
     }
 
     private var needsDiscardConfirmation: Bool {
