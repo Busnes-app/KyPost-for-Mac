@@ -12,13 +12,17 @@ struct KeywordTabView: View {
     @Environment(\.theme) private var theme
 
     let tabs: [KeywordTab]
+    /// The All chip is hideable like any keyword (Keyword Settings).
+    var showsAll = true
     @Binding var selected: String?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                chip(name: "All", count: nil, isActive: selected == nil) {
-                    selected = nil
+                if showsAll {
+                    chip(name: String(localized: "All"), count: nil, isActive: selected == nil) {
+                        selected = nil
+                    }
                 }
                 ForEach(tabs, id: \.name) { tab in
                     chip(name: tab.name, count: tab.count, isActive: selected == tab.name) {

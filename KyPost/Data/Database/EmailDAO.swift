@@ -138,6 +138,19 @@ actor EmailDAO {
         try modelContext.save()
     }
 
+    /// Drops the cached rows the relay confirmed it moved out of `folder`.
+    /// Scoped by folder as well as id: a late answer must not remove a row the
+    /// cache has since filed elsewhere.
+    func deleteEmails(serverIds: [String], folder: String) throws {
+        for id in serverIds {
+            try modelContext.delete(
+                model: EmailEntity.self,
+                where: #Predicate { $0.serverId == id && $0.folder == folder }
+            )
+        }
+        try modelContext.save()
+    }
+
     /// Local cache search over subject, sender, and body.
     func search(folder: String, query: String) throws -> [Email] {
         let descriptor = FetchDescriptor<EmailEntity>(

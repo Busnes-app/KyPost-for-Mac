@@ -507,10 +507,18 @@ struct DemoMailSource: MailSource {
 
     func search(folder: String, query: String) async throws -> [String] { [] }
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws {}
-    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws {}
-    func delete(messageIds: [String], mailbox: String) async throws {}
-    func archive(messageIds: [String], mailbox: String) async throws {}
-    func markSpam(messageIds: [String], mailbox: String) async throws {}
+    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport {
+        MailActionReport(processed: Set(messageIds).count, failed: [])
+    }
+    func delete(messageIds: [String], mailbox: String) async throws -> MailActionReport {
+        MailActionReport(processed: Set(messageIds).count, failed: [])
+    }
+    func archive(messageIds: [String], mailbox: String) async throws -> MailActionReport {
+        MailActionReport(processed: Set(messageIds).count, failed: [])
+    }
+    func markSpam(messageIds: [String], mailbox: String) async throws -> MailActionReport {
+        MailActionReport(processed: Set(messageIds).count, failed: [])
+    }
     func markRead(messageIds: [String], mailbox: String) async throws {}
 
     func listAttachments(folder: String, messageId: String) async throws -> [EmailAttachment] { [] }

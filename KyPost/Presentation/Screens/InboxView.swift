@@ -3,7 +3,8 @@
 //  KyPost
 //
 //  Email list with keyword tabs (spec §2), pull-to-refresh, 90s auto-refresh
-//  while visible, and notification-tap deep-open support.
+//  while visible, notification-tap deep-open support, edit-mode multi-select
+//  with bulk actions, and the 5-second Undo for list actions.
 //
 
 import SwiftUI
@@ -17,10 +18,33 @@ struct InboxView: View {
     /// A `mailto:` compose taken from the router (iOS).
     @State private var mailtoDraft: ComposeDraft?
     @State private var presentedEmail: Email?
+    /// Selected rows by server id; only meaningful while editing.
+    @State private var selection: Set<String> = []
+#if os(iOS)
+    @State private var editMode: EditMode = .inactive
+#endif
+
+    private var isSelecting: Bool {
+#if os(iOS)
+        editMode.isEditing
+#else
+        false
+#endif
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            KeywordTabView(tabs: viewModel.tabs, selected: $viewModel.selectedTab)
+            // With All and every keyword hidden there is no strip at all, and
+            // the list shows everything.
+            if viewModel.showsTabStrip {
+                KeywordTabView(
+                    tabs: viewModel.tabs,
+                    showsAll: viewModel.showsAllTab,
+                    selected: $viewModel.selectedTab
+                )
+            }
+
+            FreshnessLine(lastRefreshed: viewModel.lastRefreshed)
 
             if let message = viewModel.errorMessage {
                 Text(message)
@@ -33,53 +57,38 @@ struct InboxView: View {
 
             if viewModel.filteredEmails.isEmpty {
                 ScrollView {
-                    EmptyStateView(
-                        message: viewModel.selectedTab == nil
-                            ? "No emails yet — pull to refresh."
-                            : "Nothing tagged \(viewModel.selectedTab ?? "")",
-                        systemImage: "tray"
-                    )
+                    // "No messages" only once this folder refreshed: a loading
+                    // or unreachable folder with an empty cache is unknown.
+                    if viewModel.showsEmptyFolderState {
+                        EmptyStateView(message: viewModel.emptyFolderMessage, systemImage: "tray")
+                    } else if viewModel.isRefreshing {
+                        ProgressView()
+                            .padding(.top, 40)
+                    }
                 }
                 .refreshable { await viewModel.refresh() }
             } else {
-                List(viewModel.filteredEmails) { email in
-                    Button {
-                        presentedEmail = email
-                    } label: {
-                        EmailListRow(email: email)
+                ScrollViewReader { proxy in
+                    List(viewModel.filteredEmails, selection: cappedSelection) { email in
+                        row(for: email)
                     }
-                    .buttonStyle(.plain)
-                    // Matches Android's gestures: swipe left archives, swipe
-                    // right deletes (InboxActivity setupSwipeGestures).
-                    .swipeActions(edge: .trailing) {
-                        Button {
-                            Task { await viewModel.archive(serverIds: [email.serverId]) }
-                        } label: {
-                            Label("Archive", systemImage: "archivebox")
-                        }
-                        .tint(theme.accent)
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .refreshable { await viewModel.refresh() }
+                    .reportsScrollTop(to: viewModel)
+                    .newMailPill(viewModel)
+                    .onChange(of: viewModel.scrollToTopRequest) {
+                        guard let first = viewModel.filteredEmails.first else { return }
+                        withAnimation { proxy.scrollTo(first.id, anchor: .top) }
                     }
-                    .swipeActions(edge: .leading) {
-                        Button(role: .destructive) {
-                            Task { await viewModel.delete(serverIds: [email.serverId]) }
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                    }
-                    .contextMenu {
-                        emailActions(for: email)
-                    }
-                    .listRowBackground(theme.bg)
-                    .listRowSeparatorTint(theme.line)
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .refreshable { await viewModel.refresh() }
             }
         }
         .background(theme.bg)
-        .toast(message: viewModel.connectionNotice)
-        .navigationTitle(viewModel.folderDisplayName)
+        .undoBar(viewModel)
+        .relabelsAtMidnight()
+        .toast(message: viewModel.notice ?? viewModel.connectionNotice)
+        .navigationTitle(navigationTitle)
         .toolbarTitleMenu {
             folderPicker
         }
@@ -95,6 +104,18 @@ struct InboxView: View {
                     Label("Folder", systemImage: "folder")
                 }
             }
+#if os(iOS)
+            ToolbarItem {
+                Button(isSelecting ? "Done" : "Select") {
+                    if isSelecting {
+                        endSelection()
+                    } else {
+                        editMode = .active
+                    }
+                }
+                .disabled(!isSelecting && viewModel.filteredEmails.isEmpty)
+            }
+#endif
             ToolbarItem {
                 Button {
                     showCompose = true
@@ -115,6 +136,12 @@ struct InboxView: View {
             }
         }
 #if os(iOS)
+        .environment(\.editMode, $editMode)
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                selectionBar
+            }
+        }
         .sheet(isPresented: $showCompose, onDismiss: takeComposeRequestIfIdle) {
             ComposeView().environment(\.theme, theme)
         }
@@ -136,7 +163,18 @@ struct InboxView: View {
             openPendingMessageIfNeeded()
             await viewModel.loadSubfolders()
         }
-        .onDisappear { viewModel.leaveInbox() }
+        .onDisappear {
+            endSelection()
+            viewModel.leaveInbox()
+        }
+        // A selection never outlives the folder it was made in.
+        .onChange(of: viewModel.folder) { endSelection() }
+        .onChange(of: viewModel.filteredEmails) {
+            // Rows that left the list (held for Undo, moved by a refresh)
+            // leave the selection with them.
+            let visible = Set(viewModel.filteredEmails.map(\.serverId))
+            selection.formIntersection(visible)
+        }
         .onChange(of: router.pendingMessageId) {
             openPendingMessageIfNeeded()
         }
@@ -153,8 +191,133 @@ struct InboxView: View {
     }
 #endif
 
+    private var navigationTitle: String {
+        isSelecting && !selection.isEmpty
+            ? String(localized: "\(selection.count) selected")
+            : viewModel.folderDisplayName
+    }
+
+    @ViewBuilder
+    private func row(for email: Email) -> some View {
+        Group {
+            if isSelecting {
+                // A plain row while editing, so the list's own tap handling
+                // toggles the selection instead of opening the message.
+                EmailListRow(email: email)
+            } else {
+                Button {
+                    presentedEmail = email
+                } label: {
+                    EmailListRow(email: email)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        // Matches Android's gestures: swipe left archives, swipe right
+        // deletes (InboxActivity setupSwipeGestures). Off while selecting.
+        .swipeActions(edge: .trailing) {
+            if !isSelecting {
+                Button {
+                    viewModel.archive(serverIds: [email.serverId])
+                } label: {
+                    Label("Archive", systemImage: "archivebox")
+                }
+                .tint(theme.accent)
+            }
+        }
+        .swipeActions(edge: .leading) {
+            if !isSelecting {
+                Button(role: .destructive) {
+                    viewModel.delete(serverIds: [email.serverId])
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
+        .contextMenu {
+            if !isSelecting {
+                emailActions(for: [email.serverId])
+            }
+        }
+        .listRowBackground(theme.bg)
+        .listRowSeparatorTint(theme.line)
+    }
+
+    /// The selection, refusing to grow past the relay's per-request cap.
+    private var cappedSelection: Binding<Set<String>> {
+        Binding(
+            get: { selection },
+            set: { newValue in
+                if newValue.count > MailRepository.maxActionIds, newValue.count > selection.count {
+                    viewModel.reportSelectionLimit()
+                } else {
+                    selection = newValue
+                }
+            }
+        )
+    }
+
+    private func endSelection() {
+        selection = []
+#if os(iOS)
+        editMode = .inactive
+#endif
+    }
+
+    /// Bulk actions for the rows selected in edit mode. Each one is held for
+    /// Undo exactly like a swipe, then the selection ends.
+    private var selectionBar: some View {
+        HStack {
+            Button {
+                runOnSelection { viewModel.archive(serverIds: $0) }
+            } label: {
+                Label("Archive", systemImage: "archivebox")
+            }
+            Spacer()
+            Menu {
+                ForEach(viewModel.moveDestinations, id: \.self) { destination in
+                    Button(InboxRules.moveTargetLabel(destination)) {
+                        runOnSelection { viewModel.move(serverIds: $0, to: destination) }
+                    }
+                }
+            } label: {
+                Label("Move", systemImage: "folder")
+            }
+            Spacer()
+            Button {
+                runOnSelection { viewModel.markJunk(serverIds: $0) }
+            } label: {
+                Label("Junk", systemImage: "xmark.bin")
+            }
+            Spacer()
+            Button(role: .destructive) {
+                runOnSelection { viewModel.delete(serverIds: $0) }
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .labelStyle(.iconOnly)
+        .font(AppFont.ui(17))
+        .padding(.horizontal, 28)
+        .padding(.vertical, 12)
+        .disabled(selection.isEmpty)
+        .background(theme.panel)
+        .overlay(alignment: .top) {
+            Rectangle().fill(theme.line).frame(height: 1)
+        }
+    }
+
+    private func runOnSelection(_ action: ([String]) -> Void) {
+        // Rows in on-screen order, so the relay sees what the user saw.
+        let ids = viewModel.filteredEmails.map(\.serverId).filter(selection.contains)
+        guard !ids.isEmpty else { return }
+        action(ids)
+        endSelection()
+    }
+
     /// Server folder choices, shared by the title menu and the toolbar
-    /// button; same set and order as the macOS sidebar.
+    /// button; same set and order as the macOS sidebar. Sent and Drafts are
+    /// resolved from the account's real folders on each pick.
     private var folderPicker: some View {
         Picker("Folder", selection: folderSelection) {
             Label("Inbox", systemImage: "tray").tag(StandardFolder.inbox)
@@ -162,9 +325,11 @@ struct InboxView: View {
                 Label(StandardFolder.displayName(sub.name), systemImage: "folder")
                     .tag(sub.name)
             }
-            Label("Drafts", systemImage: "doc.text").tag(StandardFolder.drafts)
+            Label(SpecialFolder.drafts.label, systemImage: SpecialFolder.drafts.systemImage)
+                .tag(Self.specialTag(.drafts))
             Label("Junk", systemImage: "xmark.bin").tag(StandardFolder.junk)
-            Label("Sent", systemImage: "paperplane").tag(StandardFolder.sent)
+            Label(SpecialFolder.sent.label, systemImage: SpecialFolder.sent.systemImage)
+                .tag(Self.specialTag(.sent))
             Label("Trash", systemImage: "trash").tag(StandardFolder.trash)
             Label("Archive", systemImage: "archivebox").tag(StandardFolder.archive)
             ForEach(viewModel.archiveSubfolders, id: \.name) { sub in
@@ -174,32 +339,38 @@ struct InboxView: View {
         }
     }
 
+    /// Picker tag for Sent/Drafts. Not a mailbox path — the control character
+    /// keeps it from ever colliding with one.
+    private nonisolated static func specialTag(_ kind: SpecialFolder) -> String {
+        "\u{1}special:\(kind.rawValue)"
+    }
+
     /// Long-press actions on a row — the touch counterpart of the macOS
     /// context menu and sidebar drag-and-drop.
     @ViewBuilder
-    private func emailActions(for email: Email) -> some View {
+    private func emailActions(for serverIds: [String]) -> some View {
         Button {
-            Task { await viewModel.archive(serverIds: [email.serverId]) }
+            viewModel.archive(serverIds: serverIds)
         } label: {
             Label("Archive", systemImage: "archivebox")
         }
         Menu {
             ForEach(viewModel.moveDestinations, id: \.self) { destination in
-                Button(StandardFolder.displayName(destination)) {
-                    Task { await viewModel.move(serverIds: [email.serverId], to: destination) }
+                Button(InboxRules.moveTargetLabel(destination)) {
+                    viewModel.move(serverIds: serverIds, to: destination)
                 }
             }
         } label: {
             Label("Move To", systemImage: "folder")
         }
         Button {
-            Task { await viewModel.markJunk(serverIds: [email.serverId]) }
+            viewModel.markJunk(serverIds: serverIds)
         } label: {
             Label("Move to Junk", systemImage: "xmark.bin")
         }
         Divider()
         Button(role: .destructive) {
-            Task { await viewModel.delete(serverIds: [email.serverId]) }
+            viewModel.delete(serverIds: serverIds)
         } label: {
             Label("Delete", systemImage: "trash")
         }
@@ -208,17 +379,30 @@ struct InboxView: View {
     /// Folder choice for the menus; switching reloads the list.
     private var folderSelection: Binding<String> {
         Binding(
-            get: { viewModel.folder },
-            set: { name in Task { await viewModel.selectFolder(name) } }
+            get: {
+                viewModel.currentSpecialFolder.map(Self.specialTag) ?? viewModel.folder
+            },
+            set: { name in
+                if let kind = SpecialFolder.allCases.first(where: { Self.specialTag($0) == name }) {
+                    Task { await viewModel.openSpecialFolder(kind) }
+                } else {
+                    Task { await viewModel.selectFolder(name) }
+                }
+            }
         )
     }
 
-    /// Opens the email a notification tap pointed at (spec §3).
+    /// Opens the email a notification tap pointed at (spec §3). The target is
+    /// consumed here, once: a later appearance of this screen must not hunt
+    /// for it again and reopen a message the user already left.
     private func openPendingMessageIfNeeded() {
         guard let messageId = router.pendingMessageId else { return }
-        if let email = viewModel.email(withServerId: messageId) {
-            presentedEmail = email
-            router.pendingMessageId = nil
+        router.pendingMessageId = nil
+        endSelection()
+        Task {
+            if let email = await viewModel.prepareForPushTap(messageId: messageId) {
+                presentedEmail = email
+            }
         }
     }
 }

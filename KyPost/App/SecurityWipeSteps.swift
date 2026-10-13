@@ -47,6 +47,10 @@ enum SecurityWipeSteps {
                 throw WipeStepFailure("forwarded attachments are still held in memory")
             }
             NotificationCenter.default.post(name: .kyPostCloseComposeWindows, object: nil)
+            // List actions still in their undo window are dropped, not sent:
+            // the wipe's own steps await, and a window closing mid-wipe must
+            // not act on an account the user is erasing from this machine.
+            graph.inboxViewModel.discardHeldActions()
         })
 
         // Message bodies, contacts and the push history. Deleted while the

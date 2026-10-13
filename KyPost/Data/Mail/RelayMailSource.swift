@@ -108,7 +108,8 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
             sentTo: sentTo ?? "",
             cc: cc ?? "",
             keywords: Set(((keywords ?? []) + [keyword]).filter { !$0.isEmpty }),
-            receivedAt: Self.parseUtc(atUtc) ?? Date(),
+            // Blank in the list, never "now": see Email.unknownDate.
+            receivedAt: Self.parseUtc(atUtc) ?? Email.unknownDate,
             read: (status ?? "unread").lowercased() != "unread",
             starred: false,
             bodyMode: bodyMode ?? "",
@@ -246,6 +247,24 @@ struct RelayActionRequest: Encodable, Equatable, Sendable {
 
 struct RelayActionResponse: Decodable, Sendable {
     var ok: Bool?
+    /// Bulk actions only. Absent reads as zero processed — an unconfirmed
+    /// change must never delete a visible row.
+    var processed: Int?
+    var failed: [RelayActionFailureDTO]?
+
+    var report: MailActionReport {
+        MailActionReport(
+            processed: processed ?? 0,
+            failed: (failed ?? []).map {
+                MailActionReport.Failure(messageId: $0.messageId ?? "", error: $0.error ?? "")
+            }
+        )
+    }
+}
+
+struct RelayActionFailureDTO: Decodable, Sendable {
+    var messageId: String?
+    var error: String?
 }
 
 /// Attachment metadata from GET /api/mail/attachments.
@@ -441,19 +460,23 @@ final class RelayMailSource: MailSource {
         throw MailSourceError.unsupported
     }
 
-    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws {
+    @discardableResult
+    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport {
         try await performAction("move", messageIds: messageIds, mailbox: mailbox, targetMailbox: targetMailbox)
     }
 
-    func delete(messageIds: [String], mailbox: String) async throws {
+    @discardableResult
+    func delete(messageIds: [String], mailbox: String) async throws -> MailActionReport {
         try await performAction("delete", messageIds: messageIds, mailbox: mailbox)
     }
 
-    func archive(messageIds: [String], mailbox: String) async throws {
+    @discardableResult
+    func archive(messageIds: [String], mailbox: String) async throws -> MailActionReport {
         try await performAction("archive", messageIds: messageIds, mailbox: mailbox)
     }
 
-    func markSpam(messageIds: [String], mailbox: String) async throws {
+    @discardableResult
+    func markSpam(messageIds: [String], mailbox: String) async throws -> MailActionReport {
         try await performAction("spam", messageIds: messageIds, mailbox: mailbox)
     }
 
@@ -463,13 +486,14 @@ final class RelayMailSource: MailSource {
 
     /// POST /api/inbox/actions — the bulk verbs share one body shape
     /// (Mobile_Mail_Relay.md; only "move" carries targetMailbox).
+    @discardableResult
     private func performAction(
         _ action: String,
         messageIds: [String],
         mailbox: String,
         targetMailbox: String? = nil
-    ) async throws {
-        _ = try await httpClient.post(
+    ) async throws -> MailActionReport {
+        try await httpClient.post(
             RelayActionResponse.self,
             url: try endpoint("api/inbox/actions"),
             headers: auth.headerFields,
@@ -479,7 +503,7 @@ final class RelayMailSource: MailSource {
                 mailbox: mailbox,
                 targetMailbox: targetMailbox
             )
-        )
+        ).report
     }
 
     func listAttachments(folder: String, messageId: String) async throws -> [EmailAttachment] {

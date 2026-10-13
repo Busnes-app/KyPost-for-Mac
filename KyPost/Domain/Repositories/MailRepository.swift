@@ -143,25 +143,84 @@ final class MailRepository {
         try await emailDAO.search(folder: folder, query: query)
     }
 
-    /// Moves messages between folders via the relay's bulk-actions endpoint.
-    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws {
-        try await makeSource().move(messageIds: messageIds, from: mailbox, to: targetMailbox)
-    }
+    /// The relay's per-request cap on `/api/inbox/actions` (server
+    /// `maxInboxActionIDs`). The selection enforces it; this refuses rather
+    /// than sending a request the relay answers with 413.
+    static let maxActionIds = 500
 
-    /// Deletes messages via the relay: moved to Trash, or expunged when
-    /// `mailbox` is already Trash.
-    func delete(messageIds: [String], from mailbox: String) async throws {
-        try await makeSource().delete(messageIds: messageIds, mailbox: mailbox)
-    }
-
-    /// Archives messages via the relay (moved to the Archive folder).
-    func archive(messageIds: [String], from mailbox: String) async throws {
-        try await makeSource().archive(messageIds: messageIds, mailbox: mailbox)
-    }
-
-    /// Marks messages as junk via the relay (moved to Junk).
-    func markSpam(messageIds: [String], from mailbox: String) async throws {
-        try await makeSource().markSpam(messageIds: messageIds, mailbox: mailbox)
+    /// Runs one of the moving actions on `messageIds` in `folder`, one relay
+    /// call, and drops **only the cached rows the relay confirmed**.
+    ///
+    /// HTTP 200 is not success: the relay answers 200 with per-id `failed[]`,
+    /// and stops early on a cancelled request, leaving ids in neither list.
+    /// So an id is confirmed only when it is absent from `failed[]` *and*
+    /// `processed` equals the number of such ids; a shortfall `failed[]` does
+    /// not explain confirms nothing. Keeping a row the server may have moved
+    /// costs a redundant line until the next refresh; the other way round
+    /// hides mail that never moved.
+    ///
+    /// `source` lets a caller bind the credentials before they become
+    /// unreadable — the undo window commits on app lock, which drops the
+    /// gated device secret. Nil resolves it now.
+    func applyAction(
+        _ action: MailMoveAction,
+        messageIds: [String],
+        from folder: String,
+        to target: String? = nil,
+        source: (any MailSource)? = nil
+    ) async -> MailActionResult {
+        // The relay trims and de-duplicates before counting `processed`, so
+        // send what it will count, or a duplicate reads as a shortfall.
+        var seen = Set<String>()
+        let ids = messageIds
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        guard !ids.isEmpty else { return MailActionResult(confirmedIds: []) }
+        guard ids.count <= Self.maxActionIds else {
+            return MailActionResult(
+                confirmedIds: [],
+                failureMessage: String(localized: "Up to \(Self.maxActionIds) messages at a time")
+            )
+        }
+        if action == .move, (target ?? "").isEmpty {
+            return MailActionResult(
+                confirmedIds: [],
+                failureMessage: String(localized: "Choose a folder to move to.")
+            )
+        }
+        let report: MailActionReport
+        do {
+            let source = try source ?? makeSource()
+            switch action {
+            case .archive: report = try await source.archive(messageIds: ids, mailbox: folder)
+            case .delete: report = try await source.delete(messageIds: ids, mailbox: folder)
+            case .spam: report = try await source.markSpam(messageIds: ids, mailbox: folder)
+            case .move: report = try await source.move(messageIds: ids, from: folder, to: target ?? "")
+            }
+        } catch {
+            return MailActionResult(
+                confirmedIds: [],
+                failureMessage: MailOutcome.from(error).userMessage
+            )
+        }
+        let failedIds = Set(report.failed.map(\.messageId))
+        let unexplained = ids.filter { !failedIds.contains($0) }
+        guard report.processed == unexplained.count else {
+            return MailActionResult(
+                confirmedIds: [],
+                failureMessage: String(localized: "The server reported an incomplete change.")
+            )
+        }
+        try? await emailDAO.deleteEmails(serverIds: unexplained, folder: folder)
+        guard let first = report.failed.first else {
+            return MailActionResult(confirmedIds: unexplained)
+        }
+        return MailActionResult(
+            confirmedIds: unexplained,
+            failureMessage: String(
+                localized: "\(report.failed.count) of \(ids.count) not changed: \(first.error)"
+            )
+        )
     }
 
     /// Marks messages read via the relay's bulk action and mirrors the flag

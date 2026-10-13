@@ -61,6 +61,12 @@ final class SettingsViewModel {
 
     private(set) var statusMessage: String?
     private(set) var keywordSettings: [KeywordSetting] = []
+    /// Whether the inbox tab strip leads with All (iOS; the macOS sidebar's
+    /// Inbox row is the folder itself).
+    private(set) var allTabVisible = true
+    /// Runs after the pairing is cleared, for account-scoped state outside
+    /// this view model — the inbox's held list actions.
+    private let onUnpaired: (() -> Void)?
 
     init(
         securePairingStore: SecurePairingStore,
@@ -77,7 +83,8 @@ final class SettingsViewModel {
         appLockManager: AppLockManager? = nil,
         pushRepository: PushRepository? = nil,
         recipientPinStore: RecipientPinStore? = nil,
-        mailSignatureStore: MailSignatureStore? = nil
+        mailSignatureStore: MailSignatureStore? = nil,
+        onUnpaired: (() -> Void)? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
@@ -94,6 +101,7 @@ final class SettingsViewModel {
         self.pushRepository = pushRepository
         self.recipientPinStore = recipientPinStore
         self.mailSignatureStore = mailSignatureStore
+        self.onUnpaired = onUnpaired
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.exportToSystemContactsEnabled
     }
@@ -157,6 +165,9 @@ final class SettingsViewModel {
         recipientPinStore?.clear()
         // The signature belongs to the account being unpaired, not the next.
         mailSignatureStore?.clear()
+        // A list action still in its undo window belongs to the account just
+        // removed; it is dropped rather than sent.
+        onUnpaired?()
         statusMessage = "Pairing removed"
     }
 
@@ -326,6 +337,12 @@ final class SettingsViewModel {
             limit: 200
         )) ?? []
         keywordSettings = keywordRepository.allSettings(from: cached)
+        allTabVisible = keywordRepository.isAllTabVisible
+    }
+
+    func setAllTabVisible(_ visible: Bool) {
+        keywordRepository.isAllTabVisible = visible
+        allTabVisible = visible
     }
 
     func setKeywordVisible(_ visible: Bool, for keyword: String) {

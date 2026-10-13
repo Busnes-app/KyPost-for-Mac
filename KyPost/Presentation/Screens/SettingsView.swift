@@ -26,7 +26,8 @@ struct SettingsView: View {
         appLockManager: SingletonGraph.shared.appLockManager,
         pushRepository: SingletonGraph.shared.pushRepository,
         recipientPinStore: SingletonGraph.shared.recipientPinStore,
-        mailSignatureStore: SingletonGraph.shared.mailSignatureStore
+        mailSignatureStore: SingletonGraph.shared.mailSignatureStore,
+        onUnpaired: { SingletonGraph.shared.inboxViewModel.discardHeldActions() }
     )
     @State private var showPairingSheet = false
     @State private var showUnpairConfirmation = false

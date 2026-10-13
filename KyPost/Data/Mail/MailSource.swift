@@ -31,14 +31,20 @@ protocol MailSource: Sendable {
     ) async throws -> MailFetchResult
     func search(folder: String, query: String) async throws -> [String]
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws
-    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws
+    /// The four verbs that take a message out of `mailbox` return the relay's
+    /// per-id report. A 200 is transport success only — see MailActionReport.
+    @discardableResult
+    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport
     /// Deletes messages. The relay moves them to Trash, or expunges them
     /// permanently when `mailbox` is already Trash (server.go ApplyInboxAction).
-    func delete(messageIds: [String], mailbox: String) async throws
+    @discardableResult
+    func delete(messageIds: [String], mailbox: String) async throws -> MailActionReport
     /// Moves messages to the Archive folder (Android MailAction.ARCHIVE).
-    func archive(messageIds: [String], mailbox: String) async throws
+    @discardableResult
+    func archive(messageIds: [String], mailbox: String) async throws -> MailActionReport
     /// Moves messages to Junk (Android MailAction.SPAM).
-    func markSpam(messageIds: [String], mailbox: String) async throws
+    @discardableResult
+    func markSpam(messageIds: [String], mailbox: String) async throws -> MailActionReport
     /// Flags messages read on the server so the state syncs across devices.
     func markRead(messageIds: [String], mailbox: String) async throws
     /// Attachment metadata for one message (fetched lazily on open; the
@@ -90,6 +96,41 @@ struct MailFetchResult: Equatable, Sendable {
     /// against. Pruning is the only self-heal for a removal we were never
     /// told about.
     var isFullWindow = false
+}
+
+/// The list actions that take a message out of its folder, as the relay's
+/// `/api/inbox/actions` verbs.
+nonisolated enum MailMoveAction: String, Hashable, Sendable {
+    case archive
+    case delete
+    case spam
+    case move
+}
+
+/// What `POST /api/inbox/actions` reported for one request
+/// (`server_inbox.go` `handleInboxActions`: `{ok, action, processed,
+/// failed: [{messageId, error}], targetMailbox}`).
+///
+/// **HTTP 200 is transport success, not operation success.** The relay answers
+/// 200 with ids in `failed[]`, and its loop stops early on a cancelled request,
+/// leaving ids in neither list. `processed` is a count, not a list, so only
+/// `MailRepository.applyAction` decides which ids were confirmed.
+nonisolated struct MailActionReport: Equatable, Sendable {
+    struct Failure: Equatable, Sendable {
+        var messageId: String
+        var error: String
+    }
+
+    var processed: Int
+    var failed: [Failure]
+}
+
+/// The outcome of one batch as the cache saw it: the ids the relay confirmed
+/// (their cached rows are already gone) and, when anything was not changed,
+/// a sentence for the user.
+nonisolated struct MailActionResult: Equatable, Sendable {
+    var confirmedIds: [String]
+    var failureMessage: String?
 }
 
 /// Mail-layer failures that aren't plain network errors.
@@ -195,6 +236,30 @@ enum MailOutcome: Equatable, Sendable {
             .failure(Self.message(for: networkError))
         default:
             .failure("\(error)")
+        }
+    }
+
+    /// One sentence for any outcome that is not a success, for callers that
+    /// only report (list actions, folder changes) rather than branch.
+    var userMessage: String? {
+        switch self {
+        case .success, .sentWithWarning:
+            nil
+        case .rateLimited(let retryAfter):
+            retryAfter.map {
+                String(localized: "Too many attempts — try again in \(NetworkError.formatRetryAfter($0)).")
+            } ?? String(localized: "Too many attempts — try again later.")
+        case .notConfigured:
+            String(localized: "Set up your mail account in the web app first.")
+        case .unauthorized:
+            String(localized: "Not authorized — re-pair the device or check credentials.")
+        case .notPaired:
+            String(localized: "Pair this device first.")
+        case .invalid(let message), .failure(let message), .upstreamFailure(let message):
+            message
+        case .clientSideNeeded, .keylessRecipients:
+            // Neither is reachable outside the send path.
+            String(localized: "The server refused that change.")
         }
     }
 
