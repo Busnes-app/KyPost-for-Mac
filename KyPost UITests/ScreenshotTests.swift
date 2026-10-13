@@ -187,7 +187,12 @@ final class ScreenshotTests: XCTestCase {
     func testCaptureScreenshots() throws {
         let app = launchDemo()
 
-        // 1. Your inbox, at a glance
+        // 1. Your inbox, at a glance. The 13-inch iPad shows list and reader
+        // side by side (`ShellLayout.split`); an empty "Select an email" pane
+        // reads as unfinished, so open a message beside the list first.
+        if isPad {
+            tapIfPresent(row(in: app, containing: "Key rotation"))
+        }
         capture(app, "01-inbox")
 
         // 2. Organize mail with custom tabs — the keyword chips above the list.
@@ -229,6 +234,10 @@ final class ScreenshotTests: XCTestCase {
 
         // 6. Keep contacts synchronized
         if tapIfPresent(tab(app, "Contacts")) {
+            // Same reason as the inbox: fill the split's detail pane.
+            if isPad {
+                tapIfPresent(row(in: app, containing: "Devon Okafor"))
+            }
             capture(app, "06-contacts")
         }
 
