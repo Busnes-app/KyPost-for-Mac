@@ -456,6 +456,9 @@ struct MacRootView: View {
                 .scrollContentBackground(.hidden)
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            ContactSyncBanner(viewModel: contactsViewModel)
+        }
         .background(theme.bg)
         .navigationTitle("Contacts")
         .toolbar {
@@ -483,6 +486,11 @@ struct MacRootView: View {
                     showScanKey = true
                 } label: {
                     Label("Scan Contact Key", systemImage: "qrcode.viewfinder")
+                }
+            }
+            ToolbarItem {
+                VCardShareMenu(contacts: contactsViewModel.contacts) {
+                    Label("Export All as vCard", systemImage: "square.and.arrow.up")
                 }
             }
         }

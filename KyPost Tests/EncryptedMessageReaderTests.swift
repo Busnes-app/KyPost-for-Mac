@@ -67,12 +67,14 @@ private func makeReader(
     payload: PgpPayloadResult = .success(PgpPayload(encryptedPayload: "CIPHERTEXT")),
     crypto: FakeCrypto = FakeCrypto(body: mimeBody),
     thrown: (any Error)? = nil,
+    pins: RecipientPinSnapshot = .none,
     session: EnrollmentSession
 ) -> EncryptedMessageReader {
     EncryptedMessageReader(
         opener: FakeOpener(outcome: opener),
         payloads: FakePayloads(result: payload, thrown: thrown),
         crypto: crypto,
+        pins: { pins },
         session: session
     )
 }
@@ -426,6 +428,7 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
             opener: FakeOpener(outcome: .notEnrolled),
             payloads: FakePayloads(result: .success(PgpPayload(encryptedPayload: ciphertext)), thrown: nil),
             crypto: GopenPGPCrypto(),
+            pins: { .none },
             session: session,
             mime: { DecryptedBody(html: nil, plain: String(decoding: $0, as: UTF8.self), protectedSubject: nil) }
         )

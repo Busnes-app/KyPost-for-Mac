@@ -38,6 +38,7 @@ final class SettingsViewModel {
     /// working; nil means "no lock configured", i.e. proceed.
     private let appLockManager: AppLockManager?
     private let pushRepository: PushRepository?
+    private let recipientPinStore: RecipientPinStore?
 
     var systemNotificationsEnabled: Bool {
         didSet { pushSettingsStore.systemNotificationsEnabled = systemNotificationsEnabled }
@@ -73,7 +74,8 @@ final class SettingsViewModel {
         pushNotificationDispatcher: PushNotificationDispatcher,
         enrollmentVault: EnrollmentVault? = nil,
         appLockManager: AppLockManager? = nil,
-        pushRepository: PushRepository? = nil
+        pushRepository: PushRepository? = nil,
+        recipientPinStore: RecipientPinStore? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
@@ -88,6 +90,7 @@ final class SettingsViewModel {
         self.enrollmentVault = enrollmentVault
         self.appLockManager = appLockManager
         self.pushRepository = pushRepository
+        self.recipientPinStore = recipientPinStore
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.exportToSystemContactsEnabled
     }
@@ -147,6 +150,8 @@ final class SettingsViewModel {
         } catch {
             Log.push.error("Could not clear notification history on unpair: \(error)")
         }
+        // Keys verified by QR belong to this account's address book.
+        recipientPinStore?.clear()
         statusMessage = "Pairing removed"
     }
 

@@ -151,6 +151,7 @@ final class AppEnvironment {
                 // the marker alone: the next foreground reports "not enrolled".
                 graph.enrollmentVault.markTeardownReport()
                 graph.mailCursorStore.clear()
+                Self.eraseHostileLocationDefaults(in: graph)
             }
             // The unsealed copy goes in both directions, unlike the sealed
             // one. Turning the mode *off* does not restore a key, but leaving
@@ -172,6 +173,14 @@ final class AppEnvironment {
             store.enabled = previous
             throw error
         }
+    }
+
+    /// What Hostile Location Protection erases from `UserDefaults` that its
+    /// in-memory stores would otherwise only stop reading. Run when the mode
+    /// is turned on and at every launch while it is on, which also repairs a
+    /// toggle interrupted before this ran.
+    static func eraseHostileLocationDefaults(in graph: SingletonGraph) {
+        graph.recipientPinStore.clearPersisted()
     }
 
     /// The security wipe, end to end: capture what the network step will need,

@@ -41,6 +41,9 @@ final class ContactSyncRepository {
     private let groupsClient: GroupsSyncClient?
     private let groupDAO: GroupDAO?
 
+    /// Consecutive sync failures for the contacts list's banner. In memory.
+    let health = ContactSyncHealth()
+
     init(
         client: ContactSyncClient,
         contactDAO: ContactDAO,
@@ -51,7 +54,9 @@ final class ContactSyncRepository {
         photoCache: ContactPhotoCache? = nil,
         verifiedKeyStore: VerifiedPgpKeyStore? = nil,
         groupsClient: GroupsSyncClient? = nil,
-        groupDAO: GroupDAO? = nil
+        groupDAO: GroupDAO? = nil,
+        recipientPins: RecipientPinStore? = nil,
+        keyRevocation: (any PgpKeyRevocation)? = nil
     ) {
         self.client = client
         self.contactDAO = contactDAO
@@ -63,7 +68,14 @@ final class ContactSyncRepository {
         self.verifiedKeyStore = verifiedKeyStore
         self.groupsClient = groupsClient
         self.groupDAO = groupDAO
+        self.recipientPins = recipientPins
+        self.keyRevocation = keyRevocation
     }
+
+    /// Keys verified on this device by QR; nil in tests that don't exercise
+    /// them.
+    private let recipientPins: RecipientPinStore?
+    private let keyRevocation: (any PgpKeyRevocation)?
 
     // MARK: - Local CRUD
 
@@ -72,7 +84,11 @@ final class ContactSyncRepository {
     }
 
     /// Saves a local create/edit and marks it for the next sync.
-    func saveContact(_ contact: Contact) async throws {
+    ///
+    /// `verifiedInPerson` is the QR flow's save: the contact's key becomes the
+    /// pin for each of its addresses, replacing whatever was pinned there.
+    /// Every other save only records revocations against existing pins.
+    func saveContact(_ contact: Contact, verifiedInPerson: Bool = false) async throws {
         var dirty = contact
         dirty.needsSync = true
         dirty.updatedAt = Date()
@@ -85,7 +101,29 @@ final class ContactSyncRepository {
         } else {
             verifiedKeyStore?.forget(uid: dirty.uid)
         }
+        if verifiedInPerson, let key = dirty.pgpKey, !key.isEmpty {
+            recipientPins?.pin(addresses: dirty.emails.map(\.value), publicKey: key)
+        } else {
+            recordRevocations(for: dirty.emails.map(\.value), syncedKey: dirty.pgpKey)
+        }
         await systemContactsExporter?.exportUpsert(dirty)
+        await refreshPendingSummary()
+    }
+
+    /// The one thing a non-QR copy of a key may do to a pin: revoke it. For
+    /// each pinned address, takes the revocations `syncedKey` carries
+    /// for the pinned key (`PgpKeyRevocation.withRevocations`). Run on
+    /// every contact write — sync and local — never on a lookup, so reads stay
+    /// reads.
+    private func recordRevocations(for addresses: [String], syncedKey: String?) {
+        guard let recipientPins, let keyRevocation,
+              let syncedKey, !syncedKey.isEmpty else { return }
+        for address in addresses {
+            guard let pin = recipientPins.pin(for: address),
+                  let revoked = keyRevocation.withRevocations(pinned: pin.publicKey, synced: syncedKey)
+            else { continue }
+            recipientPins.replaceRevoked(address: address, with: revoked)
+        }
     }
 
     /// Trusts a PGP key that arrived via sync and was held for review
@@ -123,6 +161,7 @@ final class ContactSyncRepository {
             try await contactDAO.deleteLocal(localId: contact.localId)
         }
         await systemContactsExporter?.exportDelete(localId: contact.localId)
+        await refreshPendingSummary()
     }
 
     // MARK: - Sync
@@ -145,7 +184,57 @@ final class ContactSyncRepository {
         }
         inFlightSync = task
         defer { if inFlightSync == task { inFlightSync = nil } }
-        return try await task.value
+        do {
+            let summary = try await task.value
+            health.recordSuccess()
+            await refreshPendingSummary()
+            return summary
+        } catch ContactSyncError.notPaired {
+            // Not paired is a state, not a failure: nothing was tried.
+            await refreshPendingSummary()
+            throw ContactSyncError.notPaired
+        } catch is CancellationError {
+            await refreshPendingSummary()
+            throw CancellationError()
+        } catch {
+            health.recordFailure(reason: Self.failureReason(error))
+            await refreshPendingSummary()
+            throw error
+        }
+    }
+
+    /// The banner's sentence for a failed sync.
+    static func failureReason(_ error: Error) -> String {
+        switch error {
+        case NetworkError.unauthorized:
+            String(localized: "Device pairing expired or invalid — re-pair this device in Settings.")
+        // These carry their explanation as a value and have no
+        // `errorDescription`, so `localizedDescription` would be Foundation's
+        // generic domain-and-code sentence.
+        case NetworkError.transport(let description), NetworkError.decoding(let description):
+            description
+        default:
+            error.localizedDescription
+        }
+    }
+
+    /// What is still to reach the server: named contacts flagged `needsSync`
+    /// and queued delete tombstones. A nameless contact is excluded — it is
+    /// held back on purpose until it has a name (see `performSync`), so it is
+    /// not "waiting to sync" and Retry could never clear it.
+    /// Recounts the outbox into `health.pending`, which the contacts list
+    /// reads. Run after every write and every sync, whoever started it.
+    func refreshPendingSummary() async {
+        health.recordPending(await pendingSummary())
+    }
+
+    func pendingSummary() async -> ContactPendingSummary {
+        let pending = ((try? await contactDAO.listPendingSync()) ?? []).filter {
+            !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        let tombstones = pendingDeletesStore.all().count
+        let oldest = (pending.map(\.updatedAt) + [pendingDeletesStore.oldestQueuedAt].compactMap { $0 }).min()
+        return ContactPendingSummary(count: pending.count + tombstones, oldestQueuedAt: oldest)
     }
 
     private func performSync() async throws -> ContactSyncSummary {
@@ -507,6 +596,9 @@ final class ContactSyncRepository {
         // so a local edit cannot claim self-hood and a push cannot clear it.
         contact.isSelf = dto.isSelf ?? false
         try await contactDAO.upsert(contacts: [contact])
+        // The relay's copy, whether it was applied or held for review: either
+        // way it may carry its owner's revocation of a key pinned here.
+        recordRevocations(for: contact.emails.map(\.value), syncedKey: dto.pgpKey)
     }
 
     /// A key received via sync that differs from an already-trusted key is

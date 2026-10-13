@@ -1,0 +1,774 @@
+//
+//  PinnedKeyFixtures.swift
+//  KyPost Tests
+//
+//  Public keys for the pinned-key revocation tests. Never real keys.
+//
+//  Generated with ProtonMail/go-crypto's v1 `openpgp` package (no gpg, sq or rnp
+//  was available on the machine that made them). That is the same library family
+//  GopenPGP is built on, so these prove the merge and the checks behave on
+//  keys and revocations go-crypto emits — not that other implementations' bytes
+//  agree; the gpg-made fixtures in TestPgpFixtures still cover reading.
+//
+
+enum PinnedKeyFixtures {
+    /// The key as pinned: ed25519 primary (certify+sign), cv25519 encryption subkey.
+    static let alicePinned = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaVW5ABYJKwYBBAHaRw8BAQdAuib3CosEF/84tqUr0vFkN3HttEWJDmheT9+4
+    rfwNKYzNIUFsaWNlIFBpbiA8YWxpY2VAZXhhbXBsZS5pbnZhbGlkPsK9BBMWCABv
+    BYJpVbkAAgsHCRDCg+AVx9Ma9jUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVu
+    cGdwanMub3JnnTYQHmAwTBnvNdUK/WDn6gIVCAIWAAIZAQKbAwIeARYhBK4/1i/K
+    rvd8jBkiHcKD4BXH0xr2AAAwWQEArIAEqmLxdg1qD6/gFR6dErbRsxUFG3kbjWhP
+    j3x/p9ABAPxwOQdcHu6iKpsbfIGStxvpR1nHJWh/1Nq1k19hOBAHzjgEaVW5ABIK
+    KwYBBAGXVQEFAQEHQAPQ+0qOX4L+hZe5nxkC8oRY8422mdmAMEmM5NOslHwyAwEK
+    CcKuBBgWCABgBYJpVbkACRDCg+AVx9Ma9jUUAAAAAAAcABBzYWx0QG5vdGF0aW9u
+    cy5vcGVucGdwanMub3JnhnxmXLK1G2uxdB6w2MzbbAKbDBYhBK4/1i/Krvd8jBki
+    HcKD4BXH0xr2AAAR9AD9G4viaRBt5z+puh4s9jPNQUjIamAyqvbjXhT+WfPQF5sA
+    /25nXFwTr94XyLLnMhHpRJVPxGF8Xd7bdzb3ez4sxfwJ
+    =dKmr
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key after its owner revoked the primary (reason: compromised).
+    static let aliceRevokedPrimary = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaVW5ABYJKwYBBAHaRw8BAQdAuib3CosEF/84tqUr0vFkN3HttEWJDmheT9+4
+    rfwNKYzCuQQgFggAawWCaVW5AAkQwoPgFcfTGvY1FAAAAAAAHAAQc2FsdEBub3Rh
+    dGlvbnMub3BlbnBncGpzLm9yZ3G7cLNXAg5ywwIlyiQG5wUNnQJjb21wcm9taXNl
+    ZBYhBK4/1i/Krvd8jBkiHcKD4BXH0xr2AAAAuAEA2rbQSRyc85gMtQZjqOi60nzL
+    SSj41YxNJ1TOUngZRqIBAJpj6mBFqgt5DZtOCq9qFCrm9kYUCCC0iUlj+XrTAaMK
+    zSFBbGljZSBQaW4gPGFsaWNlQGV4YW1wbGUuaW52YWxpZD7CvQQTFggAbwWCaVW5
+    AAILBwkQwoPgFcfTGvY1FAAAAAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpz
+    Lm9yZ502EB5gMEwZ7zXVCv1g5+oCFQgCFgACGQECmwMCHgEWIQSuP9Yvyq73fIwZ
+    Ih3Cg+AVx9Ma9gAAMFkBAKyABKpi8XYNag+v4BUenRK20bMVBRt5G41oT498f6fQ
+    AQD8cDkHXB7uoiqbG3yBkrcb6UdZxyVof9TatZNfYTgQB844BGlVuQASCisGAQQB
+    l1UBBQEBB0AD0PtKjl+C/oWXuZ8ZAvKEWPONtpnZgDBJjOTTrJR8MgMBCgnCrgQY
+    FggAYAWCaVW5AAkQwoPgFcfTGvY1FAAAAAAAHAAQc2FsdEBub3RhdGlvbnMub3Bl
+    bnBncGpzLm9yZ4Z8ZlyytRtrsXQesNjM22wCmwwWIQSuP9Yvyq73fIwZIh3Cg+AV
+    x9Ma9gAAEfQA/RuL4mkQbec/qboeLPYzzUFIyGpgMqr2414U/lnz0BebAP9uZ1xc
+    E6/eF8iy5zIR6USVT8RhfF3e23c293s+LMX8CQ==
+    =SvAm
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key after its owner revoked the encryption subkey.
+    static let aliceRevokedSubkey = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaVW5ABYJKwYBBAHaRw8BAQdAuib3CosEF/84tqUr0vFkN3HttEWJDmheT9+4
+    rfwNKYzNIUFsaWNlIFBpbiA8YWxpY2VAZXhhbXBsZS5pbnZhbGlkPsK9BBMWCABv
+    BYJpVbkAAgsHCRDCg+AVx9Ma9jUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVu
+    cGdwanMub3JnnTYQHmAwTBnvNdUK/WDn6gIVCAIWAAIZAQKbAwIeARYhBK4/1i/K
+    rvd8jBkiHcKD4BXH0xr2AAAwWQEArIAEqmLxdg1qD6/gFR6dErbRsxUFG3kbjWhP
+    j3x/p9ABAPxwOQdcHu6iKpsbfIGStxvpR1nHJWh/1Nq1k19hOBAHzjgEaVW5ABIK
+    KwYBBAGXVQEFAQEHQAPQ+0qOX4L+hZe5nxkC8oRY8422mdmAMEmM5NOslHwyAwEK
+    CcK5BCgWCABrBYJpVbkACRDCg+AVx9Ma9jUUAAAAAAAcABBzYWx0QG5vdGF0aW9u
+    cy5vcGVucGdwanMub3Jn0RFL0dGlZahL8SMcOvcjVg2dAnN1YmtleSBsb3N0FiEE
+    rj/WL8qu93yMGSIdwoPgFcfTGvYAAGeDAQDCYrNV/8h+9hzOALiCZVUHgWr1kiuP
+    ni/7C4q8B1BxyQD9HybmZuAGt3wSrqNKUWsspsL3rm29faAYABd7Oyj1GwzCrgQY
+    FggAYAWCaVW5AAkQwoPgFcfTGvY1FAAAAAAAHAAQc2FsdEBub3RhdGlvbnMub3Bl
+    bnBncGpzLm9yZ4Z8ZlyytRtrsXQesNjM22wCmwwWIQSuP9Yvyq73fIwZIh3Cg+AV
+    x9Ma9gAAEfQA/RuL4mkQbec/qboeLPYzzUFIyGpgMqr2414U/lnz0BebAP9uZ1xc
+    E6/eF8iy5zIR6USVT8RhfF3e23c293s+LMX8CQ==
+    =AOBM
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key carrying a key-revocation signature made by a **different** key (Mallory's) — a revocation packet that does not verify against Alice's primary.
+    static let aliceForgedRevocation = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaVW5ABYJKwYBBAHaRw8BAQdAuib3CosEF/84tqUr0vFkN3HttEWJDmheT9+4
+    rfwNKYzCqwQgFggAXQWCaVW5AAkQkNnIKjoc7Xg1FAAAAAAAHAAQc2FsdEBub3Rh
+    dGlvbnMub3BlbnBncGpzLm9yZ5n52V3hVepoHQvK2znUcs8WIQQVdf9QHHqq0XZX
+    X5CQ2cgqOhzteAAAkZkBAMYU7HMTUfJCVfNxVCpl7sa9vE8n1juhDZt6E9ujpE64
+    AQCYgIuHUy4HYH6eATjddkKN5mpgo3ji9Rkti4IUfwvrCM0hQWxpY2UgUGluIDxh
+    bGljZUBleGFtcGxlLmludmFsaWQ+wr0EExYIAG8FgmlVuQACCwcJEMKD4BXH0xr2
+    NRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmedNhAeYDBMGe81
+    1Qr9YOfqAhUIAhYAAhkBApsDAh4BFiEErj/WL8qu93yMGSIdwoPgFcfTGvYAADBZ
+    AQCsgASqYvF2DWoPr+AVHp0SttGzFQUbeRuNaE+PfH+n0AEA/HA5B1we7qIqmxt8
+    gZK3G+lHWcclaH/U2rWTX2E4EAfOOARpVbkAEgorBgEEAZdVAQUBAQdAA9D7So5f
+    gv6Fl7mfGQLyhFjzjbaZ2YAwSYzk06yUfDIDAQoJwq4EGBYIAGAFgmlVuQAJEMKD
+    4BXH0xr2NRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmeGfGZc
+    srUba7F0HrDYzNtsApsMFiEErj/WL8qu93yMGSIdwoPgFcfTGvYAABH0AP0bi+Jp
+    EG3nP6m6Hiz2M81BSMhqYDKq9uNeFP5Z89AXmwD/bmdcXBOv3hfIsucyEelElU/E
+    YXxd3tt3Nvd7PizF/Ak=
+    =cBKT
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key with a new encryption subkey added and nothing revoked: material a synced copy must never carry into the pin.
+    static let aliceWithExtraSubkey = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaVW5ABYJKwYBBAHaRw8BAQdAuib3CosEF/84tqUr0vFkN3HttEWJDmheT9+4
+    rfwNKYzNIUFsaWNlIFBpbiA8YWxpY2VAZXhhbXBsZS5pbnZhbGlkPsK9BBMWCABv
+    BYJpVbkAAgsHCRDCg+AVx9Ma9jUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVu
+    cGdwanMub3JnnTYQHmAwTBnvNdUK/WDn6gIVCAIWAAIZAQKbAwIeARYhBK4/1i/K
+    rvd8jBkiHcKD4BXH0xr2AAAwWQEArIAEqmLxdg1qD6/gFR6dErbRsxUFG3kbjWhP
+    j3x/p9ABAPxwOQdcHu6iKpsbfIGStxvpR1nHJWh/1Nq1k19hOBAHzjgEaVW5ABIK
+    KwYBBAGXVQEFAQEHQAPQ+0qOX4L+hZe5nxkC8oRY8422mdmAMEmM5NOslHwyAwEK
+    CcKuBBgWCABgBYJpVbkACRDCg+AVx9Ma9jUUAAAAAAAcABBzYWx0QG5vdGF0aW9u
+    cy5vcGVucGdwanMub3JnhnxmXLK1G2uxdB6w2MzbbAKbDBYhBK4/1i/Krvd8jBki
+    HcKD4BXH0xr2AAAR9AD9G4viaRBt5z+puh4s9jPNQUjIamAyqvbjXhT+WfPQF5sA
+    /25nXFwTr94XyLLnMhHpRJVPxGF8Xd7bdzb3ez4sxfwJzjgEaVW5ABIKKwYBBAGX
+    VQEFAQEHQGBqKcbF5aKV51qnusiseILkYXW8jciWytrbwxZ/f+1jAwEKCcKuBBgW
+    CABgBYJpVbkACRDCg+AVx9Ma9jUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVu
+    cGdwanMub3JneF0jbJFzCeU+TSVr+wmnQgKbDBYhBK4/1i/Krvd8jBkiHcKD4BXH
+    0xr2AAAnmAD6Atd3+rg7D8oB+gtPhEL3HVllhrSP+uslHfj0lDkuSLYBAPNmPYee
+    WleZUNaH9HxHCMai8OFEklRQRjBzgJFYEkcJ
+    =QGg1
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// A different primary key, revoked by its owner.
+    static let bobRevoked = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaVW5ABYJKwYBBAHaRw8BAQdAhQ5LDo18mXI/utFNBeRu6wth+AeD6DYEbWNQ
+    l+PS7zbCrgQgFggAYAWCaVW5AAkQBoFSCeFTTY81FAAAAAAAHAAQc2FsdEBub3Rh
+    dGlvbnMub3BlbnBncGpzLm9yZ/JKp74dMgiUCRCK700jOI8CnQIWIQSS/VeT71Gx
+    8k6yC/kGgVIJ4VNNjwAA2+gA/26muaJweQ7Vej9+6CHfq0139xtEsQpTjXzgif3J
+    09xeAP9/4YK0Lp3yHuq20njzX4DFl3jHAwp/BwUFmf+pXKRxD80fQm9iIE90aGVy
+    IDxib2JAZXhhbXBsZS5pbnZhbGlkPsK9BBMWCABvBYJpVbkAAgsHCRAGgVIJ4VNN
+    jzUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3JnQdqipc3hHUbr
+    wj0wUUZ84gIVCAIWAAIZAQKbAwIeARYhBJL9V5PvUbHyTrIL+QaBUgnhU02PAACa
+    HwD+L0Yacl5ro0/2fysrdtETmI3+QSWOxFulqVuEtdAx8q0BAJngfMvbH8SyeymN
+    TdDGurphw45Z4auDwPOMF2JIaMcNzjgEaVW5ABIKKwYBBAGXVQEFAQEHQCy1ouYY
+    PgsjnSs4XJlzxzc+5zepWhKAk6pZUWOs+v1pAwEKCcKuBBgWCABgBYJpVbkACRAG
+    gVIJ4VNNjzUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3Jnrcq5
+    P4jPNUhSrtjLIPpC1QKbDBYhBJL9V5PvUbHyTrIL+QaBUgnhU02PAABtNAD7BHHG
+    ugU8lDI5XvkDTkeyxVbYUGUyoDoTW85OS47cuCgA/3Ysn5DHFM9FgATOmB4EA4AP
+    CJut9DeF8seX9FsgqJsB
+    =YnPG
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    // MARK: Primaries that can sign, with a signing subkey
+
+    /// EdDSA (legacy Ed25519) primary that can sign, a signing subkey, and an encryption subkey.
+    static let carolPinned = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaVW5ABYJKwYBBAHaRw8BAQdA1nSEOlA1RyzjJtZnLIzCPROkK9ioTtTSD7VQ
+    XTAq6f/NHWNhcm9sIDxjYXJvbEBleGFtcGxlLmludmFsaWQ+wr0EExYIAG8FgmlV
+    uQACCwcJEI7ZpcomZFtjNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bq
+    cy5vcmceiMV4jwuNoZuPjIRmPjVHAhUIAhYAAhkBApsDAh4BFiEEshcGgB03eolx
+    Ulj6jtmlyiZkW2MAAO1rAQCcPGTxE7D5Sbm847xk1IwuUYskvt7IgFCqn9g8+5nY
+    5AD/WLt3WJYxvtWCadz+9dFooMGyB1QCcaJSSZRNQtYcDArOOARpVbkAEgorBgEE
+    AZdVAQUBAQdAYhw57cjetLJoewjhRkQLvvPXhm+GR5XUIARKkSRtu1oDAQoJwq4E
+    GBYIAGAFgmlVuQAJEI7ZpcomZFtjNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9w
+    ZW5wZ3Bqcy5vcmdgM15uf6rjQnSpKgIuBSJSApsMFiEEshcGgB03eolxUlj6jtml
+    yiZkW2MAAD74AP44tSn3avyC0s5DS+Fh0MLO5NDfAOqIpX/EjSfAca8oAgEAyrim
+    oHxIDi4a6VVo4kOY5fl6oc61YNutJEMAhhOURw7OMwRpVbkAFgkrBgEEAdpHDwEB
+    B0B8lLlqe3s8VEWcVC6v6qimWH8jj2VrnQKN/dWD4pu5X8LAmwQYFggBDQWCaVW5
+    AAkQjtmlyiZkW2M1FAAAAAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9y
+    Z7D/ICnP95qBgdLbySvk++ACmwKsoAQZFggAXQWCaVW5AAkQhoYSsJJ1dUk1FAAA
+    AAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ6FtSJ28WjhGWtXGQ+sK
+    mzEWIQSjniZOOC0RLVCpHhSGhhKwknV1SQAAQL8BAKh4tAjsG4SMSX5XLYOceaLQ
+    Gj+Jd53JGXfo6AgSO4soAQDQ6xMBKKcItwkON8i81txiqBAxH9lkTfEqGyDxHF+r
+    ARYhBLIXBoAdN3qJcVJY+o7ZpcomZFtjAAAHmQD/dexqigK/E0EKbYVCfZJ7BkLT
+    mXYIpDGkak5+P3LZ+14A/RTHnOruKrOGnoV+Z42gMzdrqbEgbmOF+dkMwAIWxqQD
+    =aRoL
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key after its owner revoked the signing subkey (reason: compromised).
+    static let carolRevokedSigningSubkey = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaVW5ABYJKwYBBAHaRw8BAQdA1nSEOlA1RyzjJtZnLIzCPROkK9ioTtTSD7VQ
+    XTAq6f/NHWNhcm9sIDxjYXJvbEBleGFtcGxlLmludmFsaWQ+wr0EExYIAG8FgmlV
+    uQACCwcJEI7ZpcomZFtjNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bq
+    cy5vcmceiMV4jwuNoZuPjIRmPjVHAhUIAhYAAhkBApsDAh4BFiEEshcGgB03eolx
+    Ulj6jtmlyiZkW2MAAO1rAQCcPGTxE7D5Sbm847xk1IwuUYskvt7IgFCqn9g8+5nY
+    5AD/WLt3WJYxvtWCadz+9dFooMGyB1QCcaJSSZRNQtYcDArOOARpVbkAEgorBgEE
+    AZdVAQUBAQdAYhw57cjetLJoewjhRkQLvvPXhm+GR5XUIARKkSRtu1oDAQoJwq4E
+    GBYIAGAFgmlVuQAJEI7ZpcomZFtjNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9w
+    ZW5wZ3Bqcy5vcmdgM15uf6rjQnSpKgIuBSJSApsMFiEEshcGgB03eolxUlj6jtml
+    yiZkW2MAAD74AP44tSn3avyC0s5DS+Fh0MLO5NDfAOqIpX/EjSfAca8oAgEAyrim
+    oHxIDi4a6VVo4kOY5fl6oc61YNutJEMAhhOURw7OMwRpVbkAFgkrBgEEAdpHDwEB
+    B0B8lLlqe3s8VEWcVC6v6qimWH8jj2VrnQKN/dWD4pu5X8K5BCgWCABrBYJpVbkA
+    CRCO2aXKJmRbYzUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3Jn
+    W1zIZ7b8kXPoaz+ty0EJBw2dAmNvbXByb21pc2VkFiEEshcGgB03eolxUlj6jtml
+    yiZkW2MAAH8kAQDOJmO4Nq2vsM1kzqwB+ERi8EhYVGj0Lh2yim9bxQUvqAD9EudC
+    DB1HkVYLbRmqiHpUgqNEiqgvocnH+fd1SCxwtALCwJsEGBYIAQ0FgmlVuQAJEI7Z
+    pcomZFtjNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmew/yAp
+    z/eagYHS28kr5PvgApsCrKAEGRYIAF0FgmlVuQAJEIaGErCSdXVJNRQAAAAAABwA
+    EHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmehbUidvFo4RlrVxkPrCpsxFiEE
+    o54mTjgtES1QqR4UhoYSsJJ1dUkAAEC/AQCoeLQI7BuEjEl+Vy2DnHmi0Bo/iXed
+    yRl36OgIEjuLKAEA0OsTASinCLcJDjfIvNbcYqgQMR/ZZE3xKhsg8RxfqwEWIQSy
+    FwaAHTd6iXFSWPqO2aXKJmRbYwAAB5kA/3XsaooCvxNBCm2FQn2SewZC05l2CKQx
+    pGpOfj9y2fteAP0Ux5zq7iqzhp6FfmeNoDM3a6mxIG5jhfnZDMACFsakAw==
+    =vZn7
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The revoked copy with one byte of the revocation signature changed.
+    static let carolForgedSigningSubkeyRevocation = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaVW5ABYJKwYBBAHaRw8BAQdA1nSEOlA1RyzjJtZnLIzCPROkK9ioTtTSD7VQ
+    XTAq6f/NHWNhcm9sIDxjYXJvbEBleGFtcGxlLmludmFsaWQ+wr0EExYIAG8FgmlV
+    uQACCwcJEI7ZpcomZFtjNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bq
+    cy5vcmceiMV4jwuNoZuPjIRmPjVHAhUIAhYAAhkBApsDAh4BFiEEshcGgB03eolx
+    Ulj6jtmlyiZkW2MAAO1rAQCcPGTxE7D5Sbm847xk1IwuUYskvt7IgFCqn9g8+5nY
+    5AD/WLt3WJYxvtWCadz+9dFooMGyB1QCcaJSSZRNQtYcDArOOARpVbkAEgorBgEE
+    AZdVAQUBAQdAYhw57cjetLJoewjhRkQLvvPXhm+GR5XUIARKkSRtu1oDAQoJwq4E
+    GBYIAGAFgmlVuQAJEI7ZpcomZFtjNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9w
+    ZW5wZ3Bqcy5vcmdgM15uf6rjQnSpKgIuBSJSApsMFiEEshcGgB03eolxUlj6jtml
+    yiZkW2MAAD74AP44tSn3avyC0s5DS+Fh0MLO5NDfAOqIpX/EjSfAca8oAgEAyrim
+    oHxIDi4a6VVo4kOY5fl6oc61YNutJEMAhhOURw7OMwRpVbkAFgkrBgEEAdpHDwEB
+    B0B8lLlqe3s8VEWcVC6v6qimWH8jj2VrnQKN/dWD4pu5X8K5BCgWCABrBYJpVbkA
+    CRCO2aXKJmRbYzUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3Jn
+    W1zIZ7b8kXPoaz+ty0EJBw2dAmNvbXByb21pc2VkFiEEshcGgB03eolxUlj6jtml
+    yiZkW2MAAH8kAQDOJmO4Nq2vsM1kzqwB+ERi8EhYVGj0Lh2yim9bxQUvqAD9EudC
+    DB1HkVYLbRmqiHpUgqNEiqgvocnH+fd1SCxwtQLCwJsEGBYIAQ0FgmlVuQAJEI7Z
+    pcomZFtjNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmew/yAp
+    z/eagYHS28kr5PvgApsCrKAEGRYIAF0FgmlVuQAJEIaGErCSdXVJNRQAAAAAABwA
+    EHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmehbUidvFo4RlrVxkPrCpsxFiEE
+    o54mTjgtES1QqR4UhoYSsJJ1dUkAAEC/AQCoeLQI7BuEjEl+Vy2DnHmi0Bo/iXed
+    yRl36OgIEjuLKAEA0OsTASinCLcJDjfIvNbcYqgQMR/ZZE3xKhsg8RxfqwEWIQSy
+    FwaAHTd6iXFSWPqO2aXKJmRbYwAAB5kA/3XsaooCvxNBCm2FQn2SewZC05l2CKQx
+    pGpOfj9y2fteAP0Ux5zq7iqzhp6FfmeNoDM3a6mxIG5jhfnZDMACFsakAw==
+    =g9TI
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// A detached signature by the signing subkey over `carolSignedText`.
+    static let carolSubkeySignature = """
+    -----BEGIN PGP SIGNATURE-----
+
+    wqsEABYIAF0FgmlVuQAJEIaGErCSdXVJNRQAAAAAABwAEHNhbHRAbm90YXRpb25z
+    Lm9wZW5wZ3Bqcy5vcmepjmDVH5UtUiFwbWc6ENgaFiEEo54mTjgtES1QqR4UhoYS
+    sJJ1dUkAANXEAQD2KrzFH68MUk5Kk3ngxV/NJShPAy6f770WzgOIxvzZPgEA7gN0
+    2FRZgSXzqeyrXnDlU5Y/caLY+wIifwfR9BpzrA4=
+    =3wf2
+    -----END PGP SIGNATURE-----
+    """
+
+    static let carolSignedText = "signed by the pinned signing subkey\n"
+
+    /// RSA-2048 primary that can sign, a signing subkey, and an encryption subkey.
+    static let davePinned = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    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
+    Eb8Z9MJgzo8+92IFZKB4wYFxXISF
+    =/Vvk
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key after its owner revoked the signing subkey (reason: compromised).
+    static let daveRevokedSigningSubkey = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    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
+    zo8+92IFZKB4wYFxXISF
+    =Pqo+
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The revoked copy with one byte of the revocation signature changed.
+    static let daveForgedSigningSubkeyRevocation = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    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
+    zo8+92IFZKB4wYFxXISF
+    =Xhs1
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// ECDSA P-256 primary that can sign, a signing subkey, and an encryption subkey.
+    static let erinPinned = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xlIEaVW5ABMIKoZIzj0DAQcCAwT5au7dtZgmk/uG3mCFJfibJTu2CO/L/bnYYOuF
+    l6FZ5SwTdkdyaXKqnkXbDkGYw/GUAImtJuvtFql30FZw2BsZzRtlcmluIDxlcmlu
+    QGV4YW1wbGUuaW52YWxpZD7CvQQTEwgAbwWCaVW5AAILBwkQs46Nw9uCORA1FAAA
+    AAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ6zUW9mnqePty8wytb0i
+    VCQCFQgCFgACGQECmwMCHgEWIQTbG0xGhKeMC9wu9Jizjo3D24I5EAAA4/QA/0tb
+    ytPdJAuD92QsuIicrePkKx9gMXHLkARfOs+PUiwgAQDGg9b8a8rJZLQ0gA+tmzSs
+    n38kO4ThXBIszQQZwMaKyM5WBGlVuQASCCqGSM49AwEHAgME7sYnFS10sP6aF+aQ
+    IPBqALxujHhjMWeKAFMa0m21UDkDOvseYyCAhLyB+lRLGHauxcJhVsTWqUY+5ePH
+    UgY0tAMBCgnCrgQYEwgAYAWCaVW5AAkQs46Nw9uCORA1FAAAAAAAHAAQc2FsdEBu
+    b3RhdGlvbnMub3BlbnBncGpzLm9yZxTuCl7fg0GA76+2oA/YLQ8CmwwWIQTbG0xG
+    hKeMC9wu9Jizjo3D24I5EAAAl64BAL1iJWuBeHZVFUItYETF1hVehZq1j/eqatDV
+    gCPoad8VAQDAPH9T1y2Y7bULy9FpQS1xL2jcnwAnaazkKIg04YwNG85SBGlVuQAT
+    CCqGSM49AwEHAgMEAq2wKM9FuBxBNtrhN0jcJ4WmLei1kPhj6I/ffMepiokQPfyt
+    LxdztpO/Q/g+S7JgznvMHUeOJtqRPrhWsUPAY8LAmwQYEwgBDQWCaVW5AAkQs46N
+    w9uCORA1FAAAAAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ7ozy1oT
+    BUFyNkyKHB/cosUCmwKsoAQZEwgAXQWCaVW5AAkQ+BkK0qVFx/I1FAAAAAAAHAAQ
+    c2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ4hAM3dUZJjh+vNJQT/qi2wWIQRd
+    yh/gDhdIu1xWf3H4GQrSpUXH8gAAnUMA/A8LfBqJAr2YpISJ6+X7bkPH5NjcKJjo
+    YIa6ul/njn1tAP9NNmBpN4tCYeiGteP76fIaTSA2XenlFMaxc4mraXlaNRYhBNsb
+    TEaEp4wL3C70mLOOjcPbgjkQAAAYPQEAyk5iHQdaCOLk/rprNAEW7C2HreYgumw5
+    lEeiIxZ4uS4A/0OCJcCSkTXwgBFoM3QTucfW1FSLj3vA/XJGVtcL8ymI
+    =Ihhs
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key after its owner revoked the signing subkey (reason: compromised).
+    static let erinRevokedSigningSubkey = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xlIEaVW5ABMIKoZIzj0DAQcCAwT5au7dtZgmk/uG3mCFJfibJTu2CO/L/bnYYOuF
+    l6FZ5SwTdkdyaXKqnkXbDkGYw/GUAImtJuvtFql30FZw2BsZzRtlcmluIDxlcmlu
+    QGV4YW1wbGUuaW52YWxpZD7CvQQTEwgAbwWCaVW5AAILBwkQs46Nw9uCORA1FAAA
+    AAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ6zUW9mnqePty8wytb0i
+    VCQCFQgCFgACGQECmwMCHgEWIQTbG0xGhKeMC9wu9Jizjo3D24I5EAAA4/QA/0tb
+    ytPdJAuD92QsuIicrePkKx9gMXHLkARfOs+PUiwgAQDGg9b8a8rJZLQ0gA+tmzSs
+    n38kO4ThXBIszQQZwMaKyM5WBGlVuQASCCqGSM49AwEHAgME7sYnFS10sP6aF+aQ
+    IPBqALxujHhjMWeKAFMa0m21UDkDOvseYyCAhLyB+lRLGHauxcJhVsTWqUY+5ePH
+    UgY0tAMBCgnCrgQYEwgAYAWCaVW5AAkQs46Nw9uCORA1FAAAAAAAHAAQc2FsdEBu
+    b3RhdGlvbnMub3BlbnBncGpzLm9yZxTuCl7fg0GA76+2oA/YLQ8CmwwWIQTbG0xG
+    hKeMC9wu9Jizjo3D24I5EAAAl64BAL1iJWuBeHZVFUItYETF1hVehZq1j/eqatDV
+    gCPoad8VAQDAPH9T1y2Y7bULy9FpQS1xL2jcnwAnaazkKIg04YwNG85SBGlVuQAT
+    CCqGSM49AwEHAgMEAq2wKM9FuBxBNtrhN0jcJ4WmLei1kPhj6I/ffMepiokQPfyt
+    LxdztpO/Q/g+S7JgznvMHUeOJtqRPrhWsUPAY8K5BCgTCABrBYJpVbkACRCzjo3D
+    24I5EDUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3Jnsw8AcIQV
+    BXNXrmFCT7qWWA2dAmNvbXByb21pc2VkFiEE2xtMRoSnjAvcLvSYs46Nw9uCORAA
+    AOwcAP9e25m4ZJ7VYSAjNm4+Qd6dFRyniv9S6i7vbZ3UvhcBrgD7BjqPmKsHpg8/
+    uXZCMZHM63i6xN4gWpNAENKLGJOruOzCwJsEGBMIAQ0FgmlVuQAJELOOjcPbgjkQ
+    NRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcme6M8taEwVBcjZM
+    ihwf3KLFApsCrKAEGRMIAF0FgmlVuQAJEPgZCtKlRcfyNRQAAAAAABwAEHNhbHRA
+    bm90YXRpb25zLm9wZW5wZ3Bqcy5vcmeIQDN3VGSY4frzSUE/6otsFiEEXcof4A4X
+    SLtcVn9x+BkK0qVFx/IAAJ1DAPwPC3waiQK9mKSEievl+25Dx+TY3CiY6GCGurpf
+    5459bQD/TTZgaTeLQmHohrXj++nyGk0gNl3p5RTGsXOJq2l5WjUWIQTbG0xGhKeM
+    C9wu9Jizjo3D24I5EAAAGD0BAMpOYh0HWgji5P66azQBFuwth63mILpsOZRHoiMW
+    eLkuAP9DgiXAkpE18IARaDN0E7nH1tRUi497wP1yRlbXC/MpiA==
+    =BqFc
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The revoked copy with one byte of the revocation signature changed.
+    static let erinForgedSigningSubkeyRevocation = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xlIEaVW5ABMIKoZIzj0DAQcCAwT5au7dtZgmk/uG3mCFJfibJTu2CO/L/bnYYOuF
+    l6FZ5SwTdkdyaXKqnkXbDkGYw/GUAImtJuvtFql30FZw2BsZzRtlcmluIDxlcmlu
+    QGV4YW1wbGUuaW52YWxpZD7CvQQTEwgAbwWCaVW5AAILBwkQs46Nw9uCORA1FAAA
+    AAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ6zUW9mnqePty8wytb0i
+    VCQCFQgCFgACGQECmwMCHgEWIQTbG0xGhKeMC9wu9Jizjo3D24I5EAAA4/QA/0tb
+    ytPdJAuD92QsuIicrePkKx9gMXHLkARfOs+PUiwgAQDGg9b8a8rJZLQ0gA+tmzSs
+    n38kO4ThXBIszQQZwMaKyM5WBGlVuQASCCqGSM49AwEHAgME7sYnFS10sP6aF+aQ
+    IPBqALxujHhjMWeKAFMa0m21UDkDOvseYyCAhLyB+lRLGHauxcJhVsTWqUY+5ePH
+    UgY0tAMBCgnCrgQYEwgAYAWCaVW5AAkQs46Nw9uCORA1FAAAAAAAHAAQc2FsdEBu
+    b3RhdGlvbnMub3BlbnBncGpzLm9yZxTuCl7fg0GA76+2oA/YLQ8CmwwWIQTbG0xG
+    hKeMC9wu9Jizjo3D24I5EAAAl64BAL1iJWuBeHZVFUItYETF1hVehZq1j/eqatDV
+    gCPoad8VAQDAPH9T1y2Y7bULy9FpQS1xL2jcnwAnaazkKIg04YwNG85SBGlVuQAT
+    CCqGSM49AwEHAgMEAq2wKM9FuBxBNtrhN0jcJ4WmLei1kPhj6I/ffMepiokQPfyt
+    LxdztpO/Q/g+S7JgznvMHUeOJtqRPrhWsUPAY8K5BCgTCABrBYJpVbkACRCzjo3D
+    24I5EDUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3Jnsw8AcIQV
+    BXNXrmFCT7qWWA2dAmNvbXByb21pc2VkFiEE2xtMRoSnjAvcLvSYs46Nw9uCORAA
+    AOwcAP9e25m4ZJ7VYSAjNm4+Qd6dFRyniv9S6i7vbZ3UvhcBrgD7BjqPmKsHpg8/
+    uXZCMZHM63i6xN4gWpNAENKLGJOruezCwJsEGBMIAQ0FgmlVuQAJELOOjcPbgjkQ
+    NRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcme6M8taEwVBcjZM
+    ihwf3KLFApsCrKAEGRMIAF0FgmlVuQAJEPgZCtKlRcfyNRQAAAAAABwAEHNhbHRA
+    bm90YXRpb25zLm9wZW5wZ3Bqcy5vcmeIQDN3VGSY4frzSUE/6otsFiEEXcof4A4X
+    SLtcVn9x+BkK0qVFx/IAAJ1DAPwPC3waiQK9mKSEievl+25Dx+TY3CiY6GCGurpf
+    5459bQD/TTZgaTeLQmHohrXj++nyGk0gNl3p5RTGsXOJq2l5WjUWIQTbG0xGhKeM
+    C9wu9Jizjo3D24I5EAAAGD0BAMpOYh0HWgji5P66azQBFuwth63mILpsOZRHoiMW
+    eLkuAP9DgiXAkpE18IARaDN0E7nH1tRUi497wP1yRlbXC/MpiA==
+    =OOxv
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// Ed25519 (RFC 9580, v4 key) primary that can sign, a signing subkey, and an encryption subkey.
+    static let frankPinned = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xiYEaVW5ABuHydqw7+tTtiVvE4LYoQoz1FM+DvO7YtcUyRbOMPt0GM0dZnJhbmsg
+    PGZyYW5rQGV4YW1wbGUuaW52YWxpZD7CwAoEExsKAIAFgmlVuQACCwcJEIVuQzzZ
+    lc8sRRQAAAAAABwAIHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmci05v4Gp0M
+    OYGEyPIK/2f1StNtU9KyFpG2igkcQJDQlwMVCggCFgACGQECmwMCHgEWIQRwnKnF
+    IkInma+o/a+FbkM82ZXPLAAA/0tKj6RNlyDrZftxFoeNdIvsdSB6Yrv64VExuemV
+    8DaGc34R6UcEu+CHbFM1lZ9JYWAQtl8sXj9hlaPRZ92PGiwMziYEaVW5ABm+urW5
+    7BOOdxaLGQTpga7xQfw6D7/xEr+LBhO4HpGsTsK6BBgbCgBwBYJpVbkACRCFbkM8
+    2ZXPLEUUAAAAAAAcACBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3JnmXhZX7Ml
+    kH/fTYB+tRNEh6wou8RlPIIhQgaXJwxeijsCmwwWIQRwnKnFIkInma+o/a+FbkM8
+    2ZXPLAAA0aWe3ULIlj1AUie59kvS1iVIWA69TjW2qz5GgY5hzyrVQjd/Z+UvHZvO
+    n2dz8EGqpNJRb0jJPT/1aMZTXzNoHFMLziYEaVW5ABv+xr5E8RuWmcqWnoU/bGaC
+    5RaBjMiVk2rZ+mkvUfdBX8LAswQYGwoBKQWCaVW5AAkQhW5DPNmVzyxFFAAAAAAA
+    HAAgc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ8zaxT5JFo4G7PfLS0CBnBxz
+    OMaRYcDnai4zQdg84HJFApsCuKAEGRsKAG0FgmlVuQAJEBm04pturwc8RRQAAAAA
+    ABwAIHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmd2QtfQE7oM7LrH7m0HtKTw
+    dSRpFICY09Wk+zWVC9nLShYhBNL+2BqVn1WgEOUsWxm04pturwc8AABJmnNBfco5
+    BNJqskGnQRlx//g+p6NeTaROb04nzkTPSrETtSdKHtcUEdej65VeBUFi6t8d8eVC
+    Eo1LHasCyEuy0QoWIQRwnKnFIkInma+o/a+FbkM82ZXPLAAArfPryAlz0iTqYPUD
+    xrYkx75xY7yLVSxwnNP98ZbKPYGLTrAGjSZZiTyor8gE5rWpNgT5/x19Z5G7iYTR
+    uHwJRowE
+    =aQd9
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key after its owner revoked the signing subkey (reason: compromised).
+    static let frankRevokedSigningSubkey = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xiYEaVW5ABuHydqw7+tTtiVvE4LYoQoz1FM+DvO7YtcUyRbOMPt0GM0dZnJhbmsg
+    PGZyYW5rQGV4YW1wbGUuaW52YWxpZD7CwAoEExsKAIAFgmlVuQACCwcJEIVuQzzZ
+    lc8sRRQAAAAAABwAIHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmci05v4Gp0M
+    OYGEyPIK/2f1StNtU9KyFpG2igkcQJDQlwMVCggCFgACGQECmwMCHgEWIQRwnKnF
+    IkInma+o/a+FbkM82ZXPLAAA/0tKj6RNlyDrZftxFoeNdIvsdSB6Yrv64VExuemV
+    8DaGc34R6UcEu+CHbFM1lZ9JYWAQtl8sXj9hlaPRZ92PGiwMziYEaVW5ABm+urW5
+    7BOOdxaLGQTpga7xQfw6D7/xEr+LBhO4HpGsTsK6BBgbCgBwBYJpVbkACRCFbkM8
+    2ZXPLEUUAAAAAAAcACBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3JnmXhZX7Ml
+    kH/fTYB+tRNEh6wou8RlPIIhQgaXJwxeijsCmwwWIQRwnKnFIkInma+o/a+FbkM8
+    2ZXPLAAA0aWe3ULIlj1AUie59kvS1iVIWA69TjW2qz5GgY5hzyrVQjd/Z+UvHZvO
+    n2dz8EGqpNJRb0jJPT/1aMZTXzNoHFMLziYEaVW5ABv+xr5E8RuWmcqWnoU/bGaC
+    5RaBjMiVk2rZ+mkvUfdBX8LABQQoGwoAewWCaVW5AAkQhW5DPNmVzyxFFAAAAAAA
+    HAAgc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ3psC4eJv5UsYZOV14B11Gfp
+    Qo6lqAkuf0+iSclxWb+nDZ0CY29tcHJvbWlzZWQWIQRwnKnFIkInma+o/a+FbkM8
+    2ZXPLAAAr8fCir7DMtEG7lNeykpjRhfwPuCgKz9Y03oLwRXddWjK/pkrSjD1qB4h
+    lJJU/iP53frK7TCi6+uu+imhC9eCsD4FwsCzBBgbCgEpBYJpVbkACRCFbkM82ZXP
+    LEUUAAAAAAAcACBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3JnzNrFPkkWjgbs
+    98tLQIGcHHM4xpFhwOdqLjNB2DzgckUCmwK4oAQZGwoAbQWCaVW5AAkQGbTim26v
+    BzxFFAAAAAAAHAAgc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ3ZC19ATugzs
+    usfubQe0pPB1JGkUgJjT1aT7NZUL2ctKFiEE0v7YGpWfVaAQ5SxbGbTim26vBzwA
+    AEmac0F9yjkE0mqyQadBGXH/+D6no15NpE5vTifORM9KsRO1J0oe1xQR16PrlV4F
+    QWLq3x3x5UISjUsdqwLIS7LRChYhBHCcqcUiQieZr6j9r4VuQzzZlc8sAACt8+vI
+    CXPSJOpg9QPGtiTHvnFjvItVLHCc0/3xlso9gYtOsAaNJlmJPKivyATmtak2BPn/
+    HX1nkbuJhNG4fAlGjAQ=
+    =EJuO
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The revoked copy with one byte of the revocation signature changed.
+    static let frankForgedSigningSubkeyRevocation = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xiYEaVW5ABuHydqw7+tTtiVvE4LYoQoz1FM+DvO7YtcUyRbOMPt0GM0dZnJhbmsg
+    PGZyYW5rQGV4YW1wbGUuaW52YWxpZD7CwAoEExsKAIAFgmlVuQACCwcJEIVuQzzZ
+    lc8sRRQAAAAAABwAIHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmci05v4Gp0M
+    OYGEyPIK/2f1StNtU9KyFpG2igkcQJDQlwMVCggCFgACGQECmwMCHgEWIQRwnKnF
+    IkInma+o/a+FbkM82ZXPLAAA/0tKj6RNlyDrZftxFoeNdIvsdSB6Yrv64VExuemV
+    8DaGc34R6UcEu+CHbFM1lZ9JYWAQtl8sXj9hlaPRZ92PGiwMziYEaVW5ABm+urW5
+    7BOOdxaLGQTpga7xQfw6D7/xEr+LBhO4HpGsTsK6BBgbCgBwBYJpVbkACRCFbkM8
+    2ZXPLEUUAAAAAAAcACBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3JnmXhZX7Ml
+    kH/fTYB+tRNEh6wou8RlPIIhQgaXJwxeijsCmwwWIQRwnKnFIkInma+o/a+FbkM8
+    2ZXPLAAA0aWe3ULIlj1AUie59kvS1iVIWA69TjW2qz5GgY5hzyrVQjd/Z+UvHZvO
+    n2dz8EGqpNJRb0jJPT/1aMZTXzNoHFMLziYEaVW5ABv+xr5E8RuWmcqWnoU/bGaC
+    5RaBjMiVk2rZ+mkvUfdBX8LABQQoGwoAewWCaVW5AAkQhW5DPNmVzyxFFAAAAAAA
+    HAAgc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ3psC4eJv5UsYZOV14B11Gfp
+    Qo6lqAkuf0+iSclxWb+nDZ0CY29tcHJvbWlzZWQWIQRwnKnFIkInma+o/a+FbkM8
+    2ZXPLAAAr8fCir7DMtEG7lNeykpjRhfwPuCgKz9Y03oLwRXddWjK/pkrSjD1qB4h
+    lJJU/iP53frK7TCi6+uu+imhC9eCsD8FwsCzBBgbCgEpBYJpVbkACRCFbkM82ZXP
+    LEUUAAAAAAAcACBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3JnzNrFPkkWjgbs
+    98tLQIGcHHM4xpFhwOdqLjNB2DzgckUCmwK4oAQZGwoAbQWCaVW5AAkQGbTim26v
+    BzxFFAAAAAAAHAAgc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ3ZC19ATugzs
+    usfubQe0pPB1JGkUgJjT1aT7NZUL2ctKFiEE0v7YGpWfVaAQ5SxbGbTim26vBzwA
+    AEmac0F9yjkE0mqyQadBGXH/+D6no15NpE5vTifORM9KsRO1J0oe1xQR16PrlV4F
+    QWLq3x3x5UISjUsdqwLIS7LRChYhBHCcqcUiQieZr6j9r4VuQzzZlc8sAACt8+vI
+    CXPSJOpg9QPGtiTHvnFjvItVLHCc0/3xlso9gYtOsAaNJlmJPKivyATmtak2BPn/
+    HX1nkbuJhNG4fAlGjAQ=
+    =rGMH
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    // MARK: Revocations made with hashes other than the curve's own
+
+    /// ECDSA P-256 primary that can sign, a signing subkey, and an encryption subkey.
+    static let ginaPinned = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xlIEaszN1xMIKoZIzj0DAQcCAwQvDXQBePbXDeC+4wgUcvrfMUTeeqb9kjErlDif
+    OF23yI0tDkTTEAvFU43o93LelZzWHWuhMG/xEc8QgQQGcZEvzRtHaW5hIDxnaW5h
+    QGV4YW1wbGUuaW52YWxpZD7CvQQTEwgAbwWCaszN1wILBwkQHwCIM+DcOdI1FAAA
+    AAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ5lht3/NoT5I502GOu8t
+    pmMCFQgCFgACGQECmwMCHgEWIQQTmpXkwazu4b865ycfAIgz4Nw50gAAbiYBAIqU
+    UC7tnpApdcNk4jSRS8Ee3rCsuv7DRMyvoBi56FTpAQDnjB5bi6aM94e41T+2YKXa
+    eNuPZUGwJ9Dn6X61RgYMG85WBGrMzdcSCCqGSM49AwEHAgMEtfwrLoGcF7mFyraP
+    xAgLuSxsF0RA7Q0fgl+jrZnR1ziHdITFHeXNZJTndMIwt2vkoc4Q5dISp0Nv/9KE
+    1QiCTQMBCgnCrgQYEwgAYAWCaszN1wkQHwCIM+DcOdI1FAAAAAAAHAAQc2FsdEBu
+    b3RhdGlvbnMub3BlbnBncGpzLm9yZyrnBErXq2Dd29+fU1iMIVoCmwwWIQQTmpXk
+    wazu4b865ycfAIgz4Nw50gAAglwA/1rmUxc5Zk/DrYxLMVi8EcwiDdnIYSW1+Q9E
+    DAldk5w5AQDwL4YOCX7aQc3Ml0NjqGb9b8GCTBl1f91uzHkdRVc0As5SBGrMzdcT
+    CCqGSM49AwEHAgMERu2JONYPS3+YmnLw1xkUGTiirUf1EAXKeu5OphPcGaKzoXRB
+    W/IreU/Q5TcNsYE0+49yZ3f6Xqy2fvOW4e56UsLAmwQYEwgBDQWCaszN1wkQHwCI
+    M+DcOdI1FAAAAAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ37uCyi2
+    I4krF/zZuETT8JkCmwKsoAQZEwgAXQWCaszN1wkQTNolOua0liM1FAAAAAAAHAAQ
+    c2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZx2QksxcNMUNVKnVtyHliyEWIQS/
+    dWEwnOVbeBCPTuhM2iU65rSWIwAAsDMBAM0PoAS3k6RWsadu/FpaxUpAO10wD3yF
+    dLWhRbfZPrxNAP9KUzXRulG0zJpBIc6nWwcbMRamh2VGV8fVWyjQ5rkhdBYhBBOa
+    leTBrO7hvzrnJx8AiDPg3DnSAACCZAEAzMgVwE1NbyxvVX5KzmJroyJaNDlhmrHK
+    nBDxJg7TwhsA/RCkfh5e+ULB2jiWGJVvTRtG/sBZxIzATVTcniJDcMBQ
+    =6i+b
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key after its owner revoked the signing subkey (reason: compromised), hashed with SHA-512 — a longer hash than the curve's own, which RFC 9580 allows.
+    static let ginaRevokedSigningSubkey = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xlIEaszN1xMIKoZIzj0DAQcCAwQvDXQBePbXDeC+4wgUcvrfMUTeeqb9kjErlDif
+    OF23yI0tDkTTEAvFU43o93LelZzWHWuhMG/xEc8QgQQGcZEvzRtHaW5hIDxnaW5h
+    QGV4YW1wbGUuaW52YWxpZD7CvQQTEwgAbwWCaszN1wILBwkQHwCIM+DcOdI1FAAA
+    AAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ5lht3/NoT5I502GOu8t
+    pmMCFQgCFgACGQECmwMCHgEWIQQTmpXkwazu4b865ycfAIgz4Nw50gAAbiYBAIqU
+    UC7tnpApdcNk4jSRS8Ee3rCsuv7DRMyvoBi56FTpAQDnjB5bi6aM94e41T+2YKXa
+    eNuPZUGwJ9Dn6X61RgYMG85WBGrMzdcSCCqGSM49AwEHAgMEtfwrLoGcF7mFyraP
+    xAgLuSxsF0RA7Q0fgl+jrZnR1ziHdITFHeXNZJTndMIwt2vkoc4Q5dISp0Nv/9KE
+    1QiCTQMBCgnCrgQYEwgAYAWCaszN1wkQHwCIM+DcOdI1FAAAAAAAHAAQc2FsdEBu
+    b3RhdGlvbnMub3BlbnBncGpzLm9yZyrnBErXq2Dd29+fU1iMIVoCmwwWIQQTmpXk
+    wazu4b865ycfAIgz4Nw50gAAglwA/1rmUxc5Zk/DrYxLMVi8EcwiDdnIYSW1+Q9E
+    DAldk5w5AQDwL4YOCX7aQc3Ml0NjqGb9b8GCTBl1f91uzHkdRVc0As5SBGrMzdcT
+    CCqGSM49AwEHAgMERu2JONYPS3+YmnLw1xkUGTiirUf1EAXKeu5OphPcGaKzoXRB
+    W/IreU/Q5TcNsYE0+49yZ3f6Xqy2fvOW4e56UsK+BCgTCgBwBYJqzM3XCRAfAIgz
+    4Nw50kUUAAAAAAAcACBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3Jn/4PUJqRB
+    FEvpeof8FDG/nxd78qRU1t5LwlZSoLnVr80CnQIWIQQTmpXkwazu4b865ycfAIgz
+    4Nw50gAA448BALeVFJav6i4HLWXGH4EBqq7RQsYL9Z8fnFzKcYO4y3kXAQDzEKXo
+    WBP6ejLcY9rZrGUTeXOOs4qxwLlsnKPDPGU8JcLAmwQYEwgBDQWCaszN1wkQHwCI
+    M+DcOdI1FAAAAAAAHAAQc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ37uCyi2
+    I4krF/zZuETT8JkCmwKsoAQZEwgAXQWCaszN1wkQTNolOua0liM1FAAAAAAAHAAQ
+    c2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZx2QksxcNMUNVKnVtyHliyEWIQS/
+    dWEwnOVbeBCPTuhM2iU65rSWIwAAsDMBAM0PoAS3k6RWsadu/FpaxUpAO10wD3yF
+    dLWhRbfZPrxNAP9KUzXRulG0zJpBIc6nWwcbMRamh2VGV8fVWyjQ5rkhdBYhBBOa
+    leTBrO7hvzrnJx8AiDPg3DnSAACCZAEAzMgVwE1NbyxvVX5KzmJroyJaNDlhmrHK
+    nBDxJg7TwhsA/RCkfh5e+ULB2jiWGJVvTRtG/sBZxIzATVTcniJDcMBQ
+    =fAjv
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// A detached signature by the signing subkey over `carolSignedText`.
+    static let ginaSubkeySignature = """
+    -----BEGIN PGP SIGNATURE-----
+
+    wqsEABMIAF0FgmrMzdcJEEzaJTrmtJYjNRQAAAAAABwAEHNhbHRAbm90YXRpb25z
+    Lm9wZW5wZ3Bqcy5vcmfDuFqUmEW74NisnncvJUiSFiEEv3VhMJzlW3gQj07oTNol
+    Oua0liMAAPfDAPoCp5WHAnmfM/L/b9QcdFkBjn96Xup3LR2HLCCKJOiZbgEArtUv
+    zKbuTf6/p5pZAnpYVQXcIa4W9nZfPzLSpBs8guU=
+    =vEko
+    -----END PGP SIGNATURE-----
+    """
+
+    /// EdDSA (legacy Ed25519) primary that can sign, a signing subkey, and an encryption subkey.
+    static let hankPinned = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaszN1xYJKwYBBAHaRw8BAQdAkwHmXRlYbwWNnSGI6+hH8DvWSTWL4FpQTzp0
+    a36bEhbNG0hhbmsgPGhhbmtAZXhhbXBsZS5pbnZhbGlkPsK9BBMWCABvBYJqzM3X
+    AgsHCRAI7ZW64yxqGTUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMu
+    b3JnYc+nGwphL8Xxeh6Cb1XN7AIVCAIWAAIZAQKbAwIeARYhBNBpieuGqWGhtlGr
+    NgjtlbrjLGoZAAAipAD8DuY6yyJyRcwECTqlJQcDg9nC1UTqcRlu+BWEFLUy8WIA
+    /0ndKNJCaVziqcsNnmaOsZgU3/ycRr0vcINVU5JBJ1MLzjgEaszN1xIKKwYBBAGX
+    VQEFAQEHQOzLCLAun3xqodT6sBo3yMluv4vVPKl7SugBHTE2DRdNAwEKCcKuBBgW
+    CABgBYJqzM3XCRAI7ZW64yxqGTUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVu
+    cGdwanMub3JniSSqayjvs2lRIKOCDWCFEAKbDBYhBNBpieuGqWGhtlGrNgjtlbrj
+    LGoZAABR8QD/VFDGxS4o2L272krgYT27GhDq5PptIPjRJS0psRnsA2wBAM/bg3HA
+    tFZXhEvd9wmz+SSutuIIUV5rdJ7UfgDUw1wEzjMEaszN1xYJKwYBBAHaRw8BAQdA
+    2q9cc1vqHAibWj9q94ga0IzDJVAVhpDcfX4sNJj4AFjCwJsEGBYIAQ0FgmrMzdcJ
+    EAjtlbrjLGoZNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmcJ
+    W/h0Kl6yJmC1tZhRgRZ2ApsCrKAEGRYIAF0FgmrMzdcJEOoYC2A7VMjbNRQAAAAA
+    ABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmejBqe+crvMzUQZKBUrT220
+    FiEEpkpEf+RQOcQbuVLm6hgLYDtUyNsAAKxbAP0fLgR8W5BKe4NooXT24GPgjUFJ
+    BXlijHd+exSKQcRSkgD/Rz73HbYIP510EZSLZCSPP3TTDCT4DTRz4zUwc9gsPwkW
+    IQTQaYnrhqlhobZRqzYI7ZW64yxqGQAAnA4BAJ/M4if1u44c44fuSa0nknYuRR0I
+    Vb5ca/IG8e+ryvc0AP4uY+uM3MNyd6QrtQ9Bz04C42STY3diyUiEovkadS8PDg==
+    =LOeT
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// The same key after its owner revoked the signing subkey (reason: compromised), hashed with SHA3-512.
+    static let hankRevokedSigningSubkey = """
+    -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+    xjMEaszN1xYJKwYBBAHaRw8BAQdAkwHmXRlYbwWNnSGI6+hH8DvWSTWL4FpQTzp0
+    a36bEhbNG0hhbmsgPGhhbmtAZXhhbXBsZS5pbnZhbGlkPsK9BBMWCABvBYJqzM3X
+    AgsHCRAI7ZW64yxqGTUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMu
+    b3JnYc+nGwphL8Xxeh6Cb1XN7AIVCAIWAAIZAQKbAwIeARYhBNBpieuGqWGhtlGr
+    NgjtlbrjLGoZAAAipAD8DuY6yyJyRcwECTqlJQcDg9nC1UTqcRlu+BWEFLUy8WIA
+    /0ndKNJCaVziqcsNnmaOsZgU3/ycRr0vcINVU5JBJ1MLzjgEaszN1xIKKwYBBAGX
+    VQEFAQEHQOzLCLAun3xqodT6sBo3yMluv4vVPKl7SugBHTE2DRdNAwEKCcKuBBgW
+    CABgBYJqzM3XCRAI7ZW64yxqGTUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5vcGVu
+    cGdwanMub3JniSSqayjvs2lRIKOCDWCFEAKbDBYhBNBpieuGqWGhtlGrNgjtlbrj
+    LGoZAABR8QD/VFDGxS4o2L272krgYT27GhDq5PptIPjRJS0psRnsA2wBAM/bg3HA
+    tFZXhEvd9wmz+SSutuIIUV5rdJ7UfgDUw1wEzjMEaszN1xYJKwYBBAHaRw8BAQdA
+    2q9cc1vqHAibWj9q94ga0IzDJVAVhpDcfX4sNJj4AFjCvgQoFg4AcAWCaszN1wkQ
+    CO2VuuMsahlFFAAAAAAAHAAgc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ2/L
+    xAropxDTTa6+FpmTmSkdGFJSDBxEBDIe03YFqUpaAp0CFiEE0GmJ64apYaG2Uas2
+    CO2VuuMsahkAAARwAP0d/Dd9Tyx601xCqnZQcBVzasPevh5QkMWzECRkmjfxVgD/
+    R0HoNNGnux0WJKVlTKCSmkM5MCQ7QuoZo346PvSncgPCwJsEGBYIAQ0FgmrMzdcJ
+    EAjtlbrjLGoZNRQAAAAAABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmcJ
+    W/h0Kl6yJmC1tZhRgRZ2ApsCrKAEGRYIAF0FgmrMzdcJEOoYC2A7VMjbNRQAAAAA
+    ABwAEHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmejBqe+crvMzUQZKBUrT220
+    FiEEpkpEf+RQOcQbuVLm6hgLYDtUyNsAAKxbAP0fLgR8W5BKe4NooXT24GPgjUFJ
+    BXlijHd+exSKQcRSkgD/Rz73HbYIP510EZSLZCSPP3TTDCT4DTRz4zUwc9gsPwkW
+    IQTQaYnrhqlhobZRqzYI7ZW64yxqGQAAnA4BAJ/M4if1u44c44fuSa0nknYuRR0I
+    Vb5ca/IG8e+ryvc0AP4uY+uM3MNyd6QrtQ9Bz04C42STY3diyUiEovkadS8PDg==
+    =zo3M
+    -----END PGP PUBLIC KEY BLOCK-----
+    """
+
+    /// A detached signature by the signing subkey over `carolSignedText`.
+    static let hankSubkeySignature = """
+    -----BEGIN PGP SIGNATURE-----
+
+    wqsEABYIAF0FgmrMzdcJEOoYC2A7VMjbNRQAAAAAABwAEHNhbHRAbm90YXRpb25z
+    Lm9wZW5wZ3Bqcy5vcmfdCv4m3aahTbh6M11fdnAWFiEEpkpEf+RQOcQbuVLm6hgL
+    YDtUyNsAAD+wAQCgckH8+dM7AjxVtLJkj21mQS8Wt6w7NRKe8yo2g9qBqwD+MYGl
+    AJvpt7DvvmhGssvTAx8llUrkNZ5fgUKAK12mdgo=
+    =ar9T
+    -----END PGP SIGNATURE-----
+    """
+}

@@ -24,13 +24,15 @@ private struct StubPayloads: PgpPayloadSource {
 private struct StubCrypto: PgpDecrypting {
     var body = Data("Content-Type: text/plain\r\n\r\nhello\r\n".utf8)
     var error: PgpCryptoError?
+    var signature = RawSignature()
+    var fingerprints: [String: String] = [:]
     func decrypt(
         armoredCiphertext: String,
         privateKeys: [Data],
         signerKeys: [String]
     ) throws -> DecryptedMessage {
         if let error { throw error }
-        return DecryptedMessage(body: body, signature: RawSignature())
+        return DecryptedMessage(body: body, signature: signature)
     }
     func verifyDetached(
         signedBytes: Data,
@@ -39,7 +41,7 @@ private struct StubCrypto: PgpDecrypting {
     ) -> RawSignature {
         RawSignature()
     }
-    func fingerprint(ofArmoredPublicKey key: String) -> String? { nil }
+    func fingerprint(ofArmoredPublicKey key: String) -> String? { fingerprints[key] }
 }
 
 @MainActor
@@ -56,6 +58,7 @@ private func model(
             opener: StubOpener(outcome: opener),
             payloads: StubPayloads(result: payload),
             crypto: crypto,
+            pins: { .none },
             session: EnrollmentSession()
         ),
         mailbox: "INBOX",
@@ -140,5 +143,38 @@ private func model(
         #expect(!subject.isAvailable)
         #expect(!subject.showsDecryptButton)
         #expect(subject.outcome == nil)
+    }
+
+    /// A pin revoked after the screen opened counts at the next attempt: the
+    /// reader must not keep the pins it was built with.
+    @Test func aPinRevokedBeforeDecryptIsPressedReadsAsKeyChanged() async {
+        let pins = Box(RecipientPinSnapshot(states: [
+            "bob@example.com": .intact(publicKey: "PINNED", fingerprint: "FP"),
+        ]))
+        var crypto = StubCrypto()
+        crypto.signature = RawSignature(present: true, valid: true, signerFingerprint: "FP")
+        crypto.fingerprints = ["PINNED": "FP"]
+        let subject = EncryptedReadViewModel(
+            reader: EncryptedMessageReader(
+                opener: StubOpener(outcome: .opened(privateKey: Data("KEY".utf8))),
+                payloads: StubPayloads(result: .success(PgpPayload(
+                    encryptedPayload: "CIPHERTEXT",
+                    resolvedSender: "bob@example.com"
+                ))),
+                crypto: crypto,
+                pins: { pins.value },
+                session: EnrollmentSession()
+            ),
+            mailbox: "INBOX",
+            messageId: "1",
+            sender: "Bob <bob@example.com>"
+        )
+
+        await subject.attemptWithoutPrompting()
+        #expect(subject.outcome == .needsUnlock)
+
+        pins.value = RecipientPinSnapshot(states: ["bob@example.com": .revoked])
+        await subject.decrypt()
+        #expect(subject.signature == .keyChanged)
     }
 }

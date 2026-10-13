@@ -22,6 +22,9 @@
     "8 to 12 digits. Wrong attempts add a wait but never erase this device (Erase Data After: Never)." : {
 
     },
+    "^[%lld change](inflect: true) waiting to sync" : {
+
+    },
     "After %lld minutes" : {
 
     },
@@ -46,7 +49,16 @@
     "Choosing a larger number, or Never, asks you to authenticate. Requires Require Unlock to Open." : {
 
     },
+    "Contacts can't be shared while Hostile Location Protection is on. The receiving app could save them anywhere." : {
+
+    },
+    "Device pairing expired or invalid — re-pair this device in Settings." : {
+
+    },
     "Erase Data After" : {
+
+    },
+    "Export All as vCard" : {
 
     },
     "From" : {
@@ -85,6 +97,9 @@
     "No notifications yet." : {
 
     },
+    "Not sent for over an hour." : {
+
+    },
     "Notification History" : {
 
     },
@@ -92,6 +107,9 @@
 
     },
     "Notifications you receive appear here." : {
+
+    },
+    "OK" : {
 
     },
     "Open KyPost to review this sign-in." : {
@@ -103,10 +121,25 @@
     "Received" : {
 
     },
+    "Retry" : {
+
+    },
+    "Share as vCard" : {
+
+    },
+    "Sharing Is Off" : {
+
+    },
     "Sign-in approval requested" : {
 
     },
     "Subject" : {
+
+    },
+    "Sync stuck" : {
+
+    },
+    "Sync stuck — ^[%lld change](inflect: true) waiting" : {
 
     },
     "The last %lld notifications on this device." : {
@@ -116,6 +149,12 @@
 
     },
     "Unlocks with Face ID, Touch ID, or this device's passcode. KyPost locks when it goes to the background (iOS) or the screen locks (Mac), after the delay chosen above. Choosing a longer delay asks you to authenticate." : {
+
+    },
+    "vCard 3.0 (older apps)" : {
+
+    },
+    "vCard 4.0" : {
 
     },
     "Wrong attempts never erase this device; only the waits above slow guessing down." : {

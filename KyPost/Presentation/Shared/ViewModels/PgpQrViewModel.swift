@@ -219,7 +219,9 @@ final class ScanPgpKeyViewModel {
         )
         target.pgpKey = key.publicKey
         do {
-            try await repository.saveContact(target)
+            // The fingerprint was confirmed in person: this key becomes the
+            // pin for the contact's addresses.
+            try await repository.saveContact(target, verifiedInPerson: true)
             state = .saved(target.name)
         } catch {
             state = .failed(

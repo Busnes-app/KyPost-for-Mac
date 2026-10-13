@@ -122,6 +122,10 @@ nonisolated enum ClientSendOutcome: Equatable, Sendable {
     /// A pinned key's fingerprint no longer matches what discovery returned.
     /// Deliberately distinct from `keysMissing`, and checked before it.
     case keyChanged([String])
+    /// A key this device verified by QR has been revoked by its owner. The
+    /// pin stays the address's pin — no fallback to the relay's key — so the
+    /// send stops until the user verifies the new key in person.
+    case recipientKeyRevoked([String])
     case keysMissing([String])
     case tooManyRecipients(String)
     case resolveFailed(String)
@@ -140,6 +144,8 @@ nonisolated struct ClientEncryptedSender: Sendable {
     private let resolver: any RecipientKeyResolving
     private let transport: any ClientEncryptedTransport
     private let crypto: any PgpEncrypting
+    /// Keys verified on this device. Not defaulted, like the reader's.
+    private let pins: RecipientPinSnapshot
     private let session: EnrollmentSession
     /// The address every delivery's `From` must carry, from bootstrap's
     /// `suggestedUserIDs[0]`. The relay compares each delivery's own header
@@ -153,6 +159,7 @@ nonisolated struct ClientEncryptedSender: Sendable {
         resolver: any RecipientKeyResolving,
         transport: any ClientEncryptedTransport,
         crypto: any PgpEncrypting,
+        pins: RecipientPinSnapshot,
         accountAddress: String,
         session: EnrollmentSession = .shared,
         now: @escaping @Sendable () -> Date = { Date() },
@@ -162,6 +169,7 @@ nonisolated struct ClientEncryptedSender: Sendable {
         self.resolver = resolver
         self.transport = transport
         self.crypto = crypto
+        self.pins = pins
         self.accountAddress = accountAddress
         self.session = session
         self.now = now
@@ -192,10 +200,16 @@ nonisolated struct ClientEncryptedSender: Sendable {
         case .tooMany(let message): return .tooManyRecipients(message)
         case .failed(let message): return .resolveFailed(message)
         }
-        let byAddress = Dictionary(
+        var byAddress = Dictionary(
             resolved.map { ($0.address.lowercased(), $0) },
             uniquingKeysWith: { first, _ in first }
         )
+
+        // This device's own pins first: whatever the relay says about a key
+        // (`key_changed`, unusable, absent), a pin its owner revoked is the
+        // reason the send cannot happen.
+        let revoked = addresses.filter { pins.state(for: $0) == .revoked }
+        guard revoked.isEmpty else { return .recipientKeyRevoked(revoked) }
 
         // A broken pin outranks a missing key, and is checked first.
         // `key_changed` means discovery found a key whose fingerprint does not
@@ -205,6 +219,14 @@ nonisolated struct ClientEncryptedSender: Sendable {
         // telling them did.
         let changed = addresses.filter { byAddress[$0.lowercased()]?.tier == pgpTierKeyChanged }
         guard changed.isEmpty else { return .keyChanged(changed) }
+
+        // A key verified on this device outranks the relay, and all of this
+        // runs before the vault opens.
+        switch Self.applyPins(pins, addresses: addresses, resolved: &byAddress) {
+        case .proceed: break
+        case .revoked(let revoked): return .recipientKeyRevoked(revoked)
+        case .changed(let mismatched): return .keyChanged(mismatched)
+        }
 
         let missing = addresses.filter { address in
             guard let key = byAddress[address.lowercased()] else { return true }
@@ -337,6 +359,49 @@ nonisolated struct ClientEncryptedSender: Sendable {
             case .other: return .sendFailed(failure.message)
             }
         }
+    }
+
+    enum PinCheck: Equatable {
+        case proceed
+        case revoked([String])
+        case changed([String])
+    }
+
+    /// The write-path counterpart of `EncryptedMessageReader.signerKeys`.
+    /// For each recipient pinned on this device: a revoked pin refuses the
+    /// send; a broken pin, or a relay key that fingerprints differently from
+    /// the pin (computed from the bytes, never the relay's fingerprint field),
+    /// is a key change; a match encrypts to the **pinned** bytes. An address
+    /// the relay had no usable key for is left to the missing-key check.
+    static func applyPins(
+        _ pins: RecipientPinSnapshot,
+        addresses: [String],
+        resolved: inout [String: ResolvedRecipientKey]
+    ) -> PinCheck {
+        var revoked: [String] = []
+        var changed: [String] = []
+        for address in addresses {
+            let key = address.lowercased()
+            switch pins.state(for: address) {
+            case nil:
+                continue
+            case .revoked:
+                revoked.append(address)
+            case .broken:
+                changed.append(address)
+            case .intact(let publicKey, let fingerprint):
+                guard var entry = resolved[key], entry.usable, !entry.publicKey.isEmpty else { continue }
+                guard PgpFingerprint.compute(fromArmored: entry.publicKey) == fingerprint else {
+                    changed.append(address)
+                    continue
+                }
+                entry.publicKey = publicKey
+                resolved[key] = entry
+            }
+        }
+        if !revoked.isEmpty { return .revoked(revoked) }
+        if !changed.isEmpty { return .changed(changed) }
+        return .proceed
     }
 
     private static func message(for error: Error) -> String {

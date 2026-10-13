@@ -82,6 +82,9 @@ struct ContactsListView: View {
                 .scrollContentBackground(.hidden)
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            ContactSyncBanner(viewModel: viewModel)
+        }
         .background(theme.bg)
         .navigationTitle("Contacts")
         .navigationDestination(for: Contact.self) { contact in
@@ -119,6 +122,9 @@ struct ContactsListView: View {
                         showScanKey = true
                     } label: {
                         Label("Scan Contact Key", systemImage: "qrcode.viewfinder")
+                    }
+                    VCardShareMenu(contacts: viewModel.contacts) {
+                        Label("Export All as vCard", systemImage: "square.and.arrow.up")
                     }
                 } label: {
                     if viewModel.isSyncing {

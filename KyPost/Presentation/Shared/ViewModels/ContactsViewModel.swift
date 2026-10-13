@@ -55,6 +55,19 @@ final class ContactsViewModel {
     func load() async {
         contacts = (try? await repository.contacts()) ?? []
         searchIndex = ContactSearchIndex(contacts: contacts)
+        await repository.refreshPendingSummary()
+    }
+
+    // MARK: - Sync status
+
+    /// The repository's count, refreshed after every write and sync —
+    /// including the ones the change monitor runs without this view model.
+    var pendingSummary: ContactPendingSummary { repository.health.pending }
+
+    /// The banner's state at `now`. Time-dependent (a change becomes "stuck"
+    /// after an hour), so the view re-asks on a timer rather than caching it.
+    func syncStatus(now: Date = Date()) -> ContactSyncStatus {
+        ContactSyncStatus.of(pending: pendingSummary, failures: repository.health.failures, now: now)
     }
 
     /// For callers that need contacts but aren't the contact list. On iOS

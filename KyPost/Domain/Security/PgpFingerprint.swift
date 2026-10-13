@@ -193,7 +193,8 @@ nonisolated enum PgpFingerprint {
     /// Reads one packet header at `index`, advancing it past the body.
     /// Handles both old- and new-format headers. Partial body lengths and
     /// indeterminate old-format lengths are invalid for key material.
-    private static func nextPacket(
+    /// Internal so `OpenPgpKeySections` splits packets with the same rules.
+    static func nextPacket(
         in bytes: [UInt8],
         at index: inout Int
     ) -> (tag: UInt8, body: Data)? {

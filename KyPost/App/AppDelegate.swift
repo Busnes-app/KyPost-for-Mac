@@ -37,6 +37,7 @@ private enum PushLifecycle {
         // Here rather than in SingletonGraph.init so constructing a graph is
         // never destructive — tests build graphs with this flag set.
         if graph.hostileLocationProtectionStore.enabled {
+            AppEnvironment.eraseHostileLocationDefaults(in: graph)
             do {
                 try AppDatabase.deleteStoreFiles()
                 try ContactPhotoCache.deleteAll()

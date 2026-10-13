@@ -24,7 +24,8 @@ struct SettingsView: View {
         pushNotificationDispatcher: SingletonGraph.shared.pushNotificationDispatcher,
         enrollmentVault: SingletonGraph.shared.enrollmentVault,
         appLockManager: SingletonGraph.shared.appLockManager,
-        pushRepository: SingletonGraph.shared.pushRepository
+        pushRepository: SingletonGraph.shared.pushRepository,
+        recipientPinStore: SingletonGraph.shared.recipientPinStore
     )
     @State private var showPairingSheet = false
     @State private var showUnpairConfirmation = false
