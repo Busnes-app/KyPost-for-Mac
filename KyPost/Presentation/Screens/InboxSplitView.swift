@@ -19,9 +19,12 @@ struct InboxSplitView: View {
 
     @Bindable var viewModel: InboxViewModel
     @Bindable var state: MailShellState
+    /// False while the split is being built: SwiftUI writes its own
+    /// opening value through the column binding then, not the user's.
+    @State private var columnsReady = false
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $state.inboxColumns) {
+        NavigationSplitView(columnVisibility: columns) {
             folderSidebar
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 300)
         } content: {
@@ -31,6 +34,17 @@ struct InboxSplitView: View {
             detail
         }
         .navigationSplitViewStyle(.balanced)
+        .task {
+            try? await Task.sleep(for: .seconds(1))
+            columnsReady = true
+        }
+    }
+
+    private var columns: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { state.inboxColumns },
+            set: { if columnsReady { state.inboxColumns = MailShellState.keptColumns($0) } }
+        )
     }
 
     /// The same folders, order and Sent/Drafts resolution as the folder

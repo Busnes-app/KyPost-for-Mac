@@ -228,6 +228,13 @@ private func key(_ id: String, in folder: String = "INBOX") -> MailRowKey {
         #expect(shell.openContactID == nil)
     }
 
+    @Test func theSplitNeverKeepsTheReaderAlone() {
+        #expect(MailShellState().inboxColumns == .doubleColumn)
+        #expect(MailShellState.keptColumns(.detailOnly) == .doubleColumn)
+        #expect(MailShellState.keptColumns(.all) == .all)
+        #expect(MailShellState.keptColumns(.doubleColumn) == .doubleColumn)
+    }
+
     @Test func composeSheetsKeepTheirDraftAndIdentity() {
         let draft = ComposeDraft(to: "a@example.com")
         #expect(ComposeSheet.draft(draft).id == draft.id)

@@ -52,9 +52,21 @@ final class MailShellState {
     /// The contact on screen, by local id, so an edit or a sync re-reads it.
     var openContactID: UUID?
     var compose: ComposeSheet?
-    var inboxColumns: NavigationSplitViewVisibility = .automatic
+    /// List and reader; the folder sidebar opens from its toolbar button.
+    /// `.automatic` hides the list behind the reader on a landscape phone.
+    var inboxColumns: NavigationSplitViewVisibility = .doubleColumn
 
     var openKey: MailRowKey? { openEmail?.id }
+
+    /// The columns a write leaves the split with. A split collapsing on its
+    /// way out (rotating to the stack) writes `.detailOnly`, and the next
+    /// split would open as the reader alone with no list; the list beside
+    /// the reader is the point of the split, so that value is not kept.
+    nonisolated static func keptColumns(
+        _ requested: NavigationSplitViewVisibility
+    ) -> NavigationSplitViewVisibility {
+        requested == .detailOnly ? .doubleColumn : requested
+    }
 
     /// Opens a row. A row tapped while selecting toggles instead.
     func open(_ email: Email) {
