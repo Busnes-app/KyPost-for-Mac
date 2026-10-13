@@ -17,8 +17,8 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 - **MFA approval** — approve login challenges from a notification tap.
 - **Contact sync** — two-way sync with the relay. Local edits win first, and the reconciliation keeps the data safe from conflicts. Contacts carry the full extended schema: groups, photo, IM and social handles, websites, relations, extra dates, phonetic names, department, custom fields, pronouns, and a PGP public key.
 - **PGP key exchange with QR** — share your public key in person. *My QR Code* makes a pickup link that expires in 2 minutes. *Scan to add contact key* reads the link of another person, shows their fingerprint for out-of-band confirmation, and saves the key to a contact. iOS scans with the camera and accepts a pasted link as a fallback. macOS accepts only a pasted link, because it has no VisionKit scanner.
-- **Encryption state on every message** — a message that the server decrypted says so, and you can then see that the server read your mail. A message that only your browser can open says that too, and links out to webmail. For a server-custody account the app holds no private key at all. For a client-custody account it holds one only after you deliberately run device enrollment, sealed in the Secure Enclave and released on user presence; enabling Hostile Location Protection or resetting a stranded app lock destroys it, and neither brings it back. See `docs/E2E_PGP.md` in the server repo.
-- **Encrypted and signed send** — for an account whose key the server holds, the Encrypt and Sign flags travel with the message, and the relay does the OpenPGP work. If a recipient has no usable key, the relay refuses first and asks you. If you confirm, the relay mails a one-time link to the recipient. It also stores the plaintext of that message on your server for up to 7 days, together with the named recipients. An account whose key only the browser can unwrap cannot encrypt from this app. The app saves the draft on the server and webmail takes over.
+- **Encryption state on every message** — a message that the server decrypted says so, and you can then see that the server read your mail. A message only your own key can open says that too; on a device you enrolled it decrypts here. The decrypted body is never stored; it lives only while the message is on screen. Previewing a decrypted attachment writes it to a temporary file, deleted when the preview closes, when the message closes, and by the security wipe; saving one writes it where you choose. For a server-custody account the app holds no private key at all. For a client-custody account it holds one only after you deliberately run device enrollment, sealed in the Secure Enclave and released on user presence; enabling Hostile Location Protection or resetting a stranded app lock destroys it, and neither brings it back. See `docs/E2E_PGP.md` in the server repo.
+- **Encrypted and signed send** — for an account whose key the server holds, the Encrypt and Sign flags travel with the message, and the relay does the OpenPGP work. If a recipient has no usable key, the relay refuses first and asks you. If you confirm, the relay mails a one-time link to the recipient. It also stores the plaintext of that message on your server for up to 7 days, together with the named recipients. For an account whose key the server does not hold, a device you enrolled encrypts and signs on the device itself (PGP/MIME, each Bcc recipient gets a separate ciphertext, and the Sent copy is encrypted to your own key). On a device that is not enrolled, the app saves the draft on the server and webmail takes over.
 - **17 themes** — the palettes match the web and Android apps exactly. The default theme is **Busnes Light**; a theme you already chose is kept.
 
 ### Security (Settings → Security)
@@ -108,7 +108,10 @@ The platforms split at the root view. iOS uses a tab layout (`MainTabView`). mac
 
 The Android reference repo (`llama-mobile`) defines the relay endpoints and the payload shapes. The primary documents are `Mobile_Mail_Relay.md` and `Mobile_Contact_Sync.md`:
 
-- `GET /api/inbox` — emails grouped by tab (`{tabs, byTab, cursor, delta, removed}`)
+- `GET /api/inbox` — emails grouped by tab (`{tabs, byTab, cursor, delta, removed, agedOut, hasMore, nextBefore}`);
+  with `before=<messageId>&bodies=0`, one page of older mail (`{byTab, hasMore, nextBefore}`)
+- `GET /api/mail/body?mailbox=&messageId=` — one message's body, for a row that arrived without one
+- `GET /api/mail/search?q=&mailbox=&limit=50` — server-side search of one folder, every field (`{results}`)
 - `GET /api/inbox/folders?parent=` — folder listing (full paths, for example `INBOX/Receipts`)
 - `POST /api/inbox/actions` — bulk read, archive, spam, delete and move
 - `POST /api/mail/send` — comma-joined recipient strings
@@ -136,18 +139,15 @@ The network-facing tests run against a stubbed `HTTPClient`. They need no backen
 
 - **Draft saving from compose.** The PGP webmail handoff saves a draft on the
   server, but there is no Save Draft button and no auto-save.
-- **Search runs against the local cache**, so it only finds what this device has
-  already fetched. The relay has no search endpoint, so this is not a client-side
-  fix.
 - **QR scanning with the camera on macOS.** Paste the pairing links and PGP key
   links instead. Camera scanning works on iOS.
 - **The on-device encrypted send and read paths have not been exercised against a
   live relay.** They are covered by unit tests against fakes, so the wire
   contracts for `/api/pgp/recipients/resolve`, `/api/mail/send-pgp` and
   `/api/mail/pgp-payload` are unverified in practice.
-
-Attachments, mail delta sync, and read/archive/delete from the reader used to be
-listed here and have since landed.
+- **Desktop pairing is half-built.** `kypost://desktop-pair` registers this
+  computer and stores the session token it gets back, but no request sends that
+  token yet.
 
 ## License
 

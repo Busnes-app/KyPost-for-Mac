@@ -7,7 +7,9 @@
 //  parity incl. pgpKey (Client_Contact_Update.md); V3 adds pendingPgpKey to
 //  ContactEntity and the five pgp columns to EmailEntity
 //  (Client_PGP_Update.md); V4 adds bodyMode/hasAttachments to EmailEntity;
-//  V5 adds GroupEntity; V6 adds isSelf to ContactEntity.
+//  V5 adds GroupEntity; V6 adds isSelf to ContactEntity; V7 keys EmailEntity
+//  on (folder, serverId) instead of serverId alone; V8 adds inWindow to
+//  EmailEntity.
 //  The stages are lightweight: V2 renames email/phone
 //  to legacyEmail/legacyPhone via originalName and adds every new field with a
 //  default. The legacy→array data copy happens in app code
@@ -19,13 +21,6 @@
 //  needs a snapshot of the old shape here plus a new version and stage, or
 //  every existing store fails to open with "Cannot use staged migration with
 //  an unknown model version" and the app crashes at launch.
-//
-//  IMPORTANT: with a staged migration plan, SwiftData identifies the on-disk
-//  store by matching it against these versioned schemas. Any change to a live
-//  @Model — even an additive one with a default — therefore needs a snapshot
-//  of the old shape here plus a new version and stage, or every existing store
-//  fails to open with "Cannot use staged migration with an unknown model
-//  version."
 //
 
 import Foundation
@@ -278,7 +273,7 @@ enum AppSchemaV4: VersionedSchema {
         // exist yet at this version — adding a model is as much a schema change
         // as adding a column.
         [
-            EmailEntity.self, AppSchemaV5.ContactEntity.self,
+            AppSchemaV6.EmailEntity.self, AppSchemaV5.ContactEntity.self,
             PushNotificationEntity.self, KeywordEntity.self,
         ]
     }
@@ -291,7 +286,7 @@ enum AppSchemaV5: VersionedSchema {
         // Adds GroupEntity (GET /api/groups). ContactEntity gains isSelf at
         // V6, so it needs its own snapshot there rather than here.
         [
-            EmailEntity.self, AppSchemaV5.ContactEntity.self,
+            AppSchemaV6.EmailEntity.self, AppSchemaV5.ContactEntity.self,
             PushNotificationEntity.self, KeywordEntity.self, GroupEntity.self,
         ]
     }
@@ -363,6 +358,143 @@ enum AppSchemaV6: VersionedSchema {
     static var models: [any PersistentModel.Type] {
         // ContactEntity gains isSelf.
         [
+            AppSchemaV6.EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
+            KeywordEntity.self, GroupEntity.self,
+        ]
+    }
+
+    /// Snapshot of EmailEntity from V4 to V6: every column up to
+    /// `bodyMode`/`hasAttachments`, unique on `serverId` alone. Nested so the
+    /// entity name stays "EmailEntity" and migration identity matches stores
+    /// written at V4–V6.
+    @Model
+    final class EmailEntity {
+        @Attribute(.unique) var serverId: String
+        var folder: String
+        var senderName: String
+        var senderEmail: String
+        var subject: String
+        var body: String
+        var sentTo: String = ""
+        var cc: String = ""
+        var keywords: [String]
+        var receivedAt: Date
+        var read: Bool
+        var starred: Bool
+        var bodyMode: String = ""
+        var hasAttachments: Bool = false
+        var pgpEncrypted: Bool = false
+        var pgpSigned: Bool = false
+        var pgpVerified: Bool = false
+        var pgpSignerFingerprint: String = ""
+        var pgpDecryptError: String = ""
+        var createdAt: Date
+
+        init(
+            serverId: String,
+            folder: String,
+            senderName: String,
+            senderEmail: String,
+            subject: String,
+            body: String,
+            keywords: [String],
+            receivedAt: Date,
+            read: Bool,
+            starred: Bool,
+            createdAt: Date = Date()
+        ) {
+            self.serverId = serverId
+            self.folder = folder
+            self.senderName = senderName
+            self.senderEmail = senderEmail
+            self.subject = subject
+            self.body = body
+            self.keywords = keywords
+            self.receivedAt = receivedAt
+            self.read = read
+            self.starred = starred
+            self.createdAt = createdAt
+        }
+    }
+}
+
+enum AppSchemaV7: VersionedSchema {
+    static let versionIdentifier = Schema.Version(7, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        // EmailEntity is unique on (folder, serverId). The stage carries every
+        // cached row over: under the old key every id was already unique, so
+        // every (folder, id) pair is too. Should a store still refuse to open,
+        // AppEnvironment discards it — mail lives on the server, and the cache
+        // refills from an empty folder (MailRepository.refreshFolder).
+        [
+            AppSchemaV7.EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
+            KeywordEntity.self, GroupEntity.self,
+        ]
+    }
+
+    /// Snapshot of EmailEntity keyed on (folder, serverId), before V8's
+    /// `inWindow`. Nested so the entity name stays "EmailEntity".
+    @Model
+    final class EmailEntity {
+        #Unique<EmailEntity>([\.folder, \.serverId])
+
+        var serverId: String
+        var folder: String
+        var senderName: String
+        var senderEmail: String
+        var subject: String
+        var body: String
+        var sentTo: String = ""
+        var cc: String = ""
+        var keywords: [String]
+        var receivedAt: Date
+        var read: Bool
+        var starred: Bool
+        var bodyMode: String = ""
+        var hasAttachments: Bool = false
+        var pgpEncrypted: Bool = false
+        var pgpSigned: Bool = false
+        var pgpVerified: Bool = false
+        var pgpSignerFingerprint: String = ""
+        var pgpDecryptError: String = ""
+        var createdAt: Date
+
+        init(
+            serverId: String,
+            folder: String,
+            senderName: String,
+            senderEmail: String,
+            subject: String,
+            body: String,
+            keywords: [String],
+            receivedAt: Date,
+            read: Bool,
+            starred: Bool,
+            createdAt: Date = Date()
+        ) {
+            self.serverId = serverId
+            self.folder = folder
+            self.senderName = senderName
+            self.senderEmail = senderEmail
+            self.subject = subject
+            self.body = body
+            self.keywords = keywords
+            self.receivedAt = receivedAt
+            self.read = read
+            self.starred = starred
+            self.createdAt = createdAt
+        }
+    }
+}
+
+enum AppSchemaV8: VersionedSchema {
+    static let versionIdentifier = Schema.Version(8, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        // EmailEntity gains inWindow, defaulting to true: every row cached
+        // before it came from the window.
+        [
             EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
             KeywordEntity.self, GroupEntity.self,
         ]
@@ -374,6 +506,7 @@ enum AppMigrationPlan: SchemaMigrationPlan {
         [
             AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self,
             AppSchemaV4.self, AppSchemaV5.self, AppSchemaV6.self,
+            AppSchemaV7.self, AppSchemaV8.self,
         ]
     }
 
@@ -384,6 +517,8 @@ enum AppMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV3.self, toVersion: AppSchemaV4.self),
             .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
             .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self),
+            .lightweight(fromVersion: AppSchemaV6.self, toVersion: AppSchemaV7.self),
+            .lightweight(fromVersion: AppSchemaV7.self, toVersion: AppSchemaV8.self),
         ]
     }
 }

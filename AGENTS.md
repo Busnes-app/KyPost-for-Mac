@@ -105,45 +105,32 @@ Default section order:
   Note `parallelizable` belongs on each entry in `testTargets`, not in
   `defaultOptions`, where it is silently ignored.
 
-- **A Go runtime crash that used to kill roughly one run in three**, unrelated
-  to any test. Not reproducing as of 2026-08-27 — see the measurement below
-  before acting on this:
+- **`KyPost.xctestplan` sets `GODEBUG=asyncpreemptoff=1`.** Without it a Go
+  runtime crash, unrelated to any test, kills the run (exit 65):
 
   ```
   signal 16 received on thread with no signal stack
   fatal error: non-Go code disabled sigaltstack
   ```
 
-  Signal 16 is `SIGURG`, which Go uses for goroutine preemption; it arrives on a
-  thread whose alternate signal stack something else has removed. It comes from
-  the GopenPGP XCFramework's embedded Go runtime, which is live for the whole
-  test process once any test touches PGP, and it fails the run with exit 65.
+  Signal 16 is `SIGURG`, which Go uses for async goroutine preemption; it
+  arrives on a thread whose alternate signal stack something else has removed.
+  It comes from the GopenPGP XCFramework's embedded Go runtime, live for the
+  whole test process once any test touches PGP. It arrived with the
+  XCFramework in Phase 8, stopped reproducing for a while (0 in 21 runs on
+  2026-08-27) and came back.
 
-  **Measured against `8152c1b`, before the app-lock PIN work, at the same rate**
-  (1 of 3 there, 1 of 3 after) — so it arrived with the XCFramework in Phase 8,
-  not with anything since.
+  **Measured 2026-10-12** (`test-without-building`, full `KyPost Tests`,
+  Xcode 26.6, macOS 26.5.2, GopenPGP v3.4.1, alternating runs on a loaded
+  machine): **4 crashes in 8 runs without the setting, 0 in 8 with it.** At
+  the observed rate a clean 8 by luck is about 1 in 256.
 
-  **Re-measured 2026-08-27 and it did not reproduce: 0 crashes in 15
-  consecutive runs** (`test-without-building`, signed, `KyPost Tests` only,
-  Xcode 26.6 / macOS SDK 26.5, GopenPGP v3.4.1), plus six more full
-  `xcodebuild test` runs the same day. At 1-in-3 the chance of a clean run of
-  15 is about 1 in 437, and of 21 about 1 in 5000, so whatever caused it is no
-  longer firing on this toolchain and this machine.
-
-  **Nothing was changed to achieve that**, which is the part to be careful
-  about. `GODEBUG=asyncpreemptoff=1` — signal 16 is `SIGURG`, which is exactly
-  what Go's async preemption uses — is the obvious lever and has deliberately
-  NOT been pulled: adding a workaround for a fault that does not currently
-  reproduce buys nothing measurable and quietly changes Go's scheduling for
-  everyone afterwards. It is the first thing to try if this comes back.
-
-  A local machine is not a CI runner, and this crash was always timing
-  sensitive, so **it is not safe to conclude it cannot happen on CI**. If a
-  CI run dies on this line, re-run it, then set `GODEBUG=asyncpreemptoff=1`
-  in `KyPost.xctestplan`'s `environmentVariableEntries` and measure again
-  before reaching for a retry loop — a bounded retry keyed on this exact
-  signature is the fallback, never a blanket job retry, which would also
-  paper over real failures.
+  The setting only turns off Go's async preemption inside the test process;
+  goroutines still yield at function calls. Do not remove it without
+  re-measuring the same way. If the crash ever returns with it set, a bounded
+  retry keyed on this exact signature is the fallback, never a blanket job
+  retry, which would also paper over real failures. The shipping app does not
+  set it; nothing so far shows the app process crashing this way.
 
 ## Local Contracts
 
@@ -612,13 +599,69 @@ old sentence edited out.
 
 ### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
 
+- **A message is (folder, messageId), never the id alone** (`MailRowKey`,
+  `Email.id`). The relay's id is a bare IMAP UID on IMAP accounts, unique only
+  within one mailbox, so INBOX and Sent can both hold `42`. `EmailEntity` is
+  `#Unique` on the pair (AppSchemaV7); every DAO lookup, merge, removal, read
+  flag, action, held row, attachment staging path and pop-out window uses the
+  pair. A delta's `removed` ids delete only from the fetched folder. A push
+  (and a notification-history tap, which replays one) names its message by id
+  alone and always means INBOX, via `prepareForPushTap`. Readers built from a
+  row (`EncryptedReadViewModel`, the invite card's attachment fetch, Forward's
+  attachment collection) take the row's own folder, never an assumed one.
+- **A folder with no cached row ignores its cursor** and fetches the whole
+  window. A cursor describes rows this device holds; after the store is
+  discarded or re-keyed, a delta would leave the folder empty until the daily
+  resync. This is what keeps the local store disposable.
 - **`isFullWindow` is derived from what we asked for, never from the wire's
   `delta` flag.** A relay predating the matching server fix labels a `since=0`
   response `delta: true` all the same, and only a full window can say what is
   *absent*.
-- **Only a full window may prune.** A partial delta describes what changed;
-  everything it omits is still legitimately in the mailbox. Pruning against one
-  deletes the folder.
+- **Only a full window may prune, and only window rows.** A partial delta
+  describes what changed; everything it omits is still legitimately in the
+  mailbox. Pruning against one deletes the folder.
+- **Mail older than the window is kept** (KyPost-Server `before=` paging and
+  `agedOut`/`hasMore`/`nextBefore`; Android #183). `EmailEntity.inWindow` is
+  false for rows paged in by "Load older mail" (`MailRepository.loadOlder`) or
+  reported `agedOut`, and no snapshot prunes them; `removed` still deletes any
+  row. A full window first takes absent rows dated before its oldest row out
+  of the window (they aged out unreported) and prunes only absent rows inside
+  its range. A page is metadata only: a held row takes just its read state and
+  labels, a new one is stored bodiless and out of the window.
+- **Every `/api/inbox` request uses `MailRepository.windowLimit` (50).** The
+  relay keeps a window and cursor per `limit`; a cursor sent with another limit
+  is one that window never issued.
+- **A delta with `hasMore` is walked before its cursor is committed** (deltas
+  only, never a full window): `before=nextBefore` pages until one holds an id
+  the folder already had, then window and pages are written in one
+  `EmailDAO.reconcile` save (rolled back on error), then the cursor. A failed
+  or contradictory walk — no usable `nextBefore`, a page without `hasMore` —
+  throws, stores nothing (not even the window: a stored row would count as
+  held and the retry would stop at it) and keeps the old cursor. ponytail: the
+  walk stops after `maxOverflowPages` (20) and commits.
+- **A `before=` answer without `hasMore` is a server that ignored it** (its
+  newest window, not older mail): stored nothing, "This server can't load older
+  mail…", and the footer hides for that folder. A 400 there is a stale anchor:
+  the next press starts again from the oldest row held.
+- **A row without a body fetches one on open** (`GET /api/mail/body`,
+  `MailRepository.loadBody`): blank body and not `pgpEncrypted` — a blank
+  encrypted row is the client-protected shape and keeps its decrypt path. The
+  fetched body is cached only on a window row; a page carries no PGP flags, so
+  an out-of-window row fetches again on every open. 404 and 413 are their own
+  sentences, never "couldn't reach the server".
+- **Leaving an account erases its mail** (`MailRepository.forgetAccount`):
+  every row in or out of the window, cached bodies, and every cursor. It is one
+  step of `AccountTeardown` — out-of-window rows are never pruned, so nothing
+  else would remove them.
+  `EmailDAO.accountEpoch` is captured before a refresh, page or body fetch goes
+  to the network and checked by its write; one that started under a forgotten
+  account stores nothing, cursor included. The pairing being left is refused
+  from then on (`SecurePairingStore.retireCurrentPairing`, see
+  `KyPost/App/AGENTS.md`).
+- Known gaps, all needing server help: out-of-window rows never learn of a
+  deletion (opening one says it is gone) and are not healed after a
+  UIDVALIDITY reset; encrypted mail stored from a page has no PGP flags, so it
+  opens through `/api/mail/body` with no decrypt path.
 - **An "updated" row carries no body.** Merge into the existing row and keep
   the cached body; a blank incoming `bodyMode` never overwrites a known one. If
   there is no existing row, **skip it** — storing it creates a row whose empty
@@ -638,6 +681,34 @@ old sentence edited out.
 - **A push tap forces a full resync before opening its target.** The cached row
   is fine for the list; rendering the detail screen from it can show a stale
   `bodyMode` or stale PGP state.
+
+### Inbox search (`MailRepository.search`, `InboxViewModel`, Android #171)
+
+- **The server searches; the cache is never consulted or written.**
+  `GET /api/mail/search?q=<trimmed>&mailbox=<folder on screen>&limit=50`
+  through the pinned relay session with pairing headers, every field (`field`
+  is not sent; the server defaults it to `all`). Results are a view of the
+  folder, not its window: written to the cache they could prune it or be
+  mistaken for it. A 200 that is not `{"results": […]}` is "Malformed search
+  response"; 400/503 use the ordinary mapping.
+- **Each result is stamped with the searched folder**; actions, held rows,
+  read flags and opening use (folder, id). An uncached result fetches its body
+  on open (`MailRepository.loadBody`, which reuses a cached row's body for the
+  same pair **together with that row's OpenPGP state** — a result carries
+  none, and dropping it hides a cached verdict or turns a client-protected row
+  into a server fetch), and Reply All uses the result's own `sentTo`/`cc` —
+  the body endpoint carries none. `InboxViewModel.email(for:)` (macOS pop-out
+  readers) prefers the folder row but takes the result's To/Cc.
+- **Results land only while their submission is the newest and their query
+  and folder are still on screen.** A failure says why and shows the folder
+  list — never an older query's results. The search ends on clearing or
+  cancelling the field, editing it away from the submitted query, a folder
+  switch, a notification tap, and `forgetAccount` (wipe, rebuild, unpair).
+- **The query is never logged or persisted** — view `@State` and view-model
+  memory only; no `@SceneStorage`, no state restoration, no defaults.
+- Known gap: results carry no PGP flags (the server sends none), so encrypted
+  mail found only by search and not cached opens through `/api/mail/body` with no decrypt
+  path, like older mail.
 
 ### Relay error mapping (`Data/Mail/MailSource.swift`)
 
@@ -683,6 +754,53 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
   host, and then takes the ordinary confirmation step. Sign-on never pairs
   directly, so registration, pinning and secret storage stay single-path.
 - macOS has no sign-on: no App Group, no entry, no return handling.
+
+### Inbox list actions (`MailRepository.applyAction`, `InboxViewModel`, `Domain/Models/InboxRules.swift`)
+
+- **HTTP 200 from `/api/inbox/actions` is not success.** The relay answers
+  `{ok, action, processed, failed: [{messageId, error}], targetMailbox}` and
+  its loop stops early on a cancelled request, leaving ids in neither list.
+  `applyAction` is the only gate on dropping a cached row: an id is confirmed
+  only when it is absent from `failed[]` **and** `processed` equals the number
+  of such ids; a shortfall confirms nothing. A bare `{"ok":true}` reads as zero
+  processed. Ids are trimmed and de-duplicated first (the relay counts them
+  that way), and more than `maxActionIds` (500, server `maxInboxActionIDs`)
+  is refused without a request. Partial failure reads "1 of 3 not changed: …".
+- **List actions (archive/delete/junk/move, single or bulk, drag-to-folder)
+  are held for a 5 s Undo; nothing reaches the relay until the window
+  closes.** One bar covers every held action; a new action restarts the window
+  without sending. Each held action leaves `PendingMailActions` exactly once —
+  `takeAll` (sent) or `undoAll` (never). Held and in-flight rows are hidden by
+  (folder, id), never id alone, so a refresh cannot bring them back and a
+  same-id row in another folder stays visible. The source folder is pinned at
+  tap time.
+- **Commit points:** the timer, leaving the list (iOS `onDisappear`, which
+  includes opening a message; macOS switching to Contacts or closing the
+  window), iOS backgrounding (under a background-task assertion), and app lock.
+  The lock sites call `commitHeldActions()` **before** `lockAfterGrace()`,
+  grace period or not: the commit binds the relay source synchronously, and
+  `lock()` drops the gated device secret.
+- **Drop points, never send:** security wipe (`inMemoryPlaintext` step), graph
+  rebuild (`SingletonGraph.shutdown`, whose session is about to be cancelled),
+  unpair. "Never" is the safe direction — the mail stays where it was. A
+  process killed inside the window likewise loses the action.
+- **Reader actions (archive/move/junk/delete in `EmailDetailView`) are not
+  undoable**: they run at once through `performNow`, and the reader closes only
+  when the relay confirmed that id; a rejection keeps it open with the reason.
+- **Sent and Drafts are resolved, never hardcoded or created.** Each pick lists
+  the top-level folders and opens the first whose leaf matches the server's
+  alias list (`special_folders.go`: Sent, Sent Items, Sent Messages, Sent Mail /
+  Drafts, Draft), case-insensitively, in that preference order. Paths under
+  Archive are Archive's. No match is a notice, and the folder on screen stays.
+  The relay exposes no special-use flag, so a localized name (`Gesendet`) reads
+  as missing.
+- **Move targets** are INBOX, Inbox children, top-level folders, then Archive
+  children (best effort), de-duplicated case-insensitively, minus the message's
+  own folder; `Archive` itself is never a target (the Archive action resolves
+  the real archive server-side), so a drag onto the Archive sidebar row goes
+  through `InboxViewModel.drop`, which runs Archive, not a move. Labels are raw paths, so two same-leaf folders
+  stay distinguishable. Inbox children are an Apple-only addition: this client
+  shows them in its sidebar.
 
 ### MFA number matching (`Domain/Models/MfaNumberMatch.swift`)
 

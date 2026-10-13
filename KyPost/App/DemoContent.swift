@@ -84,6 +84,15 @@ enum DemoContent {
 
     static let accountAddress = "avery.lang@kypost.example"
 
+    /// Settings → Connection for the screenshots. Display text only: the
+    /// demo graph stores no pairing, so nothing that registers, pulls or
+    /// fetches mail can read this.
+    static let pairingDisplay = PairingDisplay(
+        serverHost: "kypost.example",
+        deviceId: "7C3E9A41-2B6D-4F80-9E15-D0A8B47C6F22",
+        account: accountAddress
+    )
+
     static let emails: [Email] = [
         Email(
             serverId: "demo-1",
@@ -505,12 +514,34 @@ struct DemoMailSource: MailSource {
         )
     }
 
-    func search(folder: String, query: String) async throws -> [String] { [] }
-    func setKeywords(folder: String, messageId: String, keywords: [String]) async throws {}
-    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws {}
-    func delete(messageIds: [String], mailbox: String) async throws {}
-    func archive(messageIds: [String], mailbox: String) async throws {}
-    func markSpam(messageIds: [String], mailbox: String) async throws {}
+    func fetchOlder(folder: String, limit: Int, before: String) async throws -> MailPage {
+        MailPage(emails: [], hasMore: false, nextBefore: nil)
+    }
+
+    func fetchBody(folder: String, messageId: String) async throws -> MailMessageBody {
+        let email = DemoContent.emails.first { $0.folder == folder && $0.serverId == messageId }
+        return MailMessageBody(body: email?.body ?? "", bodyMode: email?.bodyMode ?? "")
+    }
+
+    func searchMail(folder: String, query: String, limit: Int) async throws -> [Email] {
+        DemoContent.emails.filter {
+            $0.folder == folder
+                && ($0.subject.localizedCaseInsensitiveContains(query)
+                    || $0.senderName.localizedCaseInsensitiveContains(query))
+        }
+    }
+    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport {
+        MailActionReport(processed: Set(messageIds).count, failed: [])
+    }
+    func delete(messageIds: [String], mailbox: String) async throws -> MailActionReport {
+        MailActionReport(processed: Set(messageIds).count, failed: [])
+    }
+    func archive(messageIds: [String], mailbox: String) async throws -> MailActionReport {
+        MailActionReport(processed: Set(messageIds).count, failed: [])
+    }
+    func markSpam(messageIds: [String], mailbox: String) async throws -> MailActionReport {
+        MailActionReport(processed: Set(messageIds).count, failed: [])
+    }
     func markRead(messageIds: [String], mailbox: String) async throws {}
 
     func listAttachments(folder: String, messageId: String) async throws -> [EmailAttachment] { [] }

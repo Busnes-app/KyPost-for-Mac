@@ -223,6 +223,18 @@ final class SingletonGraph {
 #endif
     }
 
+    /// What the screenshot build's Settings → Connection shows: a paired
+    /// account, as display text only. The demo graph stores no pairing, so
+    /// registration, pulls and mail requests still read "not paired"; nil in
+    /// every other build.
+    var pairingDisplayOverride: PairingDisplay? {
+#if DEBUG
+        isDemo ? DemoContent.pairingDisplay : nil
+#else
+        nil
+#endif
+    }
+
     /// True only when the DEBUG process was launched with `-KyPostDemo`.
     /// The launch default for `init(isDemo:)`; read `isDemo` on a graph.
     nonisolated static var launchIsDemo: Bool {
@@ -346,6 +358,12 @@ final class SingletonGraph {
         service.reconcileExistingPairingPushes = { [weak self] in
             await self?.pullPollingScheduler.reconcileDeliveredPushesForExistingPairing()
         }
+        // Pairing another account over this one erases what the previous
+        // account left here, exactly as an unpair does. Weak: the graph owns
+        // the service.
+        service.onAccountReplaced = { [weak self] in
+            await self?.makeAccountTeardown().run() ?? false
+        }
         return service
     }()
     lazy var desktopPairingService = DesktopPairingService(
@@ -391,6 +409,19 @@ final class SingletonGraph {
         lockManager: appLockManager
     )
 
+    /// The account teardown over this graph's stores, for a pairing that
+    /// replaces the account (unpair builds the same list from its own).
+    func makeAccountTeardown() -> AccountTeardown {
+        AccountTeardown(
+            enrollmentVault: enrollmentVault,
+            pushRepository: pushRepository,
+            recipientPinStore: recipientPinStore,
+            mailSignatureStore: mailSignatureStore,
+            mailRepository: mailRepository,
+            forgetInbox: { [weak self] in self?.inboxViewModel.forgetAccount() }
+        )
+    }
+
     // MARK: - Lifecycle
 
     /// Stops every long-lived task this graph owns, so a superseded graph
@@ -405,6 +436,11 @@ final class SingletonGraph {
         // A pending grace-period lock owns a timer; a superseded graph's must
         // not fire into the replacement's session.
         appLockManager.shutdown()
+        // Dropped, not sent: the session below is about to be cancelled, and
+        // the rebuild is a Hostile Location Protection switch or a wipe — in
+        // neither should a superseded graph act on the account. The mail stays
+        // where it was, which is the safe direction.
+        inboxViewModel.forgetAccount()
         // Drops in-flight requests, the connection pool, and the session's
         // strong reference to its delegate. Not `finishTasksAndInvalidate`:
         // a superseded graph's requests write to a database that is going

@@ -55,9 +55,9 @@ struct KyPostApp: App {
         }
         .defaultSize(width: 480, height: 620)
 
-        // Pop-out reader: one window per email, keyed by relay server id.
-        WindowGroup("Email", id: "email", for: String.self) { $serverId in
-            EmailWindowView(serverId: serverId ?? "")
+        // Pop-out reader: one window per email, keyed by (folder, server id).
+        WindowGroup("Email", id: "email", for: MailRowKey.self) { $key in
+            EmailWindowView(key: key)
                 .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)

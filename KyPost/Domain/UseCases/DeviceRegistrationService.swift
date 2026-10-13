@@ -55,6 +55,13 @@ final class DeviceRegistrationService {
     /// do not exercise it.
     var reconcileExistingPairingPushes: (() async -> Void)?
 
+    /// Runs before a registration's pairing is stored over one for another
+    /// account (another `sub` or server), so the previous account's
+    /// account-scoped state is erased as an unpair would. Wired by
+    /// SingletonGraph to `AccountTeardown`, the list unpair runs; nil in tests.
+    /// Returns false when a step failed: the new pairing is then not stored.
+    var onAccountReplaced: (@MainActor () async -> Bool)?
+
     /// One registration per (pairing token, device token). A pairing deep
     /// link is delivered to every open main window and each auto-pairs, so
     /// without this guard a single "Pair Desktop App" click registers the
@@ -147,10 +154,27 @@ final class DeviceRegistrationService {
             // refresh) must not restart the heartbeat's quiet clock: it proves
             // the relay answers, not that APNs delivers, and resetting it on
             // every foreground would postpone the heartbeat indefinitely.
-            let previous = try? securePairingStore.loadPairing()
-            let isSameAccount = previous?.sub == params.sub && previous?.srv == params.srv
+            //
+            // Pairing another account over this one, without an unpair first,
+            // replaces the account. An unreadable previous pairing counts as
+            // replaced: erasing a disposable cache is the safe direction.
+            let previous = Result { try securePairingStore.loadPairing() }
+            let previousPairing = try? previous.get()
+            let isSameAccount = previousPairing?.sub == params.sub && previousPairing?.srv == params.srv
             let isRoutineReregistration = isSameAccount && pushSettingsStore.lastRegisteredAt != nil
             isExistingPairingWithoutStamp = isSameAccount && pushSettingsStore.lastRegisteredAt == nil
+            let replacesAccount: Bool = switch previous {
+            case .success(let pairing?): pairing.sub != params.sub || pairing.srv != params.srv
+            case .success(nil): false
+            case .failure: true
+            }
+            // Stored only once the previous account is gone: a pairing saved
+            // over an incomplete teardown would list what was left under the
+            // new account. The previous pairing stays, so a retry runs the
+            // teardown again.
+            if replacesAccount, let onAccountReplaced, !(await onAccountReplaced()) {
+                return .failure("Registered, but this device could not erase the previous account's data, so the new pairing was not saved. Try again.")
+            }
             do {
                 try securePairingStore.savePairing(Pairing(
                     sub: params.sub,
@@ -242,7 +266,9 @@ final class DeviceRegistrationService {
     /// Returns nil when the device was never paired — nothing to refresh.
     @discardableResult
     func reregisterIfPaired(deviceToken: String) async -> RegistrationOutcome? {
-        guard let pairing = try? securePairingStore.loadPairing() else { return nil }
+        // Not a retired pairing: re-registering the account being left would
+        // store it again over the teardown.
+        guard let pairing = try? securePairingStore.loadActivePairing() else { return nil }
         return await pair(
             params: PairingParams(pairing: pairing),
             deviceToken: deviceToken,

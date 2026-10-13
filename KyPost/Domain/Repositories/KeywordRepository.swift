@@ -36,17 +36,32 @@ final class KeywordRepository {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    /// The name of the app-owned "everything" tab. A relay label spelt the
+    /// same must not become a second one.
+    static let allTabName = "All"
+
+    static func isAllTabName(_ name: String) -> Bool {
+        name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(allTabName) == .orderedSame
+    }
+
     /// Tabs to show in the inbox tab bar (hidden keywords filtered out).
     func visibleTabs(from emails: [Email]) -> [KeywordTab] {
         orderedTabs(from: emails)
-            .filter { !isSystemKeyword($0.name) && settingsStore.isVisible($0.name) }
+            .filter { settingsStore.isVisible($0.name) }
+    }
+
+    /// Whether the All tab leads the strip. Hideable like any keyword; with
+    /// every tab hidden the inbox shows everything and no strip at all.
+    var isAllTabVisible: Bool {
+        get { settingsStore.allTabVisible }
+        set { settingsStore.allTabVisible = newValue }
     }
 
     /// All keywords with their visibility, for KeywordSettingsView.
     func allSettings(from emails: [Email]) -> [KeywordSetting] {
         // System keywords are not offered here either: there is nothing
         // useful to toggle, and the phishing warning must not be hideable.
-        orderedTabs(from: emails).filter { !isSystemKeyword($0.name) }.map {
+        orderedTabs(from: emails).map {
             KeywordSetting(name: $0.name, visible: settingsStore.isVisible($0.name))
         }
     }
@@ -64,14 +79,16 @@ final class KeywordRepository {
             settingsStore.order().enumerated().map { ($1, $0) },
             uniquingKeysWith: min
         )
-        return Self.computeTabs(from: emails).sorted { left, right in
-            switch (ranks[left.name], ranks[right.name]) {
-            case let (leftRank?, rightRank?): leftRank < rightRank
-            case (_?, nil): true
-            case (nil, _?): false
-            case (nil, nil):
-                left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
+        return Self.computeTabs(from: emails)
+            .filter { !isSystemKeyword($0.name) && !Self.isAllTabName($0.name) }
+            .sorted { left, right in
+                switch (ranks[left.name], ranks[right.name]) {
+                case let (leftRank?, rightRank?): leftRank < rightRank
+                case (_?, nil): true
+                case (nil, _?): false
+                case (nil, nil):
+                    left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
+                }
             }
-        }
     }
 }

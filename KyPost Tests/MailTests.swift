@@ -152,7 +152,7 @@ private func makeOutgoing(
         #expect(string.cursor == FlexibleCursor("42"))
     }
 
-    @Test func listFoldersMapsPathAndSearchIsLocalOnly() async throws {
+    @Test func listFoldersMapsPath() async throws {
         let json = #"{"parent": "", "folders": [{"path": "INBOX"}, {"path": "Archive", "deletable": true}]}"#
         let foldersClient = stubClient(json: json) { request in
             let url = request.url!.absoluteString
@@ -174,12 +174,6 @@ private func makeOutgoing(
         let subs = try await RelayMailSource(httpClient: subClient, serverUrl: server, auth: auth)
             .listFolders(parent: "Archive")
         #expect(subs.map(\.name) == ["Archive/Receipts"])
-
-        // The relay has no search endpoint; inbox search uses the local cache.
-        await #expect(throws: MailSourceError.unsupported) {
-            _ = try await RelayMailSource(httpClient: stubClient(), serverUrl: server, auth: auth)
-                .search(folder: "INBOX", query: "report")
-        }
     }
 
     @Test func movePostsBulkActionBody() async throws {
@@ -544,9 +538,6 @@ private func makeOutgoing(
     @Test func errorMapping() {
         #expect(MailOutcome.from(NetworkError.unauthorized) == .unauthorized)
         #expect(MailOutcome.from(MailSourceError.notPaired) == .notPaired)
-        if case .failure = MailOutcome.from(MailSourceError.unsupported) {} else {
-            Issue.record("unsupported should map to failure")
-        }
         if case .failure = MailOutcome.from(NetworkError.serviceUnavailable) {} else {
             Issue.record("503 should map to failure")
         }
@@ -1228,7 +1219,7 @@ private func makeOutgoing(
             pruneAgainstEmails: false
         )
 
-        let stored = try #require(try await dao.getEmail(serverId: "m1"))
+        let stored = try #require(try await dao.getEmail(folder: "INBOX", serverId: "m1"))
         #expect(stored.body == "<p>real</p>")
         #expect(stored.bodyMode == "html")   // a blank incoming mode never wins
         #expect(stored.subject == "New subject")
@@ -1251,7 +1242,7 @@ private func makeOutgoing(
             removedIds: [],
             pruneAgainstEmails: false
         )
-        #expect(try await dao.getEmail(serverId: "ghost") == nil)
+        #expect(try await dao.getEmail(folder: "INBOX", serverId: "ghost") == nil)
     }
 
     @Test func newRowsAreInsertedAndRemovedIdsDeleted() async throws {
@@ -1264,8 +1255,8 @@ private func makeOutgoing(
             removedIds: ["old"],
             pruneAgainstEmails: false
         )
-        #expect(try await dao.getEmail(serverId: "old") == nil)
-        #expect(try await dao.getEmail(serverId: "fresh")?.body == "<p>new</p>")
+        #expect(try await dao.getEmail(folder: "INBOX", serverId: "old") == nil)
+        #expect(try await dao.getEmail(folder: "INBOX", serverId: "fresh")?.body == "<p>new</p>")
     }
 
     /// A partial delta describes only what changed. Everything it omits is
@@ -1300,8 +1291,8 @@ private func makeOutgoing(
             removedIds: [],
             pruneAgainstEmails: true
         )
-        #expect(try await dao.getEmail(serverId: "deletedOnTheWeb") == nil)
-        #expect(try await dao.getEmail(serverId: "stays") != nil)
+        #expect(try await dao.getEmail(folder: "INBOX", serverId: "deletedOnTheWeb") == nil)
+        #expect(try await dao.getEmail(folder: "INBOX", serverId: "stays") != nil)
     }
 
     @Test func pruningIsScopedToItsOwnFolder() async throws {
@@ -1314,8 +1305,8 @@ private func makeOutgoing(
             folder: "INBOX", emails: [], updatedIds: [], removedIds: [],
             pruneAgainstEmails: true
         )
-        #expect(try await dao.getEmail(serverId: "inboxRow") == nil)
-        #expect(try await dao.getEmail(serverId: "elsewhere") != nil)
+        #expect(try await dao.getEmail(folder: "INBOX", serverId: "inboxRow") == nil)
+        #expect(try await dao.getEmail(folder: "Archive", serverId: "elsewhere") != nil)
     }
 }
 

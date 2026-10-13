@@ -55,6 +55,42 @@ Protection turns on and at every launch while it is on (`PushLifecycle.onLaunch`
 A `UserDefaults`-backed store that goes memory-only under the mode erases its
 persisted copy there; switching reads to memory does not remove it.
 
+`shutdown()` also **drops** the inbox's held list actions (the undo window),
+its older-mail paging state and the rows it shows, voiding any refresh in
+flight (`InboxViewModel.forgetAccount`) rather than
+sending them: the superseded graph's session is cancelled, and a
+rebuild is a Hostile Location Protection switch or a wipe. The lock sites
+(`PushLifecycle.onBackground`, the macOS screen-lock observer) instead
+**commit** them — on iOS the `didEnterBackgroundNotification` observer in
+`installLifecycleObservers` commits first, under a background assertion —
+and must do so before `appLockManager.lockAfterGrace()` (a grace period
+does not extend the undo window) — see the root "Inbox list actions"
+contract.
+
+**Leaving an account is one list, `AccountTeardown`** (enrollment vault,
+session and pending reports; notification history and pull cursor; recipient
+pins; mail signature; cached mail and cursors; the inbox's held actions and
+rows). `SettingsViewModel.unpair` runs it after clearing the pairing, and a
+registration that stores a pairing for another `sub` or server over the
+current one runs it first (`DeviceRegistrationService.onAccountReplaced`,
+wired to `SingletonGraph.makeAccountTeardown`); an unreadable previous
+pairing counts as another account. A new account-scoped store adds its clear
+there, not at either call site. Held list actions are dropped before the first
+`await` (and the inbox cleared again at the end), so an undo deadline passing
+mid-teardown sends nothing. `run()` returns false when a step failed: unpair
+says so instead of "Pairing removed", and a replacement does not store the new
+pairing (the previous one stays, so a retry re-runs the teardown).
+
+**The pairing being left is retired, not just outlived.** A replacement keeps
+the old pairing readable until the new one is saved, so each teardown step
+that moves its own session or epoch (`MailRepository.forgetAccount`,
+`PushRepository.clearForUnpair`) first calls
+`SecurePairingStore.retireCurrentPairing`, and work that reaches the relay for
+the account (mail requests, notification pulls, re-registration) reads
+`loadActivePairing`, which refuses it until another pairing is saved. Capture
+the session/epoch *before* loading the pairing, or a request can pair the old
+credentials with the new session.
+
 `AppEnvironment.onRebuild` re-runs the launch wiring (`PushLifecycle`)
 after a swap; it is nil under tests so no runtime services start there.
 It is installed once, from the platform delegate
@@ -239,9 +275,11 @@ and `PullHeartbeatPolicy.decide` says whether a tick touches the network:
 launched with `-KyPostDemo`. It exists so App Store screenshots can be taken
 without photographing the developer's own mail, and without a pairing or a
 network. `scripts/capture-screenshots.sh` drives it through
-`KyPost UITests/ScreenshotTests`.
+`KyPost UITests/ScreenshotTests`: `ios` (6.9" iPhone → `iOS/`), `ipad` (13"
+iPad, preferring iPad Pro 13-inch (M5) → `iPad/`), `macos`, or `all`. Both
+simulators get the 9:41 status bar and share one derived-data build.
 
-Three seams carry it, and each one defaults to the real path:
+Four seams carry it, and each one defaults to the real path:
 
 - `MailRepository(overrideSource:)` — serves `DemoMailSource` and **skips the
   pairing guard in `refreshFolder`**. Without it an unpaired build paints
@@ -249,6 +287,14 @@ Three seams carry it, and each one defaults to the real path:
 - `PgpSendService.preload(hasIdentity:protection:accountAddress:)` — installs
   a bootstrap answer so compose offers Encrypt/Sign. Nothing in a shipping
   build may decide custody locally; this is the only caller.
+- `SettingsViewModel(pairingDisplayOverride:)`, fed by
+  `SingletonGraph.pairingDisplayOverride` (`DemoContent.pairingDisplay`) —
+  Settings → Connection reads as paired (`kypost.example`,
+  `avery.lang@kypost.example`). **Display text only:** the views render
+  `pairingDisplay`, while `isPaired`, unpair, Fix Notifications and every
+  registration, pull and mail path keep reading `SecurePairingStore`, which
+  holds no pairing. Never satisfy a screenshot by storing a pairing, in any
+  Keychain, isolated or not.
 - `SingletonGraph.isDemo` (init default `launchIsDemo`) — one switch read by
   the stores, the database and photo cache (in-memory, so a demo mailbox never
   lands on disk beside real mail), the mail source, the Contacts adapter, the
@@ -272,6 +318,11 @@ Rules:
 - `-KyPostDemoScreen` is read only together with `-KyPostDemo`.
 - `ScreenshotTests.capture` attaches the app's own window or nothing. Never
   add a whole-display fallback on macOS: the display carries other apps.
+- `ScreenshotTests` runs one iOS flow on iPhone and iPad. Root tabs go
+  through `tab(_:_:)` (iPadOS draws the `TabView` as a floating top bar),
+  keyword chips through `keywordChip(_:_:)` (a row's label carries its own
+  tags, so a label match can land on a message), and iPad hides its
+  half-screen keyboard before the compose shot.
 - `-KyPostDemoScreen mfa` exists because MFA approval arrives by push and has
   no navigable route. Add a case there rather than a new launch argument.
 - The fixtures are invented. Keep them invented, and keep the addresses on

@@ -26,7 +26,9 @@ struct SettingsView: View {
         appLockManager: SingletonGraph.shared.appLockManager,
         pushRepository: SingletonGraph.shared.pushRepository,
         recipientPinStore: SingletonGraph.shared.recipientPinStore,
-        mailSignatureStore: SingletonGraph.shared.mailSignatureStore
+        mailSignatureStore: SingletonGraph.shared.mailSignatureStore,
+        onUnpaired: { SingletonGraph.shared.inboxViewModel.forgetAccount() },
+        pairingDisplayOverride: SingletonGraph.shared.pairingDisplayOverride
     )
     @State private var showPairingSheet = false
     @State private var showUnpairConfirmation = false
@@ -34,9 +36,14 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Connection") {
-                if viewModel.isPaired {
-                    LabeledContent("Connected via", value: viewModel.pairedServerHost ?? "—")
-                    if let deviceId = viewModel.pairedDeviceId {
+                if let pairing = viewModel.pairingDisplay {
+                    LabeledContent("Connected via", value: pairing.serverHost)
+                    if let account = pairing.account {
+                        LabeledContent("Account") {
+                            Text(account).font(AppFont.mono(12))
+                        }
+                    }
+                    if let deviceId = pairing.deviceId {
                         LabeledContent("Device ID") {
                             Text(deviceId).font(AppFont.mono(12))
                         }

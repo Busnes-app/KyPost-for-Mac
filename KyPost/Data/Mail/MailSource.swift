@@ -29,16 +29,31 @@ protocol MailSource: Sendable {
         to: Int,
         since: String
     ) async throws -> MailFetchResult
-    func search(folder: String, query: String) async throws -> [String]
-    func setKeywords(folder: String, messageId: String, keywords: [String]) async throws
-    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws
+    /// One page of mail older than `before`, a list-row id in `folder`
+    /// (`GET /api/inbox?before=`). Metadata only — no body, attachment or PGP
+    /// flags — and it never touches the cursor.
+    func fetchOlder(folder: String, limit: Int, before: String) async throws -> MailPage
+    /// One message's body (`GET /api/mail/body`), for a row that arrived
+    /// without one: a page of older mail, or a search result.
+    func fetchBody(folder: String, messageId: String) async throws -> MailMessageBody
+    /// Server-side search of one folder, every field
+    /// (`GET /api/mail/search`). Rows carry no body and are stamped with
+    /// `folder`: an id means nothing outside the folder it came from.
+    func searchMail(folder: String, query: String, limit: Int) async throws -> [Email]
+    /// The four verbs that take a message out of `mailbox` return the relay's
+    /// per-id report. A 200 is transport success only — see MailActionReport.
+    @discardableResult
+    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport
     /// Deletes messages. The relay moves them to Trash, or expunges them
     /// permanently when `mailbox` is already Trash (server.go ApplyInboxAction).
-    func delete(messageIds: [String], mailbox: String) async throws
+    @discardableResult
+    func delete(messageIds: [String], mailbox: String) async throws -> MailActionReport
     /// Moves messages to the Archive folder (Android MailAction.ARCHIVE).
-    func archive(messageIds: [String], mailbox: String) async throws
+    @discardableResult
+    func archive(messageIds: [String], mailbox: String) async throws -> MailActionReport
     /// Moves messages to Junk (Android MailAction.SPAM).
-    func markSpam(messageIds: [String], mailbox: String) async throws
+    @discardableResult
+    func markSpam(messageIds: [String], mailbox: String) async throws -> MailActionReport
     /// Flags messages read on the server so the state syncs across devices.
     func markRead(messageIds: [String], mailbox: String) async throws
     /// Attachment metadata for one message (fetched lazily on open; the
@@ -90,6 +105,104 @@ struct MailFetchResult: Equatable, Sendable {
     /// against. Pruning is the only self-heal for a removal we were never
     /// told about.
     var isFullWindow = false
+    /// Ids that fell below the relay's window but still exist: keep them,
+    /// out of the window. Absent on a relay predating KyPost-Server #349.
+    var agedOutIds: [String] = []
+    /// More new mail arrived than the window holds; the rest is paged with
+    /// `before=nextBefore` (`MailRepository.fetchOverflow`).
+    var hasMore = false
+    var nextBefore: String?
+}
+
+/// One `before=` page, newest first. `hasMore` is nil when the server ignored
+/// `before=` and answered with its newest window instead (a relay predating
+/// KyPost-Server #348) — which is not older mail, and is never stored.
+struct MailPage: Equatable, Sendable {
+    var emails: [Email]
+    var hasMore: Bool?
+    var nextBefore: String?
+}
+
+/// `GET /api/mail/body`: the body and its mode, nothing else. No recipients
+/// and no PGP flags — those come from the row (or, for a body taken from
+/// the cache, from `cachedPgp`).
+nonisolated struct MailMessageBody: Equatable, Sendable {
+    var body: String
+    var bodyMode: String
+    /// The cached row's OpenPGP state when the body came from the cache for a
+    /// row that carries none of its own (a search result). Nil for a body
+    /// from `/api/mail/body`, which carries no PGP fields.
+    var cachedPgp: MailPgpFields? = nil
+
+    /// `email` as the reader renders it: this body in place of the missing
+    /// one, and the cached OpenPGP state when there is one — so a cached
+    /// signature or encryption verdict is never dropped by opening the same
+    /// message from somewhere that lacks it.
+    func applied(to email: Email) -> Email {
+        var shown = email
+        shown.body = body
+        if !bodyMode.isEmpty { shown.bodyMode = bodyMode }
+        if let cachedPgp {
+            shown.pgpEncrypted = cachedPgp.encrypted
+            shown.pgpSigned = cachedPgp.signed
+            shown.pgpVerified = cachedPgp.verified
+            shown.pgpSignerFingerprint = cachedPgp.signerFingerprint
+            shown.pgpDecryptError = cachedPgp.decryptError
+        }
+        return shown
+    }
+}
+
+/// A cached row's OpenPGP fields (see `Email`).
+nonisolated struct MailPgpFields: Equatable, Sendable {
+    var encrypted: Bool
+    var signed: Bool
+    var verified: Bool
+    var signerFingerprint: String
+    var decryptError: String
+
+    init(of email: Email) {
+        encrypted = email.pgpEncrypted
+        signed = email.pgpSigned
+        verified = email.pgpVerified
+        signerFingerprint = email.pgpSignerFingerprint
+        decryptError = email.pgpDecryptError
+    }
+}
+
+/// The list actions that take a message out of its folder, as the relay's
+/// `/api/inbox/actions` verbs.
+nonisolated enum MailMoveAction: String, Hashable, Sendable {
+    case archive
+    case delete
+    case spam
+    case move
+}
+
+/// What `POST /api/inbox/actions` reported for one request
+/// (`server_inbox.go` `handleInboxActions`: `{ok, action, processed,
+/// failed: [{messageId, error}], targetMailbox}`).
+///
+/// **HTTP 200 is transport success, not operation success.** The relay answers
+/// 200 with ids in `failed[]`, and its loop stops early on a cancelled request,
+/// leaving ids in neither list. `processed` is a count, not a list, so only
+/// `MailRepository.applyAction` decides which ids were confirmed.
+nonisolated struct MailActionReport: Equatable, Sendable {
+    struct Failure: Equatable, Sendable {
+        var messageId: String
+        var error: String
+    }
+
+    var processed: Int
+    var failed: [Failure]
+}
+
+/// The outcome of one batch as the cache saw it: the ids the relay confirmed
+/// (their cached rows are already gone) and, when anything was not changed,
+/// a sentence for the user.
+nonisolated struct MailActionResult: Equatable, Sendable {
+    var confirmedIds: [String]
+    var failureMessage: String?
 }
 
 /// Mail-layer failures that aren't plain network errors.
@@ -100,8 +213,17 @@ enum MailSourceError: Error, Equatable {
     /// credential gate is on and the app is locked. Not an error state —
     /// background work retries after the next unlock, like `notPaired`.
     case credentialUnavailable
-    /// The relay has no endpoint for this operation (e.g. server-side search).
-    case unsupported
+    /// A 200 whose body is not the documented shape. Carries the sentence.
+    case malformedResponse(String)
+    /// The relay answered definitively that this message cannot be opened
+    /// (404 gone, 413 too large). Not a connectivity failure: retrying will
+    /// not help, and saying "couldn't reach the server" would be a lie.
+    case messageUnavailable(String)
+    /// The server ignored `before=`: it predates older-mail paging.
+    case olderMailUnsupported
+    /// A delta announced more new mail than its window held, then would not
+    /// page it (no `nextBefore`, or a page without `hasMore`).
+    case overflowUnreachable
     /// Relay 400 whose plain-text body says IMAP configuration is required.
     /// The account exists but has no mail set up; only the web app can fix it.
     case notConfigured(String)
@@ -189,12 +311,43 @@ enum MailOutcome: Equatable, Sendable {
                 ?? .failure(Self.message(for: .badRequest(body: body)))
         case MailSourceError.notConfigured(let message):
             .notConfigured(message)
+        case MailSourceError.messageUnavailable(let message),
+             MailSourceError.malformedResponse(let message):
+            .failure(message)
+        case MailSourceError.olderMailUnsupported:
+            .failure(String(localized: "This server can't load older mail. Update KyPost Server to use this."))
+        case MailSourceError.overflowUnreachable:
+            .failure(String(localized: "The server reported more new mail than it would page."))
         case NetworkError.server(statusCode: 502):
             .upstreamFailure(Self.message(for: .server(statusCode: 502)))
         case let networkError as NetworkError:
             .failure(Self.message(for: networkError))
         default:
             .failure("\(error)")
+        }
+    }
+
+    /// One sentence for any outcome that is not a success, for callers that
+    /// only report (list actions, folder changes) rather than branch.
+    var userMessage: String? {
+        switch self {
+        case .success, .sentWithWarning:
+            nil
+        case .rateLimited(let retryAfter):
+            retryAfter.map {
+                String(localized: "Too many attempts — try again in \(NetworkError.formatRetryAfter($0)).")
+            } ?? String(localized: "Too many attempts — try again later.")
+        case .notConfigured:
+            String(localized: "Set up your mail account in the web app first.")
+        case .unauthorized:
+            String(localized: "Not authorized — re-pair the device or check credentials.")
+        case .notPaired:
+            String(localized: "Pair this device first.")
+        case .invalid(let message), .failure(let message), .upstreamFailure(let message):
+            message
+        case .clientSideNeeded, .keylessRecipients:
+            // Neither is reachable outside the send path.
+            String(localized: "The server refused that change.")
         }
     }
 

@@ -7,6 +7,9 @@
 //  against the live backend 2026-07-10. Pairing auth (deviceId/deviceSecret)
 //  travels as headers (RelayAuth.headerFields), not query params:
 //    GET  /api/inbox?limit&mailbox&since
+//    GET  /api/inbox?limit&mailbox&before&bodies=0  (older mail, one page)
+//    GET  /api/mail/body?mailbox&messageId
+//    GET  /api/mail/search?q&mailbox&limit  (every field: `field` is not sent)
 //    GET  /api/inbox/folders
 //    POST /api/mail/send  (encrypt/sign/allowPickupFallback — Client_Encrypted_Send.md)
 //    POST /api/mail/draft (same shape as send, minus the PGP flags)
@@ -108,7 +111,8 @@ struct RelayEmailDTO: Decodable, Equatable, Sendable {
             sentTo: sentTo ?? "",
             cc: cc ?? "",
             keywords: Set(((keywords ?? []) + [keyword]).filter { !$0.isEmpty }),
-            receivedAt: Self.parseUtc(atUtc) ?? Date(),
+            // Blank in the list, never "now": see Email.unknownDate.
+            receivedAt: Self.parseUtc(atUtc) ?? Email.unknownDate,
             read: (status ?? "unread").lowercased() != "unread",
             starred: false,
             bodyMode: bodyMode ?? "",
@@ -157,7 +161,15 @@ struct RelayInboxResponse: Decodable, Sendable {
     var byTab: [String: [RelayEmailDTO]]?
     var cursor: FlexibleCursor?
     var delta: Bool?
+    /// Left the mailbox: delete.
     var removed: [String]?
+    /// Fell below the window and still exists: keep (KyPost-Server #349).
+    var agedOut: [String]?
+    /// On a delta: new mail lies below the window. On a `before=` page: there
+    /// is older mail still. Absent on a relay predating #348/#349 — and on a
+    /// `before=` request that absence is how an old server is recognised.
+    var hasMore: Bool?
+    var nextBefore: String?
 
     /// Flattens the per-tab groups; each email keeps its tab as a keyword.
     /// Sorted newest first — the per-tab dictionary has no stable iteration
@@ -180,6 +192,20 @@ struct RelayInboxResponse: Decodable, Sendable {
             }
             .sorted { $0.receivedAt > $1.receivedAt }
     }
+}
+
+/// GET /api/mail/body: `{body, bodyMode}` and nothing else. An absent
+/// `bodyMode` is "the server could not tell", not plain — see
+/// EmailBodyRendering.swift.
+struct RelayMessageBodyResponse: Decodable, Sendable {
+    var body: String?
+    var bodyMode: String?
+}
+
+/// GET /api/mail/search: `{"results": [inboxEmail…]}` — metadata only, no
+/// bodies and no PGP flags (`server_inbox.go` `handleMailSearch`).
+struct RelaySearchResponse: Decodable, Sendable {
+    var results: [RelayEmailDTO]?
 }
 
 struct RelayFolderDTO: Decodable, Equatable, Sendable {
@@ -246,6 +272,24 @@ struct RelayActionRequest: Encodable, Equatable, Sendable {
 
 struct RelayActionResponse: Decodable, Sendable {
     var ok: Bool?
+    /// Bulk actions only. Absent reads as zero processed — an unconfirmed
+    /// change must never delete a visible row.
+    var processed: Int?
+    var failed: [RelayActionFailureDTO]?
+
+    var report: MailActionReport {
+        MailActionReport(
+            processed: processed ?? 0,
+            failed: (failed ?? []).map {
+                MailActionReport.Failure(messageId: $0.messageId ?? "", error: $0.error ?? "")
+            }
+        )
+    }
+}
+
+struct RelayActionFailureDTO: Decodable, Sendable {
+    var messageId: String?
+    var error: String?
 }
 
 /// Attachment metadata from GET /api/mail/attachments.
@@ -425,35 +469,99 @@ final class RelayMailSource: MailSource {
             removedIds: response.removed ?? [],
             // Derived from what we asked for, never from the wire's `delta`
             // flag — see MailFetchResult.isFullWindow.
-            isFullWindow: sinceValue == "0"
+            isFullWindow: sinceValue == "0",
+            agedOutIds: response.agedOut ?? [],
+            hasMore: response.hasMore ?? false,
+            nextBefore: response.nextBefore
         )
     }
 
-    func search(folder: String, query: String) async throws -> [String] {
-        // The relay has no search endpoint (Android searches its local cache);
-        // inbox search runs against the EmailDAO cache instead.
-        throw MailSourceError.unsupported
+    func fetchOlder(folder: String, limit: Int, before: String) async throws -> MailPage {
+        let response = try await httpClient.get(
+            RelayInboxResponse.self,
+            url: try endpoint("api/inbox"),
+            query: [
+                URLQueryItem(name: "limit", value: String(max(limit, 1))),
+                URLQueryItem(name: "mailbox", value: folder),
+                URLQueryItem(name: "before", value: before),
+                // A page is metadata only. A server that ignores before=
+                // answers with its window, bodies included unless told not to.
+                URLQueryItem(name: "bodies", value: "0"),
+            ],
+            headers: auth.headerFields
+        )
+        return MailPage(
+            emails: response.allEmails(folder: folder),
+            hasMore: response.hasMore,
+            nextBefore: response.nextBefore
+        )
     }
 
-    func setKeywords(folder: String, messageId: String, keywords: [String]) async throws {
-        // Relay tabs are server-assigned; there is no relay endpoint for
-        // client-side keyword edits.
-        throw MailSourceError.unsupported
+    func fetchBody(folder: String, messageId: String) async throws -> MailMessageBody {
+        do {
+            let response = try await httpClient.get(
+                RelayMessageBodyResponse.self,
+                url: try endpoint("api/mail/body"),
+                query: [
+                    URLQueryItem(name: "mailbox", value: folder),
+                    URLQueryItem(name: "messageId", value: messageId),
+                ],
+                headers: auth.headerFields
+            )
+            return MailMessageBody(body: response.body ?? "", bodyMode: response.bodyMode ?? "")
+        } catch NetworkError.server(statusCode: 404) {
+            // Both of these arrived and were answered definitively; telling
+            // the user to check their connection would be a lie.
+            throw MailSourceError.messageUnavailable(
+                String(localized: "This message is no longer on the server.")
+            )
+        } catch NetworkError.server(statusCode: 413) {
+            throw MailSourceError.messageUnavailable(
+                String(localized: "This message is too large for the server to open.")
+            )
+        }
     }
 
-    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws {
+    func searchMail(folder: String, query: String, limit: Int) async throws -> [Email] {
+        let response: RelaySearchResponse
+        do {
+            response = try await httpClient.get(
+                RelaySearchResponse.self,
+                url: try endpoint("api/mail/search"),
+                query: [
+                    URLQueryItem(name: "q", value: query),
+                    URLQueryItem(name: "mailbox", value: folder),
+                    URLQueryItem(name: "limit", value: String(max(limit, 1))),
+                ],
+                headers: auth.headerFields
+            )
+        } catch NetworkError.decoding {
+            throw MailSourceError.malformedResponse(String(localized: "Malformed search response"))
+        }
+        guard let results = response.results else {
+            throw MailSourceError.malformedResponse(String(localized: "Malformed search response"))
+        }
+        // Stamped with the searched folder; the label stands in for the tab.
+        return results.map { $0.toDomain(folder: folder, tab: $0.label ?? "") }
+    }
+
+    @discardableResult
+    func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport {
         try await performAction("move", messageIds: messageIds, mailbox: mailbox, targetMailbox: targetMailbox)
     }
 
-    func delete(messageIds: [String], mailbox: String) async throws {
+    @discardableResult
+    func delete(messageIds: [String], mailbox: String) async throws -> MailActionReport {
         try await performAction("delete", messageIds: messageIds, mailbox: mailbox)
     }
 
-    func archive(messageIds: [String], mailbox: String) async throws {
+    @discardableResult
+    func archive(messageIds: [String], mailbox: String) async throws -> MailActionReport {
         try await performAction("archive", messageIds: messageIds, mailbox: mailbox)
     }
 
-    func markSpam(messageIds: [String], mailbox: String) async throws {
+    @discardableResult
+    func markSpam(messageIds: [String], mailbox: String) async throws -> MailActionReport {
         try await performAction("spam", messageIds: messageIds, mailbox: mailbox)
     }
 
@@ -463,13 +571,14 @@ final class RelayMailSource: MailSource {
 
     /// POST /api/inbox/actions — the bulk verbs share one body shape
     /// (Mobile_Mail_Relay.md; only "move" carries targetMailbox).
+    @discardableResult
     private func performAction(
         _ action: String,
         messageIds: [String],
         mailbox: String,
         targetMailbox: String? = nil
-    ) async throws {
-        _ = try await httpClient.post(
+    ) async throws -> MailActionReport {
+        try await httpClient.post(
             RelayActionResponse.self,
             url: try endpoint("api/inbox/actions"),
             headers: auth.headerFields,
@@ -479,7 +588,7 @@ final class RelayMailSource: MailSource {
                 mailbox: mailbox,
                 targetMailbox: targetMailbox
             )
-        )
+        ).report
     }
 
     func listAttachments(folder: String, messageId: String) async throws -> [EmailAttachment] {

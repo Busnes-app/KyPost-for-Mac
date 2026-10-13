@@ -139,8 +139,20 @@ private enum PushLifecycle {
         )
     }
 
+    /// Confirms list actions still in their undo window. Called before the
+    /// lock engages, never after: the commit binds the relay credentials
+    /// synchronously, and `lock()` drops the gated device secret.
+    @discardableResult
+    static func commitHeldMailActions() -> Task<Void, Never>? {
+        SingletonGraph.shared.inboxViewModel.commitHeldActions()
+    }
+
     static func onBackground() {
         SingletonGraph.shared.pullPollingScheduler.stopForegroundPolling()
+        // Backgrounding confirms what the user did; the undo window is not
+        // carried across a suspension. The iOS delegate holds a background
+        // assertion until the relay answers.
+        commitHeldMailActions()
         // Also cleared here, not only via lock() below, because `lock()` is a
         // no-op while the app-lock feature is switched off — and a user who
         // has not turned on the app lock still backgrounds the app. The two
@@ -197,6 +209,18 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                // Held list actions are committed here, ahead of
+                // onBackground (whose own commit then finds nothing held),
+                // so the request finishes under a background assertion
+                // instead of being suspended mid-flight.
+                if let commit = PushLifecycle.commitHeldMailActions() {
+                    let application = UIApplication.shared
+                    let assertion = application.beginBackgroundTask(withName: "Held mail actions")
+                    Task {
+                        await commit.value
+                        application.endBackgroundTask(assertion)
+                    }
+                }
                 PushLifecycle.onBackground()
                 self?.scheduleBackgroundPull()
             }
@@ -450,6 +474,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { _ in
             Task { @MainActor in
+                // Before the lock, which drops the gated secret the commit
+                // needs (see PushLifecycle.commitHeldMailActions). The undo
+                // window is not carried across the grace period either.
+                PushLifecycle.commitHeldMailActions()
                 SingletonGraph.shared.appLockManager.lockAfterGrace()
             }
         }

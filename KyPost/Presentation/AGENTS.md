@@ -236,6 +236,69 @@ Domain.
   never wait. Leaving Inbox cancels both pending timers and clears the toast.
   Returning calls `loadIfNeeded`, so tab switching never starts another cache
   read or network refresh; only the foreground cadence resumes.
+- **The inbox list's signals are per folder on screen.** The freshness line
+  under the tabs reads "Not updated yet" until that folder's first successful
+  refresh, then "Updated … ago" (`FreshnessLine`, re-rendering on its own).
+  "No messages in {folder}" shows only once that folder refreshed successfully
+  (`showsEmptyFolderState`); a loading or failed folder with an empty cache
+  shows a spinner or nothing, never "empty". A refresh that finishes after a
+  folder switch is not painted, and refreshes are tracked per folder so a slow
+  one for the folder just left cannot block the new one. Every pick bumps
+  `selectionGeneration`; a Sent/Drafts listing that answers after a newer pick
+  is dropped silently rather than selected.
+- **Row dates** come from `InboxRules.rowDate`: time for today, medium date
+  otherwise, device zone, blank for a missing `atUtc` (`Email.unknownDate`,
+  which sorts last — never "now"). List roots apply `relabelsAtMidnight()`.
+- **The All tab is hideable** (`KeywordSettingsStore.allTabVisible`, iOS
+  Keyword Settings). A vanished selected tab falls back to All, or with All
+  hidden to the first visible tab; with every tab hidden there is no strip and
+  no filter. A relay label spelt "All" is not a second All tab. macOS ignores
+  the setting (`appliesAllTabSetting`): its sidebar's Inbox row is the folder.
+  `$`-keywords stay filtered.
+- **Selection:** iOS uses edit mode ("Select") with a bottom action bar; macOS
+  the list's own selection. Both cap at 500 rows (the 501st is refused with a
+  notice), end the selection on any folder change, and send ids in on-screen
+  order. Swipes and row context menus are off while selecting.
+- **New mail:** a repaint of the same folder and tab that lands rows above the
+  old top keeps them in sight when the list is at its top (`scrollToTopRequest`)
+  and otherwise counts them on the "N new messages" pill, which scrolls up on
+  tap and clears on reaching the top or switching tab/folder. A first paint or
+  folder switch announces nothing.
+- **"Load older mail" is the list's last row** (`LoadOlderFooter`, both
+  shells): not selectable, no swipes, hidden while selecting on iOS. It shows
+  under a non-empty folder until that folder has nothing older or its server
+  cannot page; the per-folder paging state lives in `InboxViewModel` and is
+  dropped by `forgetAccount()` (wipe, rebuild, unpair, pairing another
+  account), with the rows on screen and the folder lists. A page that lands
+  after a folder switch is not painted; a refresh or page that lands after
+  `forgetAccount()` changes nothing (`accountGeneration`).
+- **Search is the system search field on both shells** (`inboxSearch`,
+  `InboxListChrome.swift`): `.searchable` in the iOS navigation bar and the
+  macOS toolbar, submit-only, autocorrection off. While a search is on screen
+  the keyword tabs (iOS strip, macOS sidebar rows) and the "Load older mail"
+  footer step aside, the results replace the list, "No matching messages"
+  replaces the empty-folder line, and results never raise the new-mail pill:
+  starting a search clears it, and no folder repaint counts new rows while a
+  search is in flight or on screen.
+  Starting a search, its results landing, and the search ending all end the
+  selection (`selectionResetRequest`); a search the view model ends itself
+  clears and closes the field (`searchDismissRequest`). A search that
+  answers after `forgetAccount()` never lands (`accountGeneration`).
+- **The reader fetches a missing body before rendering**
+  (`EmailDetailView.loadBodyIfNeeded`): a spinner while it loads, the failure's
+  own sentence and "Try again" if it fails — never an empty screen passing for
+  a short message. Reply/Forward quote the fetched body, so they open no draft
+  until it has arrived (`draftBodyReadiness`): pressed while it loads or after
+  it failed, they explain instead.
+- **A notification-tap target is consumed once**, at the start of the hunt:
+  `router.pendingMessageId` is cleared before the resync, found or not.
+  `prepareForPushTap` switches to Inbox and waits out an in-flight refresh so
+  the forced full resync actually runs; if the wait (30 s) expires or the
+  resync is skipped (`refresh` returns false), it reports failure and returns
+  nil, never the cached row.
+- `notice` is the inbox's transient toast (rejected actions, missing Sent
+  folder, selection limit); it expires itself. `connectionNotice` keeps its
+  own contract above.
 - Encrypted send is decided by key custody, not by hope.
   `Domain/Models/PgpKeyCustody.swift` maps `/api/pgp/bootstrap` to
   `serverHeld` / `clientHeld` / `noIdentity`, and anything unrecognised
@@ -317,7 +380,10 @@ Recorded so they aren't re-litigated as bugs:
 
 - Unit: `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (Swift Testing; `ContactSearchTests`, `ComposeRecipientTests`,
-  `ThemeTests`).
+  `ThemeTests`, `InboxParityTests.swift` for the inbox-list rules and the undo
+  window, `OlderMailTests.swift` for older mail, delta overflow and bodies on
+  open, `MailIdentityTests.swift` for the (folder, id) key,
+  `MailSearchTests.swift` for search).
 - Pass `debounceInterval: .zero` to `ComposeViewModel` in tests, and poll for
   the result rather than sleeping a fixed span — the search lands a scheduling
   hop later even at zero, so a fixed sleep goes flaky under load.

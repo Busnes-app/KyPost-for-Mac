@@ -16,6 +16,16 @@ import AppKit
 import UIKit
 #endif
 
+/// The Connection section's display state. Text only: nothing that reaches
+/// the relay, registers a device or authenticates is derived from it.
+nonisolated struct PairingDisplay: Equatable, Sendable {
+    let serverHost: String
+    let deviceId: String?
+    /// The account address, when known. A stored pairing carries only an
+    /// opaque `sub`, so this is nil outside the screenshot build.
+    let account: String?
+}
+
 @Observable
 @MainActor
 final class SettingsViewModel {
@@ -61,6 +71,18 @@ final class SettingsViewModel {
 
     private(set) var statusMessage: String?
     private(set) var keywordSettings: [KeywordSetting] = []
+    /// Whether the inbox tab strip leads with All (iOS; the macOS sidebar's
+    /// Inbox row is the folder itself).
+    private(set) var allTabVisible = true
+    /// Runs after the pairing is cleared, for account-scoped state outside
+    /// this view model — the inbox's held list actions, rows on screen, and
+    /// in-flight refreshes (`InboxViewModel.forgetAccount`).
+    private let onUnpaired: (() -> Void)?
+    /// What Settings → Connection shows instead of the stored pairing. Set
+    /// only by the DEBUG screenshot graph (`SingletonGraph.pairingDisplayOverride`);
+    /// display text and nothing else — `isPaired`, unpair, Fix Notifications
+    /// and every relay path still read `securePairingStore`.
+    private let pairingDisplayOverride: PairingDisplay?
 
     init(
         securePairingStore: SecurePairingStore,
@@ -77,7 +99,9 @@ final class SettingsViewModel {
         appLockManager: AppLockManager? = nil,
         pushRepository: PushRepository? = nil,
         recipientPinStore: RecipientPinStore? = nil,
-        mailSignatureStore: MailSignatureStore? = nil
+        mailSignatureStore: MailSignatureStore? = nil,
+        onUnpaired: (() -> Void)? = nil,
+        pairingDisplayOverride: PairingDisplay? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
@@ -94,6 +118,8 @@ final class SettingsViewModel {
         self.pushRepository = pushRepository
         self.recipientPinStore = recipientPinStore
         self.mailSignatureStore = mailSignatureStore
+        self.onUnpaired = onUnpaired
+        self.pairingDisplayOverride = pairingDisplayOverride
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.exportToSystemContactsEnabled
     }
@@ -107,8 +133,17 @@ final class SettingsViewModel {
         return URL(string: pairing.srv)?.host() ?? pairing.srv
     }
 
-    var pairedDeviceId: String? {
-        (try? securePairingStore.loadPairing())?.lastDeviceId
+    /// What the Connection section renders: the stored pairing, or the demo
+    /// build's display-only stand-in. Nil reads as "Not paired". Views use
+    /// this; actions keep using `isPaired`.
+    var pairingDisplay: PairingDisplay? {
+        if let pairingDisplayOverride { return pairingDisplayOverride }
+        guard let pairing = try? securePairingStore.loadPairing() else { return nil }
+        return PairingDisplay(
+            serverHost: URL(string: pairing.srv)?.host() ?? pairing.srv,
+            deviceId: pairing.lastDeviceId,
+            account: nil
+        )
     }
 
     var deliveryMode: String {
@@ -133,31 +168,20 @@ final class SettingsViewModel {
         _ = await deregisterDeviceUseCase()
         // A sign-on still in flight would otherwise re-pair right after this.
         AppEnvironment.postSessionReset()
-        try? securePairingStore.clear()
-        // Unpairing is a session boundary for the OpenPGP key as much as for
-        // the credential. The envelope is the account's private key sealed to
-        // *this* device, and leaving it behind means the key outlives the
-        // pairing that authorised putting it here — on a Mac the account no
-        // longer knows about, so no revocation reaches it. The in-memory copy
-        // goes with it; destroying the sealed blob while an unsealed one sits
-        // in this process would be theatre.
-        enrollmentVault?.destroy()
-        // No device row is left to correct, and a pending marker must not
-        // speak for whatever device is paired next.
-        enrollmentVault?.forgetPendingReports()
-        EnrollmentSession.shared.clear()
-        // Notification history is the account's sender and subject lines,
-        // and the pull cursor is a position in the account's queue.
-        do {
-            try await pushRepository?.clearForUnpair()
-        } catch {
-            Log.push.error("Could not clear notification history on unpair: \(error)")
-        }
-        // Keys verified by QR belong to this account's address book.
-        recipientPinStore?.clear()
-        // The signature belongs to the account being unpaired, not the next.
-        mailSignatureStore?.clear()
-        statusMessage = "Pairing removed"
+        let pairingCleared = (try? securePairingStore.clear()) != nil
+        // Everything else the account left on this device — the same list a
+        // pairing to another account runs.
+        let tornDown = await AccountTeardown(
+            enrollmentVault: enrollmentVault,
+            pushRepository: pushRepository,
+            recipientPinStore: recipientPinStore,
+            mailSignatureStore: mailSignatureStore,
+            mailRepository: mailRepository,
+            forgetInbox: onUnpaired
+        ).run()
+        statusMessage = pairingCleared && tornDown
+            ? "Pairing removed"
+            : "Pairing removed, but some of this account's data could not be erased from this device."
     }
 
     func testConnection() async {
@@ -326,6 +350,12 @@ final class SettingsViewModel {
             limit: 200
         )) ?? []
         keywordSettings = keywordRepository.allSettings(from: cached)
+        allTabVisible = keywordRepository.isAllTabVisible
+    }
+
+    func setAllTabVisible(_ visible: Bool) {
+        keywordRepository.isAllTabVisible = visible
+        allTabVisible = visible
     }
 
     func setKeywordVisible(_ visible: Bool, for keyword: String) {

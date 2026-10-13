@@ -50,6 +50,20 @@ struct EmailDetailView: View {
     @State private var attachmentListing: Task<[EmailAttachment]?, Never>?
     /// The Forward in progress; cancelled when the screen goes away.
     @State private var forwardTask: Task<Void, Never>?
+    /// A moving action is in flight; its buttons wait for the answer.
+    @State private var isActing = false
+    /// Why the relay did not move this message; non-nil shows an alert.
+    @State private var actionFailure: String?
+    /// The body fetched on open for a row that arrived without one (older
+    /// mail). Lives with the screen; the repository caches it only on a
+    /// window row.
+    @State private var fetchedBody: MailMessageBody?
+    @State private var isFetchingBody = false
+    /// Why the body could not be fetched. Distinct from "the message has no
+    /// body": an empty screen must not pass for a short message.
+    @State private var bodyFetchFailure: String?
+    /// Why Reply/Forward did not open a draft yet; non-nil shows an alert.
+    @State private var draftBlocked: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -116,12 +130,20 @@ struct EmailDetailView: View {
                     .layoutPriority(1)
             } else if suppressesBody {
                 Spacer(minLength: 0)
+            } else if isFetchingBody {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 40)
+                Spacer(minLength: 0)
+            } else if let bodyFetchFailure {
+                bodyFetchFailureView(bodyFetchFailure)
+                Spacer(minLength: 0)
             } else if !rendersAsPlainText {
-                EmailBodyWebView(html: themedHTML(emailBodyToHTML(email.body, mode: email.bodyMode)))
+                EmailBodyWebView(html: themedHTML(emailBodyToHTML(shown.body, mode: shown.bodyMode)))
                     .layoutPriority(1)
             } else {
                 ScrollView {
-                    Text(email.body)
+                    Text(shown.body)
                         .font(AppFont.mono(14))
                         .foregroundStyle(theme.ink)
                         .textSelection(.enabled)
@@ -137,9 +159,9 @@ struct EmailDetailView: View {
         // the navigation bar wastes the scarce vertical space on iPhone.
         .navigationTitle("")
         .toolbar {
-            // Reply/Reply All/Forward + Archive/Junk/Delete, matching Android
-            // EmailDetailActivity's action row. On iOS they live in the
-            // bottom bar — the navigation bar can't fit six buttons.
+            // Reply/Reply All/Forward + Archive/Move/Junk/Delete, matching
+            // Android EmailDetailActivity's action row. On iOS they live in
+            // the bottom bar — the navigation bar can't fit seven buttons.
 #if os(iOS)
             ToolbarItemGroup(placement: .bottomBar) {
                 mailActionButtons
@@ -158,6 +180,17 @@ struct EmailDetailView: View {
             ComposeView(draft: draft).environment(\.theme, theme)
         }
 #endif
+        .alert(
+            "Message not changed",
+            isPresented: Binding(
+                get: { actionFailure != nil },
+                set: { if !$0 { actionFailure = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { actionFailure = nil }
+        } message: {
+            Text(actionFailure ?? "")
+        }
         .quickLookPreview($quickLookURL)
         .onChange(of: quickLookURL) { old, new in
             guard let old, old != new else { return }
@@ -183,6 +216,17 @@ struct EmailDetailView: View {
                 Log.mail.error("Attachment save failed: \(error.localizedDescription)")
             }
         }
+        .alert(
+            "Can't quote this message yet",
+            isPresented: Binding(
+                get: { draftBlocked != nil },
+                set: { if !$0 { draftBlocked = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { draftBlocked = nil }
+        } message: {
+            Text(draftBlocked ?? "")
+        }
         .alert("Not available for encrypted mail", isPresented: $showsReplyUnavailable) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -191,6 +235,9 @@ struct EmailDetailView: View {
         .task {
             let listing = Task { await inboxViewModel.attachmentListing(for: email) }
             attachmentListing = listing
+            // First: the PGP state the decrypt path reads is computed from the
+            // fetched body when the row arrived without one.
+            await loadBodyIfNeeded()
             await prepareEncryptedRead()
             await inboxViewModel.markRead(email)
             attachments = await listing.value ?? []
@@ -220,21 +267,21 @@ struct EmailDetailView: View {
         }
     }
 
-    /// The six mail actions, in Android's order: reply, reply all, forward,
-    /// archive, junk, delete.
+    /// The seven mail actions, in Android's order: reply, reply all, forward,
+    /// archive, move, junk, delete.
     @ViewBuilder
     private var mailActionButtons: some View {
         // Not `.disabled`: a disabled button cannot say why it is disabled.
         // Dimmed instead, and pressing it explains.
         Group {
             Button {
-                replyOrExplain { compose(.reply(to: email)) }
+                replyOrExplain { compose(.reply(to: shown)) }
             } label: {
                 Label("Reply", systemImage: "arrowshape.turn.up.left")
             }
             .help(replyAvailable ? "Reply to the sender" : replyUnavailableHelp)
             Button {
-                replyOrExplain { compose(.replyAll(to: email, ownAddress: ownAddress)) }
+                replyOrExplain { compose(.replyAll(to: shown, ownAddress: ownAddress)) }
             } label: {
                 Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
             }
@@ -251,34 +298,56 @@ struct EmailDetailView: View {
             .disabled(preparingForward)
             .help(replyAvailable ? "Forward this email" : replyUnavailableHelp)
         }
-        .opacity(replyAvailable ? 1 : 0.4)
+        .opacity(replyAvailable && draftReadiness == .ready ? 1 : 0.4)
         Button {
-            Task {
-                await inboxViewModel.archive(serverIds: [email.serverId])
-                dismiss()
-            }
+            act(.archive)
         } label: {
             Label("Archive", systemImage: "archivebox")
         }
         .help("Move to Archive")
-        Button {
-            Task {
-                await inboxViewModel.markJunk(serverIds: [email.serverId])
-                dismiss()
+        .disabled(isActing)
+        Menu {
+            ForEach(inboxViewModel.moveTargets(from: email.folder), id: \.self) { target in
+                Button(InboxRules.moveTargetLabel(target)) {
+                    act(.move, to: target)
+                }
             }
+        } label: {
+            Label("Move to Folder", systemImage: "folder")
+        }
+        .help("Move to another folder")
+        .disabled(isActing)
+        Button {
+            act(.spam)
         } label: {
             Label("Junk", systemImage: "xmark.bin")
         }
         .help("Move to Junk")
+        .disabled(isActing)
         Button(role: .destructive) {
-            Task {
-                await inboxViewModel.delete(serverIds: [email.serverId])
-                dismiss()
-            }
+            act(.delete)
         } label: {
             Label("Delete", systemImage: "trash")
         }
         .help("Move to Trash")
+        .disabled(isActing)
+    }
+
+    /// Runs a moving action now — the reader's actions are not undoable —
+    /// and leaves the screen only once the relay confirmed this message. A
+    /// rejection keeps the reader open and says why.
+    private func act(_ action: MailMoveAction, to target: String? = nil) {
+        guard !isActing else { return }
+        isActing = true
+        Task {
+            let failure = await inboxViewModel.performNow(action, on: email, to: target)
+            isActing = false
+            if let failure {
+                actionFailure = failure
+            } else {
+                dismiss()
+            }
+        }
     }
 
     /// Attachment chips; tapping downloads to a temp file and Quick Looks it.
@@ -347,12 +416,25 @@ struct EmailDetailView: View {
         String(localized: "Replying to encrypted mail isn't available in the app yet.")
     }
 
+    private var draftReadiness: DraftBodyReadiness {
+        draftBodyReadiness(for: email, fetchedBody: fetchedBody, fetchFailed: bodyFetchFailure != nil)
+    }
+
     private func replyOrExplain(_ action: () -> Void) {
         guard replyAvailable else {
             showsReplyUnavailable = true
             return
         }
-        action()
+        // A draft built before the body arrives quotes nothing, and a draft
+        // is not rebuilt when the body lands.
+        switch draftReadiness {
+        case .ready:
+            action()
+        case .loading:
+            draftBlocked = String(localized: "This message is still loading. Reply and Forward are available once it has.")
+        case .failed:
+            draftBlocked = String(localized: "This message's text couldn't be loaded, so it can't be quoted. Use Try again, then reply or forward.")
+        }
     }
 
     /// Forward carries the original's attachments. They travel beside the
@@ -363,7 +445,7 @@ struct EmailDetailView: View {
     /// nothing if a session boundary passes meanwhile (`runForward`).
     private func forward() {
         guard forwardTask == nil else { return }
-        let draft = ComposeDraft.forward(email)
+        let draft = ComposeDraft.forward(shown)
         let pendingListing = attachmentListing
         preparingForward = true
         forwardTask = Task {
@@ -411,6 +493,42 @@ struct EmailDetailView: View {
             }
             downloadingIndex = nil
         }
+    }
+
+    /// The row with the fetched body in place of a missing one: what the
+    /// screen renders and what Reply/Forward quote.
+    /// A body that came from the cache also carries that row's OpenPGP state.
+    private var shown: Email { emailWithFetchedBody(email, fetchedBody) }
+
+    /// Fetches the body of a row that arrived without one (older mail). A
+    /// failure says so instead of rendering an empty message.
+    private func loadBodyIfNeeded() async {
+        guard fetchedBody == nil, MailRepository.needsBodyFetch(email) else { return }
+        isFetchingBody = true
+        bodyFetchFailure = nil
+        do {
+            fetchedBody = try await inboxViewModel.loadBody(for: email)
+        } catch {
+            bodyFetchFailure = MailOutcome.from(error).userMessage
+                ?? String(localized: "Unable to connect to the mail server.")
+        }
+        isFetchingBody = false
+    }
+
+    private func bodyFetchFailureView(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(message)
+                .font(AppFont.ui(13))
+                .foregroundStyle(theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Try again") {
+                Task { await loadBodyIfNeeded() }
+            }
+            .font(AppFont.ui(12, weight: .medium))
+            .buttonStyle(.borderless)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
     }
 
     /// Builds the reader and decrypts immediately when the key is already
@@ -588,9 +706,11 @@ struct EmailDetailView: View {
                     recipientLines
                 }
                 Spacer()
-                Text(email.receivedAt, format: .dateTime.day().month().hour().minute())
-                    .font(AppFont.ui(12))
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                if Email.isKnownDate(email.receivedAt) {
+                    Text(email.receivedAt, format: .dateTime.day().month().hour().minute())
+                        .font(AppFont.ui(12))
+                        .foregroundStyle(theme.ink.opacity(0.7))
+                }
             }
 
             if !email.keywords.isEmpty {
@@ -634,7 +754,7 @@ struct EmailDetailView: View {
     /// `bodyMode` when it sent one — sniffing a body the server has already
     /// described is what this replaced. See EmailBodyRendering.swift.
     private var rendersAsPlainText: Bool {
-        isPlainTextBody(email.body, mode: email.bodyMode)
+        isPlainTextBody(shown.body, mode: shown.bodyMode)
     }
 
     private var isPhishing: Bool { isFlaggedPhishing(email.keywords) }
@@ -670,9 +790,9 @@ struct EmailDetailView: View {
 
     private var pgpState: PgpMessageState {
         pgpMessageState(
-            pgpEncrypted: email.pgpEncrypted,
-            pgpDecryptError: email.pgpDecryptError,
-            body: email.body
+            pgpEncrypted: shown.pgpEncrypted,
+            pgpDecryptError: shown.pgpDecryptError,
+            body: shown.body
         )
     }
 
@@ -746,10 +866,10 @@ struct EmailDetailView: View {
                 label: pgpState == .decryptFailed ? "PGP: could not decrypt" : "PGP: encrypted",
                 isActive: pgpState != .decryptFailed
             )
-            if showsSignaturePill(state: pgpState, signed: email.pgpSigned) {
+            if showsSignaturePill(state: pgpState, signed: shown.pgpSigned) {
                 StatusBadgeView(
-                    label: email.pgpVerified ? "signature verified" : "signature not verified",
-                    isActive: email.pgpVerified
+                    label: shown.pgpVerified ? "signature verified" : "signature not verified",
+                    isActive: shown.pgpVerified
                 )
             }
             Spacer(minLength: 0)
@@ -788,7 +908,7 @@ struct EmailDetailView: View {
                 "This message is end-to-end encrypted. Enroll this device in Settings to decrypt it here."
             }
         case .decryptFailed:
-            "This message is encrypted and couldn't be decrypted: \(email.pgpDecryptError)"
+            "This message is encrypted and couldn't be decrypted: \(shown.pgpDecryptError)"
         case .decryptedByServer:
             "This message was encrypted. The server decrypted it to show it here."
         case .none:
@@ -971,4 +1091,31 @@ struct EmailBodyWebView: View {
             }
         }
     }
+}
+
+/// `email` as the reader shows it and Reply/Forward quote it: with the body
+/// fetched on open in place of the missing one, and a cached body's OpenPGP
+/// state (`MailMessageBody.applied(to:)`).
+nonisolated func emailWithFetchedBody(_ email: Email, _ fetched: MailMessageBody?) -> Email {
+    fetched?.applied(to: email) ?? email
+}
+
+/// Whether Reply, Reply All and Forward may build a draft from `email` yet.
+enum DraftBodyReadiness: Equatable {
+    case ready
+    /// The body the draft must quote is still being fetched.
+    case loading
+    /// The fetch failed; the draft would quote nothing.
+    case failed
+}
+
+/// A row that needs its body fetched (`MailRepository.needsBodyFetch`) is
+/// ready only once the fetch answered; any other row is ready at once.
+nonisolated func draftBodyReadiness(
+    for email: Email,
+    fetchedBody: MailMessageBody?,
+    fetchFailed: Bool
+) -> DraftBodyReadiness {
+    guard MailRepository.needsBodyFetch(email), fetchedBody == nil else { return .ready }
+    return fetchFailed ? .failed : .loading
 }
