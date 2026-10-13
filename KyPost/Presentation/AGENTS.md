@@ -89,8 +89,13 @@ Domain.
 - **The iOS background snapshot is covered by a window, not an overlay.**
   `PrivacySnapshotCover` (AppDelegate) puts an opaque `UIWindow` at
   `.alert + 1` over each scene entering the background whenever the lock is
-  on, and removes it on return only after the grace deadline is resolved. An
-  in-tree overlay sits below presented sheets, so an open reply would show.
+  on. On return the grace deadline is resolved first
+  (`AppLockManager.sceneReturningMayUncover`), and the window lifts only if
+  the app is unlocked; a locked app keeps it, hosting `UnlockView`
+  (`promptsOnAppear: false`, so one return raises one prompt), until the lock
+  clears. The in-tree lock UI animates in and is not above every
+  presentation, so it is never what the window lifts for. An in-tree overlay
+  sits below presented sheets, so an open reply would show.
 - **Generated HTML uses a link-scheme allowlist.** `RichTextHTML` emits an
   `<a href>` only for `http`, `https`, `mailto`, `tel`. Escaping the attribute
   value stops it breaking out of the quotes and does nothing about

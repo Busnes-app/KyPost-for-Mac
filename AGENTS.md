@@ -226,14 +226,20 @@ is the server's pin, not this device's.
   decides nothing. **GopenPGP is the only verifier**: it checks every
   revocation in the pin against the pinned primary whenever the key is used
   and disregards one that fails. A primary revocation is kept when the key
-  then reads `isRevoked`; a subkey revocation is carried whenever it is
-  well formed, bounded in size and count, and leaves the library reading the
-  same key with no ability gained. **Never gate a subkey revocation on an
-  observed capability change, and never add a hand-written signature check**:
-  a revoked signing subkey under a primary that also signs changes nothing
-  observable, GopenPGP has no per-subkey query, and a Swift verifier only
-  covers the algorithms and hashes someone remembered — every gap is a
-  genuine revocation dropped and a compromised subkey still confirmed.
+  then reads `isRevoked`. A subkey revocation must be well formed, at most
+  8 KiB, and leave the library reading the same key with no ability gained;
+  then it is judged on that subkey alone (primary plus that one subkey).
+  Where the subkey grants something the primary alone does not (encrypting,
+  or signing under a non-signing primary), it is carried **only if** that
+  capability goes — nothing the library disregards is stored. Where it does
+  not (a signing subkey under a signing primary: GopenPGP has no per-subkey
+  query) it is carried unjudged, up to `maxRevocationsPerSubkey`, and one
+  more **withdraws that subkey from the pin** instead of being refused.
+  **A bound must never keep a genuine revocation out.** **Never gate
+  the unjudgeable case on an observed change, and never add a hand-written
+  signature check**: a Swift verifier only covers the algorithms and hashes
+  someone remembered — every gap is a genuine revocation dropped and a
+  compromised subkey still confirmed.
 - **Reader:** where the resolved sender is pinned, the pin replaces the relay's
   `signerKeys` (`EncryptedMessageReader.signerKeys`) — intact is the only key
   and reads `verifiedConfirmed`; revoked or broken is a conflict, so a signed

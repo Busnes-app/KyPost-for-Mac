@@ -376,7 +376,8 @@ private struct ContactsEnvironment {
     }
 
     /// A genuine revocation of one subkey, presented under another, is
-    /// disregarded by the library for that other subkey.
+    /// disregarded by the library for that other subkey — and, that subkey
+    /// being an encryption subkey the library can judge, not carried at all.
     @Test func aSubkeyRevocationMovedToAnotherSubkeyRevokesNeither() throws {
         let revoked = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.carolRevokedSigningSubkey))
         let revocation = try #require(revoked.subkeys.last?.first {
@@ -386,9 +387,11 @@ private struct ContactsEnvironment {
         moved.subkeys[moved.subkeys.count - 1].removeAll { $0 == revocation }
         moved.subkeys[0].append(revocation)
 
-        let merged = try #require(crypto.withRevocations(
+        let taken = crypto.withRevocations(
             pinned: PinnedKeyFixtures.carolPinned, synced: Self.armored(moved.data)
-        ))
+        )
+        #expect(taken == nil)
+        let merged = taken ?? PinnedKeyFixtures.carolPinned
         _ = try crypto.encryptAndSign(
             plaintext: Data("x".utf8),
             recipientKeys: [merged],
@@ -402,27 +405,127 @@ private struct ContactsEnvironment {
         #expect(raw.valid)
     }
 
-    /// A synced copy cannot grow the pin without bound.
+    /// A synced copy cannot grow the pin without bound. Where the library
+    /// cannot judge a signing subkey's revocations, going over the bound
+    /// withdraws that subkey instead of refusing what comes next.
     @Test func carriedSubkeyRevocationsAreBounded() throws {
         let forged = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.carolForgedSigningSubkeyRevocation))
         let template = try #require(forged.subkeys.last?.first {
             $0.signatureType == OpenPgpPacket.subkeyRevocation
         })
         var synced = forged
-        for variant in 0..<10 {
-            var packet = template
-            packet.raw[packet.raw.count - 1] ^= UInt8(variant + 1)
-            packet.body[packet.body.count - 1] ^= UInt8(variant + 1)
-            synced.subkeys[synced.subkeys.count - 1].append(packet)
-        }
+        synced.subkeys[synced.subkeys.count - 1].append(contentsOf: Self.junk(from: template, count: 10))
         let merged = try #require(crypto.withRevocations(
             pinned: PinnedKeyFixtures.carolPinned, synced: Self.armored(synced.data)
         ))
+        let pinned = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.carolPinned))
         let sections = try #require(OpenPgpKeySections(armored: merged))
-        let carried = sections.subkeys.last?.filter { $0.signatureType == OpenPgpPacket.subkeyRevocation }.count
-        #expect(carried == GopenPGPCrypto.maxRevocationsPerSubkey)
-        // Full: nothing more is taken.
+        #expect(sections.subkeys.count == pinned.subkeys.count - 1)
+        #expect(!sections.subkeys.contains { $0[0] == pinned.subkeys.last?[0] })
+        #expect(PgpFingerprint.compute(fromArmored: merged) == PgpFingerprint.compute(fromArmored: PinnedKeyFixtures.carolPinned))
+        #expect(!crypto.verifyDetached(
+            signedBytes: Data(PinnedKeyFixtures.carolSignedText.utf8),
+            armoredSignature: PinnedKeyFixtures.carolSubkeySignature,
+            signerKeys: [merged]
+        ).valid)
+        _ = try crypto.encryptAndSign(
+            plaintext: Data("x".utf8),
+            recipientKeys: [merged],
+            privateKey: Data(TestPgpFixtures.armoredPrivate.utf8)
+        )
+        // Settled: nothing more is taken.
         #expect(crypto.withRevocations(pinned: merged, synced: Self.armored(synced.data)) == nil)
+    }
+
+    /// Revocations that do not verify, already filling the bound on a signing
+    /// subkey the library cannot judge, never keep a genuine one out.
+    @Test func aFullBoundNeverKeepsOutAGenuineSigningSubkeyRevocation() throws {
+        let forged = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.carolForgedSigningSubkeyRevocation))
+        let template = try #require(forged.subkeys.last?.first {
+            $0.signatureType == OpenPgpPacket.subkeyRevocation
+        })
+        var filled = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.carolPinned))
+        filled.subkeys[filled.subkeys.count - 1].append(
+            contentsOf: Self.junk(from: template, count: GopenPGPCrypto.maxRevocationsPerSubkey)
+        )
+        let pinned = Self.armored(filled.data)
+        #expect(crypto.verifyDetached(
+            signedBytes: Data(PinnedKeyFixtures.carolSignedText.utf8),
+            armoredSignature: PinnedKeyFixtures.carolSubkeySignature,
+            signerKeys: [pinned]
+        ).valid)
+
+        let merged = try #require(crypto.withRevocations(
+            pinned: pinned, synced: PinnedKeyFixtures.carolRevokedSigningSubkey
+        ))
+        #expect(PgpFingerprint.compute(fromArmored: merged) == PgpFingerprint.compute(fromArmored: PinnedKeyFixtures.carolPinned))
+        #expect(!crypto.verifyDetached(
+            signedBytes: Data(PinnedKeyFixtures.carolSignedText.utf8),
+            armoredSignature: PinnedKeyFixtures.carolSubkeySignature,
+            signerKeys: [merged]
+        ).valid)
+    }
+
+    /// Where the library can judge a subkey's revocation on its own (an
+    /// encryption subkey), one it disregards is never stored at all.
+    @Test func aDisregardedEncryptionSubkeyRevocationIsNeverCarried() throws {
+        let (index, genuine) = try Self.aliceSubkeyRevocation()
+        var synced = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.alicePinned))
+        synced.subkeys[index].append(contentsOf: Self.junk(from: genuine, count: 10))
+        #expect(crypto.withRevocations(
+            pinned: PinnedKeyFixtures.alicePinned, synced: Self.armored(synced.data)
+        ) == nil)
+    }
+
+    /// A pin already holding the bound in revocations that do not verify — as
+    /// stored before they were judged — still takes the genuine one.
+    @Test func aFullBoundNeverKeepsOutAGenuineEncryptionSubkeyRevocation() throws {
+        let (index, genuine) = try Self.aliceSubkeyRevocation()
+        var filled = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.alicePinned))
+        filled.subkeys[index].append(
+            contentsOf: Self.junk(from: genuine, count: GopenPGPCrypto.maxRevocationsPerSubkey)
+        )
+        let pinned = Self.armored(filled.data)
+        _ = try crypto.encryptAndSign(
+            plaintext: Data("x".utf8),
+            recipientKeys: [pinned],
+            privateKey: Data(TestPgpFixtures.armoredPrivate.utf8)
+        )
+
+        let merged = try #require(crypto.withRevocations(
+            pinned: pinned, synced: PinnedKeyFixtures.aliceRevokedSubkey
+        ))
+        #expect(PgpFingerprint.compute(fromArmored: merged) == PgpFingerprint.compute(fromArmored: PinnedKeyFixtures.alicePinned))
+        #expect(throws: (any Error).self) {
+            try crypto.encryptAndSign(
+                plaintext: Data("x".utf8),
+                recipientKeys: [merged],
+                privateKey: Data(TestPgpFixtures.armoredPrivate.utf8)
+            )
+        }
+        #expect(crypto.withRevocations(pinned: merged, synced: PinnedKeyFixtures.aliceRevokedSubkey) == nil)
+    }
+
+    private static func aliceSubkeyRevocation() throws -> (Int, OpenPgpPacket) {
+        let revoked = try #require(OpenPgpKeySections(armored: PinnedKeyFixtures.aliceRevokedSubkey))
+        let index = try #require(revoked.subkeys.firstIndex {
+            $0.contains { $0.signatureType == OpenPgpPacket.subkeyRevocation }
+        })
+        let packet = try #require(revoked.subkeys[index].first {
+            $0.signatureType == OpenPgpPacket.subkeyRevocation
+        })
+        return (index, packet)
+    }
+
+    /// Well-formed revocation packets that do not verify: the template with
+    /// its last signature octet changed.
+    private static func junk(from template: OpenPgpPacket, count: Int) -> [OpenPgpPacket] {
+        (0..<count).map { variant in
+            var packet = template
+            packet.raw[packet.raw.count - 1] ^= UInt8(variant + 1)
+            packet.body[packet.body.count - 1] ^= UInt8(variant + 1)
+            return packet
+        }
     }
 
     private static func armored(_ data: Data) -> String {

@@ -246,6 +246,16 @@ final class AppLockManager {
         clearPendingLock()
     }
 
+    /// An iOS scene is coming back on screen. Resolves the deadline first,
+    /// then says whether its privacy cover may lift: only while unlocked. A
+    /// locked app keeps the window-level cover, which then hosts the unlock
+    /// screen — the in-tree lock presentation is not guaranteed to be on
+    /// screen, or above every presentation, the moment the cover goes.
+    func sceneReturningMayUncover() -> Bool {
+        returnedWithinGrace()
+        return !isLocked
+    }
+
     /// The macOS screen-unlock notification, which is a hint rather than
     /// verified state. The deadline is cancelled only when the session state
     /// read independently confirms the screen is unlocked; otherwise it

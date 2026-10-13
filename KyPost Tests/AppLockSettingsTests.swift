@@ -397,6 +397,33 @@ private final class LockHarness {
         #expect(!off.manager.backgroundSnapshotNeedsCover)
     }
 
+    /// A return after the window closed keeps the window-level cover: the lock
+    /// engages first, and the cover must not lift while it is engaged.
+    @Test func aReturnAfterTheWindowKeepsTheCover() async throws {
+        let harness = try await unlocked(grace: 30)
+        harness.manager.cacheGatedSecret("device-secret")
+        harness.manager.lockAfterGrace()
+        harness.advance(seconds: 31)
+        #expect(!harness.manager.sceneReturningMayUncover())
+        #expect(harness.manager.isLocked)
+        #expect(harness.manager.cachedGatedSecret == nil)
+    }
+
+    @Test func aReturnInsideTheWindowLiftsTheCover() async throws {
+        let harness = try await unlocked(grace: 30)
+        harness.manager.lockAfterGrace()
+        harness.advance(seconds: 10)
+        #expect(harness.manager.sceneReturningMayUncover())
+        #expect(!harness.manager.isLockPending)
+    }
+
+    /// Immediately: locked at the trigger, so the return keeps the cover.
+    @Test func aReturnToAnImmediateLockKeepsTheCover() async throws {
+        let harness = try await unlocked(grace: 0)
+        harness.manager.lockAfterGrace()
+        #expect(!harness.manager.sceneReturningMayUncover())
+    }
+
     /// A superseded graph's manager, still retained, must not act on the
     /// shared session after shutdown.
     @Test func shutdownDropsThePendingLock() async throws {
