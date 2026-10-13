@@ -249,11 +249,15 @@ is the server's pin, not this device's.
 - **Sender:** `ClientEncryptedSender.applyPins` runs after resolve and before
   the vault opens. Revoked → `recipientKeyRevoked` ("verify the new key by
   QR"); broken, or a relay key whose bytes fingerprint differently →
-  `keyChanged`; a match encrypts to the pinned bytes.
+  `keyChanged`; a match encrypts to the pinned bytes. The sender also takes a
+  pin provider and reads it twice: after resolve, and again after the vault
+  opens with no await before encrypting (`recheckPins`). A recipient whose
+  pin no longer lands on the key already chosen stops the send with the same
+  two outcomes; it is never re-chosen silently.
 - A pin is trusted only while its bytes fingerprint to the stored fingerprint
-  (`broken` otherwise, never "absent"). Pins are a `RecipientPinSnapshot`
-  value taken per reader/sender; `pins:` is deliberately not defaulted on
-  either. Memory-only under Hostile Location Protection — and erased from
+  (`broken` otherwise, never "absent"). The reader and sender each take a
+  provider returning a `RecipientPinSnapshot` value, never a snapshot taken
+  at construction; `pins:` is deliberately not defaulted on either. Memory-only under Hostile Location Protection — and erased from
   defaults when the mode turns on and at every launch while it is on
   (`AppEnvironment.eraseHostileLocationDefaults`) — swept by the wipe, cleared
   on unpair.

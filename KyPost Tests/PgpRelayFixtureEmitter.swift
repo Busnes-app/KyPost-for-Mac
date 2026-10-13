@@ -100,7 +100,7 @@ private final class BodyCapture: @unchecked Sendable {
             resolver: FixtureResolver(),
             transport: client,
             crypto: GopenPGPCrypto(),
-            pins: .none,
+            pins: { .none },
             accountAddress: fixtureAddress,
             session: EnrollmentSession(),
             now: { Date(timeIntervalSince1970: 1_787_000_000) }

@@ -153,7 +153,7 @@ final class SingletonGraph {
                 httpClient: httpClient, serverUrl: pairing.srv, auth: auth
             ),
             crypto: pgpCrypto,
-            pins: recipientPinStore.snapshot(revocation: pgpCrypto),
+            pins: { [recipientPinStore, pgpCrypto] in recipientPinStore.snapshot(revocation: pgpCrypto) },
             accountAddress: accountAddress
         )
     }
