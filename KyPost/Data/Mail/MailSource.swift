@@ -36,7 +36,10 @@ protocol MailSource: Sendable {
     /// One message's body (`GET /api/mail/body`), for a row that arrived
     /// without one: a page of older mail, or a search result.
     func fetchBody(folder: String, messageId: String) async throws -> MailMessageBody
-    func search(folder: String, query: String) async throws -> [String]
+    /// Server-side search of one folder, every field
+    /// (`GET /api/mail/search`). Rows carry no body and are stamped with
+    /// `folder`: an id means nothing outside the folder it came from.
+    func searchMail(folder: String, query: String, limit: Int) async throws -> [Email]
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws
     /// The four verbs that take a message out of `mailbox` return the relay's
     /// per-id report. A 200 is transport success only — see MailActionReport.
@@ -122,10 +125,50 @@ struct MailPage: Equatable, Sendable {
 }
 
 /// `GET /api/mail/body`: the body and its mode, nothing else. No recipients
-/// and no PGP flags — those come from the row.
+/// and no PGP flags — those come from the row (or, for a body taken from
+/// the cache, from `cachedPgp`).
 nonisolated struct MailMessageBody: Equatable, Sendable {
     var body: String
     var bodyMode: String
+    /// The cached row's OpenPGP state when the body came from the cache for a
+    /// row that carries none of its own (a search result). Nil for a body
+    /// from `/api/mail/body`, which carries no PGP fields.
+    var cachedPgp: MailPgpFields? = nil
+
+    /// `email` as the reader renders it: this body in place of the missing
+    /// one, and the cached OpenPGP state when there is one — so a cached
+    /// signature or encryption verdict is never dropped by opening the same
+    /// message from somewhere that lacks it.
+    func applied(to email: Email) -> Email {
+        var shown = email
+        shown.body = body
+        if !bodyMode.isEmpty { shown.bodyMode = bodyMode }
+        if let cachedPgp {
+            shown.pgpEncrypted = cachedPgp.encrypted
+            shown.pgpSigned = cachedPgp.signed
+            shown.pgpVerified = cachedPgp.verified
+            shown.pgpSignerFingerprint = cachedPgp.signerFingerprint
+            shown.pgpDecryptError = cachedPgp.decryptError
+        }
+        return shown
+    }
+}
+
+/// A cached row's OpenPGP fields (see `Email`).
+nonisolated struct MailPgpFields: Equatable, Sendable {
+    var encrypted: Bool
+    var signed: Bool
+    var verified: Bool
+    var signerFingerprint: String
+    var decryptError: String
+
+    init(of email: Email) {
+        encrypted = email.pgpEncrypted
+        signed = email.pgpSigned
+        verified = email.pgpVerified
+        signerFingerprint = email.pgpSignerFingerprint
+        decryptError = email.pgpDecryptError
+    }
 }
 
 /// The list actions that take a message out of its folder, as the relay's
@@ -171,8 +214,11 @@ enum MailSourceError: Error, Equatable {
     /// credential gate is on and the app is locked. Not an error state —
     /// background work retries after the next unlock, like `notPaired`.
     case credentialUnavailable
-    /// The relay has no endpoint for this operation (e.g. server-side search).
+    /// The relay has no endpoint for this operation (client-side keyword
+    /// edits).
     case unsupported
+    /// A 200 whose body is not the documented shape. Carries the sentence.
+    case malformedResponse(String)
     /// The relay answered definitively that this message cannot be opened
     /// (404 gone, 413 too large). Not a connectivity failure: retrying will
     /// not help, and saying "couldn't reach the server" would be a lie.
@@ -269,7 +315,8 @@ enum MailOutcome: Equatable, Sendable {
                 ?? .failure(Self.message(for: .badRequest(body: body)))
         case MailSourceError.notConfigured(let message):
             .notConfigured(message)
-        case MailSourceError.messageUnavailable(let message):
+        case MailSourceError.messageUnavailable(let message),
+             MailSourceError.malformedResponse(let message):
             .failure(message)
         case MailSourceError.olderMailUnsupported:
             .failure(String(localized: "This server can't load older mail. Update KyPost Server to use this."))

@@ -267,6 +267,18 @@ Domain.
   account), with the rows on screen and the folder lists. A page that lands
   after a folder switch is not painted; a refresh or page that lands after
   `forgetAccount()` changes nothing (`accountGeneration`).
+- **Search is the system search field on both shells** (`inboxSearch`,
+  `InboxListChrome.swift`): `.searchable` in the iOS navigation bar and the
+  macOS toolbar, submit-only, autocorrection off. While a search is on screen
+  the keyword tabs (iOS strip, macOS sidebar rows) and the "Load older mail"
+  footer step aside, the results replace the list, "No matching messages"
+  replaces the empty-folder line, and results never raise the new-mail pill:
+  starting a search clears it, and no folder repaint counts new rows while a
+  search is in flight or on screen.
+  Starting a search, its results landing, and the search ending all end the
+  selection (`selectionResetRequest`); a search the view model ends itself
+  clears and closes the field (`searchDismissRequest`). A search that
+  answers after `forgetAccount()` never lands (`accountGeneration`).
 - **The reader fetches a missing body before rendering**
   (`EmailDetailView.loadBodyIfNeeded`): a spinner while it loads, the failure's
   own sentence and "Try again" if it fails — never an empty screen passing for
@@ -365,7 +377,8 @@ Recorded so they aren't re-litigated as bugs:
   (Swift Testing; `ContactSearchTests`, `ComposeRecipientTests`,
   `ThemeTests`, `InboxParityTests.swift` for the inbox-list rules and the undo
   window, `OlderMailTests.swift` for older mail, delta overflow and bodies on
-  open, `MailIdentityTests.swift` for the (folder, id) key).
+  open, `MailIdentityTests.swift` for the (folder, id) key,
+  `MailSearchTests.swift` for search).
 - Pass `debounceInterval: .zero` to `ComposeViewModel` in tests, and poll for
   the result rather than sleeping a fixed span — the search lands a scheduling
   hop later even at zero, so a fixed sleep goes flaky under load.

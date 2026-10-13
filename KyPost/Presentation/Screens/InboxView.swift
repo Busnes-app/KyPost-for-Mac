@@ -4,7 +4,8 @@
 //
 //  Email list with keyword tabs (spec §2), pull-to-refresh, 90s auto-refresh
 //  while visible, notification-tap deep-open support, edit-mode multi-select
-//  with bulk actions, and the 5-second Undo for list actions.
+//  with bulk actions, the 5-second Undo for list actions, and server-side
+//  search of the folder on screen.
 //
 
 import SwiftUI
@@ -20,6 +21,9 @@ struct InboxView: View {
     @State private var presentedEmail: Email?
     /// Selected rows by (folder, id); only meaningful while editing.
     @State private var selection: Set<MailRowKey> = []
+    /// The search field. Plain view state: never stored or restored.
+    @State private var searchText = ""
+    @State private var isSearchPresented = false
 #if os(iOS)
     @State private var editMode: EditMode = .inactive
 #endif
@@ -46,6 +50,12 @@ struct InboxView: View {
 
             FreshnessLine(lastRefreshed: viewModel.lastRefreshed)
 
+            if viewModel.isSearchInFlight {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.vertical, 4)
+            }
+
             if let message = viewModel.errorMessage {
                 Text(message)
                     .font(AppFont.ui(13))
@@ -60,7 +70,10 @@ struct InboxView: View {
                     // "No messages" only once this folder refreshed: a loading
                     // or unreachable folder with an empty cache is unknown.
                     if viewModel.showsEmptyFolderState {
-                        EmptyStateView(message: viewModel.emptyFolderMessage, systemImage: "tray")
+                        EmptyStateView(
+                            message: viewModel.emptyFolderMessage,
+                            systemImage: viewModel.isSearchActive ? "magnifyingglass" : "tray"
+                        )
                     } else if viewModel.isRefreshing {
                         ProgressView()
                             .padding(.top, 40)
@@ -92,6 +105,12 @@ struct InboxView: View {
             }
         }
         .background(theme.bg)
+        .inboxSearch(
+            viewModel: viewModel,
+            text: $searchText,
+            isPresented: $isSearchPresented,
+            placement: .automatic
+        )
         .undoBar(viewModel)
         .relabelsAtMidnight()
         .toast(message: viewModel.notice ?? viewModel.connectionNotice)
@@ -174,8 +193,10 @@ struct InboxView: View {
             endSelection()
             viewModel.leaveInbox()
         }
-        // A selection never outlives the folder it was made in.
+        // A selection never outlives the folder it was made in, nor a search
+        // starting, landing, or ending.
         .onChange(of: viewModel.folder) { endSelection() }
+        .onChange(of: viewModel.selectionResetRequest) { endSelection() }
         .onChange(of: viewModel.filteredEmails) {
             // Rows that left the list (held for Undo, moved by a refresh)
             // leave the selection with them.

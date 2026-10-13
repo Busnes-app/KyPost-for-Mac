@@ -152,7 +152,7 @@ private func makeOutgoing(
         #expect(string.cursor == FlexibleCursor("42"))
     }
 
-    @Test func listFoldersMapsPathAndSearchIsLocalOnly() async throws {
+    @Test func listFoldersMapsPath() async throws {
         let json = #"{"parent": "", "folders": [{"path": "INBOX"}, {"path": "Archive", "deletable": true}]}"#
         let foldersClient = stubClient(json: json) { request in
             let url = request.url!.absoluteString
@@ -174,12 +174,6 @@ private func makeOutgoing(
         let subs = try await RelayMailSource(httpClient: subClient, serverUrl: server, auth: auth)
             .listFolders(parent: "Archive")
         #expect(subs.map(\.name) == ["Archive/Receipts"])
-
-        // The relay has no search endpoint; inbox search uses the local cache.
-        await #expect(throws: MailSourceError.unsupported) {
-            _ = try await RelayMailSource(httpClient: stubClient(), serverUrl: server, auth: auth)
-                .search(folder: "INBOX", query: "report")
-        }
     }
 
     @Test func movePostsBulkActionBody() async throws {

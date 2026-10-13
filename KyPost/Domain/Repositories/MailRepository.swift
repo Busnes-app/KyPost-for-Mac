@@ -204,9 +204,18 @@ final class MailRepository {
         try await emailDAO.getFolder(folder: folder, limit: limit)
     }
 
-    /// Search runs against the local cache (the relay has no search endpoint).
-    func search(folder: String, query: String) async throws -> [Email] {
-        try await emailDAO.search(folder: folder, query: query)
+    /// How many results one search asks for.
+    static let searchLimit = 50
+
+    /// Searches `folder` on the server, every field. The results are a view
+    /// of the folder, not its sync window: they are never written to the
+    /// cache, so they can never prune it or be mistaken for it.
+    func search(_ query: String, in folder: String) async throws -> [Email] {
+        try await makeSource().searchMail(
+            folder: folder,
+            query: query.trimmingCharacters(in: .whitespacesAndNewlines),
+            limit: Self.searchLimit
+        )
     }
 
     /// What one "Load older mail" press produced.
@@ -284,12 +293,21 @@ final class MailRepository {
     /// out-of-window row carries no PGP flags, so its body could be server
     /// plaintext of encrypted mail stored under no marker. Out-of-window and
     /// uncached messages fetch again on every open.
+    ///
+    /// A search result is never cached, but the same (folder, id) may be: its
+    /// cached body is used rather than fetched again, **with the cached row's
+    /// OpenPGP state** — a result carries none, and the reader must not lose
+    /// a cached verdict (or the client-protected shape, a blank body on an
+    /// encrypted row) by opening the message from the results.
     func loadBody(for email: Email) async throws -> MailMessageBody? {
         guard Self.needsBodyFetch(email) else { return nil }
         let epoch = await emailDAO.accountEpoch
+        let row = try? await emailDAO.getEmail(folder: email.folder, serverId: email.serverId)
+        if let row, !row.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || row.pgpEncrypted {
+            return MailMessageBody(body: row.body, bodyMode: row.bodyMode, cachedPgp: MailPgpFields(of: row))
+        }
         let fetched = try await makeSource().fetchBody(folder: email.folder, messageId: email.serverId)
-        if let row = try? await emailDAO.getEmail(folder: email.folder, serverId: email.serverId),
-           row.inWindow {
+        if let row, row.inWindow {
             try? await emailDAO.updateBody(
                 folder: email.folder, serverId: email.serverId,
                 body: fetched.body, bodyMode: fetched.bodyMode, epoch: epoch

@@ -108,7 +108,10 @@ The platforms split at the root view. iOS uses a tab layout (`MainTabView`). mac
 
 The Android reference repo (`llama-mobile`) defines the relay endpoints and the payload shapes. The primary documents are `Mobile_Mail_Relay.md` and `Mobile_Contact_Sync.md`:
 
-- `GET /api/inbox` — emails grouped by tab (`{tabs, byTab, cursor, delta, removed}`)
+- `GET /api/inbox` — emails grouped by tab (`{tabs, byTab, cursor, delta, removed, agedOut, hasMore, nextBefore}`);
+  with `before=<messageId>&bodies=0`, one page of older mail (`{byTab, hasMore, nextBefore}`)
+- `GET /api/mail/body?mailbox=&messageId=` — one message's body, for a row that arrived without one
+- `GET /api/mail/search?q=&mailbox=&limit=50` — server-side search of one folder, every field (`{results}`)
 - `GET /api/inbox/folders?parent=` — folder listing (full paths, for example `INBOX/Receipts`)
 - `POST /api/inbox/actions` — bulk read, archive, spam, delete and move
 - `POST /api/mail/send` — comma-joined recipient strings
@@ -136,9 +139,6 @@ The network-facing tests run against a stubbed `HTTPClient`. They need no backen
 
 - **Draft saving from compose.** The PGP webmail handoff saves a draft on the
   server, but there is no Save Draft button and no auto-save.
-- **Search runs against the local cache**, so it only finds what this device has
-  already fetched. The relay has no search endpoint, so this is not a client-side
-  fix.
 - **QR scanning with the camera on macOS.** Paste the pairing links and PGP key
   links instead. Camera scanning works on iOS.
 - **The on-device encrypted send and read paths have not been exercised against a
@@ -146,8 +146,9 @@ The network-facing tests run against a stubbed `HTTPClient`. They need no backen
   contracts for `/api/pgp/recipients/resolve`, `/api/mail/send-pgp` and
   `/api/mail/pgp-payload` are unverified in practice.
 
-Attachments, mail delta sync, and read/archive/delete from the reader used to be
-listed here and have since landed.
+Attachments, mail delta sync, read/archive/delete from the reader, and
+server-side search (it used to search only the local cache) used to be listed
+here and have since landed.
 
 ## License
 

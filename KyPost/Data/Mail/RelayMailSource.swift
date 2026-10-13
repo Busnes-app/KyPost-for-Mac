@@ -9,6 +9,7 @@
 //    GET  /api/inbox?limit&mailbox&since
 //    GET  /api/inbox?limit&mailbox&before&bodies=0  (older mail, one page)
 //    GET  /api/mail/body?mailbox&messageId
+//    GET  /api/mail/search?q&mailbox&limit  (every field: `field` is not sent)
 //    GET  /api/inbox/folders
 //    POST /api/mail/send  (encrypt/sign/allowPickupFallback — Client_Encrypted_Send.md)
 //    POST /api/mail/draft (same shape as send, minus the PGP flags)
@@ -199,6 +200,12 @@ struct RelayInboxResponse: Decodable, Sendable {
 struct RelayMessageBodyResponse: Decodable, Sendable {
     var body: String?
     var bodyMode: String?
+}
+
+/// GET /api/mail/search: `{"results": [inboxEmail…]}` — metadata only, no
+/// bodies and no PGP flags (`server_inbox.go` `handleMailSearch`).
+struct RelaySearchResponse: Decodable, Sendable {
+    var results: [RelayEmailDTO]?
 }
 
 struct RelayFolderDTO: Decodable, Equatable, Sendable {
@@ -515,10 +522,27 @@ final class RelayMailSource: MailSource {
         }
     }
 
-    func search(folder: String, query: String) async throws -> [String] {
-        // The relay has no search endpoint (Android searches its local cache);
-        // inbox search runs against the EmailDAO cache instead.
-        throw MailSourceError.unsupported
+    func searchMail(folder: String, query: String, limit: Int) async throws -> [Email] {
+        let response: RelaySearchResponse
+        do {
+            response = try await httpClient.get(
+                RelaySearchResponse.self,
+                url: try endpoint("api/mail/search"),
+                query: [
+                    URLQueryItem(name: "q", value: query),
+                    URLQueryItem(name: "mailbox", value: folder),
+                    URLQueryItem(name: "limit", value: String(max(limit, 1))),
+                ],
+                headers: auth.headerFields
+            )
+        } catch NetworkError.decoding {
+            throw MailSourceError.malformedResponse(String(localized: "Malformed search response"))
+        }
+        guard let results = response.results else {
+            throw MailSourceError.malformedResponse(String(localized: "Malformed search response"))
+        }
+        // Stamped with the searched folder; the label stands in for the tab.
+        return results.map { $0.toDomain(folder: folder, tab: $0.label ?? "") }
     }
 
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws {

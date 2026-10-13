@@ -170,17 +170,6 @@ private func makeEmail(
         #expect(try await dao.getEmail(folder: "INBOX", serverId: "missing") == nil)
     }
 
-    @Test func searchMatchesSubjectCaseInsensitively() async throws {
-        let db = try AppDatabase(inMemory: true)
-        let dao = EmailDAO(modelContainer: db.container)
-        try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [
-            makeEmail(serverId: "1", subject: "Quarterly Report"),
-            makeEmail(serverId: "2", subject: "Lunch plans"),
-        ])
-        let hits = try await dao.search(folder: "INBOX", query: "quarterly")
-        #expect(hits.map(\.serverId) == ["1"])
-    }
-
     @Test func keywordsSurviveRoundTrip() async throws {
         let db = try AppDatabase(inMemory: true)
         let dao = EmailDAO(modelContainer: db.container)

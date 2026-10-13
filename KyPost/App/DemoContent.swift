@@ -514,7 +514,13 @@ struct DemoMailSource: MailSource {
         return MailMessageBody(body: email?.body ?? "", bodyMode: email?.bodyMode ?? "")
     }
 
-    func search(folder: String, query: String) async throws -> [String] { [] }
+    func searchMail(folder: String, query: String, limit: Int) async throws -> [Email] {
+        DemoContent.emails.filter {
+            $0.folder == folder
+                && ($0.subject.localizedCaseInsensitiveContains(query)
+                    || $0.senderName.localizedCaseInsensitiveContains(query))
+        }
+    }
     func setKeywords(folder: String, messageId: String, keywords: [String]) async throws {}
     func move(messageIds: [String], from mailbox: String, to targetMailbox: String) async throws -> MailActionReport {
         MailActionReport(processed: Set(messageIds).count, failed: [])

@@ -317,19 +317,4 @@ actor EmailDAO {
         }
         try modelContext.save()
     }
-
-    /// Local cache search over subject, sender, and body.
-    func search(folder: String, query: String) throws -> [Email] {
-        let descriptor = FetchDescriptor<EmailEntity>(
-            predicate: #Predicate {
-                $0.folder == folder && (
-                    $0.subject.localizedStandardContains(query)
-                    || $0.senderName.localizedStandardContains(query)
-                    || $0.body.localizedStandardContains(query)
-                )
-            },
-            sortBy: [SortDescriptor(\.receivedAt, order: .reverse)]
-        )
-        return try modelContext.fetch(descriptor).map(\.toDomain)
-    }
 }

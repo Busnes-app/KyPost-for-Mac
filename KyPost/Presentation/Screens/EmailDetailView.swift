@@ -497,6 +497,7 @@ struct EmailDetailView: View {
 
     /// The row with the fetched body in place of a missing one: what the
     /// screen renders and what Reply/Forward quote.
+    /// A body that came from the cache also carries that row's OpenPGP state.
     private var shown: Email { emailWithFetchedBody(email, fetchedBody) }
 
     /// Fetches the body of a row that arrived without one (older mail). A
@@ -789,8 +790,8 @@ struct EmailDetailView: View {
 
     private var pgpState: PgpMessageState {
         pgpMessageState(
-            pgpEncrypted: email.pgpEncrypted,
-            pgpDecryptError: email.pgpDecryptError,
+            pgpEncrypted: shown.pgpEncrypted,
+            pgpDecryptError: shown.pgpDecryptError,
             body: shown.body
         )
     }
@@ -865,10 +866,10 @@ struct EmailDetailView: View {
                 label: pgpState == .decryptFailed ? "PGP: could not decrypt" : "PGP: encrypted",
                 isActive: pgpState != .decryptFailed
             )
-            if showsSignaturePill(state: pgpState, signed: email.pgpSigned) {
+            if showsSignaturePill(state: pgpState, signed: shown.pgpSigned) {
                 StatusBadgeView(
-                    label: email.pgpVerified ? "signature verified" : "signature not verified",
-                    isActive: email.pgpVerified
+                    label: shown.pgpVerified ? "signature verified" : "signature not verified",
+                    isActive: shown.pgpVerified
                 )
             }
             Spacer(minLength: 0)
@@ -907,7 +908,7 @@ struct EmailDetailView: View {
                 "This message is end-to-end encrypted. Enroll this device in Settings to decrypt it here."
             }
         case .decryptFailed:
-            "This message is encrypted and couldn't be decrypted: \(email.pgpDecryptError)"
+            "This message is encrypted and couldn't be decrypted: \(shown.pgpDecryptError)"
         case .decryptedByServer:
             "This message was encrypted. The server decrypted it to show it here."
         case .none:
@@ -1093,13 +1094,10 @@ struct EmailBodyWebView: View {
 }
 
 /// `email` as the reader shows it and Reply/Forward quote it: with the body
-/// fetched on open in place of the missing one.
+/// fetched on open in place of the missing one, and a cached body's OpenPGP
+/// state (`MailMessageBody.applied(to:)`).
 nonisolated func emailWithFetchedBody(_ email: Email, _ fetched: MailMessageBody?) -> Email {
-    guard let fetched else { return email }
-    var shown = email
-    shown.body = fetched.body
-    if !fetched.bodyMode.isEmpty { shown.bodyMode = fetched.bodyMode }
-    return shown
+    fetched?.applied(to: email) ?? email
 }
 
 /// Whether Reply, Reply All and Forward may build a draft from `email` yet.
