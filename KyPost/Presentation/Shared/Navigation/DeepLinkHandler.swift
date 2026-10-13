@@ -186,6 +186,8 @@ enum NavigationAction: Equatable, Sendable {
     /// Carries the whole challenge, not just its id: the approval screen needs
     /// the number-match digits, and they arrive on the same push payload.
     case openMfaApproval(MfaChallenge)
+    /// A `mailto:` link, already reduced to plain-text compose fields.
+    case composeMail(ComposeDraft)
 }
 
 struct DeepLinkHandler: Sendable {
@@ -200,6 +202,9 @@ struct DeepLinkHandler: Sendable {
         }
         if let params = try? DesktopPairingLinkParser.parse(url) {
             return .openDesktopPairingFlow(params)
+        }
+        if let draft = MailtoLinkParser.parse(url) {
+            return .composeMail(draft)
         }
         return nil
     }

@@ -1,13 +1,34 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Signature" : {
+
+    },
+    "Remove Signature" : {
+
+    },
     "" : {
 
     },
     "  ·  Copyright © 2026 Busnes.app" : {
 
     },
+    "Added below a “-- ” line on new messages, replies and forwards, above any quoted text. Plain text only. %lld/%lld" : {
+
+    },
     "Cc: %@" : {
+
+    },
+    "Discard" : {
+
+    },
+    "Discard this message?" : {
+
+    },
+    "It has not been sent, and KyPost keeps no copy." : {
+
+    },
+    "Keep editing" : {
 
     },
     "Not available for encrypted mail" : {

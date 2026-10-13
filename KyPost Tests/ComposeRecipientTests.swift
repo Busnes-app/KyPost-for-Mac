@@ -63,6 +63,7 @@ private func makeEnvironment(
                 securePairingStore: pairingStore
             ),
             draft: draft,
+            isLocked: { false },
             debounceInterval: .zero
         ),
         contacts: contactsViewModel

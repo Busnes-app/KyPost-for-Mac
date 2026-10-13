@@ -568,6 +568,7 @@ JVBERg==\r
             contacts: contacts,
             pgp: PgpSendService(client: PgpSendClient(httpClient: stubClient()), securePairingStore: pairingStore),
             draft: draft,
+            isLocked: { false },
             debounceInterval: .zero
         )
         let handoff = ForwardAttachmentHandoff(center: NotificationCenter())

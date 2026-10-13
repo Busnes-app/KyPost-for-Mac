@@ -50,7 +50,8 @@ import Testing
             deregisterDeviceUseCase: graph.deregisterDeviceUseCase,
             pushNotificationDispatcher: graph.pushNotificationDispatcher,
             enrollmentVault: graph.enrollmentVault,
-            pushRepository: graph.pushRepository
+            pushRepository: graph.pushRepository,
+            mailSignatureStore: graph.mailSignatureStore
         )
     }
 
@@ -92,5 +93,19 @@ import Testing
         await makeViewModel(graph).unpair()
         #expect(try await graph.pushRepository.history().isEmpty)
         #expect(graph.notificationCursorStore.lastCursor == 0)
+    }
+
+    /// The signature is the unpaired account's. Cleared through the injected
+    /// store, so an isolated graph's teardown never reaches another graph's
+    /// defaults (here, a second graph standing in for the shared one).
+    @Test func unpairingClearsOnlyTheInjectedSignature() async throws {
+        let graph = try makeGraph()
+        let other = try makeGraph()
+        graph.mailSignatureStore.save("Ada")
+        other.mailSignatureStore.save("Grace")
+
+        await makeViewModel(graph).unpair()
+        #expect(graph.mailSignatureStore.signature.isEmpty)
+        #expect(other.mailSignatureStore.signature == "Grace")
     }
 }

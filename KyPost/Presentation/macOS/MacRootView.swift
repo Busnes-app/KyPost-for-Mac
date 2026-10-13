@@ -131,6 +131,13 @@ struct MacRootView: View {
         .onChange(of: router.pendingMessageId) {
             openPendingMessageIfNeeded()
         }
+        // A `mailto:` link, once the router let it through the lock. Opened
+        // as its own compose window, which owns it from here on.
+        .onChange(of: router.composeRequest, initial: true) {
+            if let draft = router.takeComposeRequest() {
+                openWindow(id: "compose", value: draft)
+            }
+        }
         .onChange(of: section) {
             switch section {
             case .inbox(let keyword):

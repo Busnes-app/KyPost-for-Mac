@@ -39,6 +39,7 @@ final class SettingsViewModel {
     private let appLockManager: AppLockManager?
     private let pushRepository: PushRepository?
     private let recipientPinStore: RecipientPinStore?
+    private let mailSignatureStore: MailSignatureStore?
 
     var systemNotificationsEnabled: Bool {
         didSet { pushSettingsStore.systemNotificationsEnabled = systemNotificationsEnabled }
@@ -75,7 +76,8 @@ final class SettingsViewModel {
         enrollmentVault: EnrollmentVault? = nil,
         appLockManager: AppLockManager? = nil,
         pushRepository: PushRepository? = nil,
-        recipientPinStore: RecipientPinStore? = nil
+        recipientPinStore: RecipientPinStore? = nil,
+        mailSignatureStore: MailSignatureStore? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
@@ -91,6 +93,7 @@ final class SettingsViewModel {
         self.appLockManager = appLockManager
         self.pushRepository = pushRepository
         self.recipientPinStore = recipientPinStore
+        self.mailSignatureStore = mailSignatureStore
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.exportToSystemContactsEnabled
     }
@@ -152,6 +155,8 @@ final class SettingsViewModel {
         }
         // Keys verified by QR belong to this account's address book.
         recipientPinStore?.clear()
+        // The signature belongs to the account being unpaired, not the next.
+        mailSignatureStore?.clear()
         statusMessage = "Pairing removed"
     }
 

@@ -25,7 +25,8 @@ struct SettingsView: View {
         enrollmentVault: SingletonGraph.shared.enrollmentVault,
         appLockManager: SingletonGraph.shared.appLockManager,
         pushRepository: SingletonGraph.shared.pushRepository,
-        recipientPinStore: SingletonGraph.shared.recipientPinStore
+        recipientPinStore: SingletonGraph.shared.recipientPinStore,
+        mailSignatureStore: SingletonGraph.shared.mailSignatureStore
     )
     @State private var showPairingSheet = false
     @State private var showUnpairConfirmation = false
@@ -80,6 +81,13 @@ struct SettingsView: View {
             Section("Keywords") {
                 NavigationLink("Keyword Settings") {
                     KeywordSettingsView(viewModel: viewModel)
+                }
+            }
+            .listRowBackground(theme.panel)
+
+            Section("Compose") {
+                NavigationLink("Signature") {
+                    SignatureSettingsView()
                 }
             }
             .listRowBackground(theme.panel)

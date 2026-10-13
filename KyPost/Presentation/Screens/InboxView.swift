@@ -14,6 +14,8 @@ struct InboxView: View {
 
     @Bindable var viewModel: InboxViewModel
     @State private var showCompose = false
+    /// A `mailto:` compose taken from the router (iOS).
+    @State private var mailtoDraft: ComposeDraft?
     @State private var presentedEmail: Email?
 
     var body: some View {
@@ -112,9 +114,21 @@ struct InboxView: View {
                 }
             }
         }
+#if os(iOS)
+        .sheet(isPresented: $showCompose, onDismiss: takeComposeRequestIfIdle) {
+            ComposeView().environment(\.theme, theme)
+        }
+        .sheet(item: $mailtoDraft, onDismiss: takeComposeRequestIfIdle) { draft in
+            ComposeView(draft: draft).environment(\.theme, theme)
+        }
+        .onChange(of: router.composeRequest, initial: true) {
+            takeComposeRequestIfIdle()
+        }
+#else
         .sheet(isPresented: $showCompose) {
             ComposeView().environment(\.theme, theme)
         }
+#endif
         .task {
             await viewModel.loadIfNeeded()
             viewModel.refreshKeywordTabs()
@@ -127,6 +141,17 @@ struct InboxView: View {
             openPendingMessageIfNeeded()
         }
     }
+
+#if os(iOS)
+    /// Opens a `mailto:` compose only when no compose is on screen; a link
+    /// that arrives meanwhile waits in the router and opens when the current
+    /// compose closes (`takeComposeRequest(composeIsOpen:)`).
+    private func takeComposeRequestIfIdle() {
+        if let draft = router.takeComposeRequest(composeIsOpen: mailtoDraft != nil || showCompose) {
+            mailtoDraft = draft
+        }
+    }
+#endif
 
     /// Server folder choices, shared by the title menu and the toolbar
     /// button; same set and order as the macOS sidebar.

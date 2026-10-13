@@ -27,7 +27,8 @@ struct MacPreferencesView: View {
         enrollmentVault: SingletonGraph.shared.enrollmentVault,
         appLockManager: SingletonGraph.shared.appLockManager,
         pushRepository: SingletonGraph.shared.pushRepository,
-        recipientPinStore: SingletonGraph.shared.recipientPinStore
+        recipientPinStore: SingletonGraph.shared.recipientPinStore,
+        mailSignatureStore: SingletonGraph.shared.mailSignatureStore
     )
 
     var body: some View {
@@ -40,6 +41,9 @@ struct MacPreferencesView: View {
 
             KeywordsPane(viewModel: viewModel)
                 .tabItem { Label("Keywords", systemImage: "tag") }
+
+            SignatureSettingsView()
+                .tabItem { Label("Signature", systemImage: "signature") }
 
             ContactsPane(viewModel: viewModel)
                 .tabItem { Label("Contacts", systemImage: "person.crop.circle") }

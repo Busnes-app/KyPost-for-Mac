@@ -69,8 +69,19 @@ local store is always disposable.
 `AppEnvironment.resetAfterFailedUnlock` is the app lock's only escape hatch,
 offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true. It
 erases rather than bypasses: gated secret, pairing, desktop session, both lock
-flags, store, photos, temp attachments, delivered notifications, drafts. Keep
+flags, store, photos, temp attachments, delivered notifications, drafts, the
+mail signature. Keep
 it that way — anything that unlocks *without* erasing is a bypass.
+
+## URL schemes
+
+`KyPost/Info.plist` declares two `CFBundleURLTypes`: `kypost` (pairing,
+desktop pairing, the iOS KyIdentity return) and `mailto`, which is what lets
+macOS offer KyPost as the default mail app. iOS cannot become the default mail
+app without Apple's entitlement, so there a `mailto:` is handled only if
+something opens one here. Both arrive through `onOpenURL` →
+`NavigationRouter.handleURL`; the mailto parse never touches the pairing
+parsers' rules.
 
 ## The startup wipe gate
 

@@ -41,6 +41,11 @@ final class NavigationRouter {
     var mfaRoute: MfaRoute?
     /// Message the inbox should open once loaded (from a notification tap).
     var pendingMessageId: String?
+    /// A compose the platform shell should open (a `mailto:` link). The shell
+    /// takes it with `takeComposeRequest()` and owns the window or sheet from
+    /// then on, so the lock's route teardown never discards a message being
+    /// written — only a request not yet taken.
+    var composeRequest: ComposeDraft?
 
     private let deepLinkHandler: DeepLinkHandler
     /// Held while the lock is engaged, replayed on unlock. At most one — a
@@ -104,6 +109,9 @@ final class NavigationRouter {
             pendingMessageId = messageId
         case .openMfaApproval(let challenge):
             mfaRoute = MfaRoute(challenge: challenge)
+        case .composeMail(let draft):
+            selectedTab = .inbox
+            composeRequest = draft
         }
     }
 
@@ -119,6 +127,19 @@ final class NavigationRouter {
         pairingParams = nil
         desktopPairingParams = nil
         mfaRoute = nil
+        composeRequest = nil
+    }
+
+    /// Hands a pending compose to the shell, once. A shell that shows one
+    /// compose at a time (the iOS sheet) passes `composeIsOpen`: the request
+    /// then stays pending until that compose closes, because swapping the
+    /// sheet's content would drop the message being written without asking.
+    /// Pending holds one request — a newer link replaces an unopened one,
+    /// never an open compose.
+    func takeComposeRequest(composeIsOpen: Bool = false) -> ComposeDraft? {
+        guard !composeIsOpen else { return nil }
+        defer { composeRequest = nil }
+        return composeRequest
     }
 
     /// Replays the action the lock deferred, if it is still worth showing.

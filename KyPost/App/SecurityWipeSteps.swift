@@ -123,6 +123,14 @@ enum SecurityWipeSteps {
         // defaults domain would clear nothing at all in exactly the mode that
         // promises this machine holds nothing.
         steps.append(WipeStep("mailCursors") { graph.mailCursorStore.clear() })
+        // Account data, cleared by name rather than left to the sweep, so the
+        // wipe's claim does not depend on which defaults domain it lives in.
+        steps.append(WipeStep("mailSignature") {
+            graph.mailSignatureStore.clear()
+            guard graph.mailSignatureStore.signature.isEmpty else {
+                throw WipeStepFailure("the mail signature survived")
+            }
+        })
 
         steps.append(WipeStep("appLock") { try graph.appLockStore.reset() })
 
