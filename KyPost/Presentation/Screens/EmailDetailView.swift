@@ -169,7 +169,9 @@ struct EmailDetailView: View {
             // Android EmailDetailActivity's action row. On iOS they live in
             // the bottom bar — the navigation bar can't fit seven buttons.
 #if os(iOS)
-            ToolbarItemGroup(placement: .bottomBar) {
+            // In the split the bottom of the window belongs to the floating
+            // tab bar on iPhone, so the actions join the reader's top bar.
+            ToolbarItemGroup(placement: shellLayout == .split ? .primaryAction : .bottomBar) {
                 mailActionButtons
             }
 #else

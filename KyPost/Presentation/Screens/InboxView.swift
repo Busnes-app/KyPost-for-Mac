@@ -129,12 +129,16 @@ struct InboxView: View {
         }
         .modifier(StackedReader(viewModel: viewModel, state: state))
         .toolbar {
-            // Explicit folder button — the title menu's chevron is easy to miss.
-            ToolbarItem(placement: .navigation) {
-                Menu {
-                    folderPicker
-                } label: {
-                    Label("Folder", systemImage: "folder")
+            // Explicit folder button — the title menu's chevron is easy to
+            // miss. The split has the folder sidebar instead, and the narrow
+            // list column needs the room for Compose.
+            if state.layout == .stack {
+                ToolbarItem(placement: .navigation) {
+                    Menu {
+                        folderPicker
+                    } label: {
+                        Label("Folder", systemImage: "folder")
+                    }
                 }
             }
 #if os(iOS)
@@ -149,7 +153,9 @@ struct InboxView: View {
                 .disabled(!isSelecting && viewModel.filteredEmails.isEmpty)
             }
 #endif
-            ToolbarItem {
+            // Compose leads in the split's narrow column so it never folds
+            // into the overflow menu; the stack keeps its order.
+            ToolbarItem(placement: state.layout == .split ? .primaryAction : .automatic) {
                 Button {
                     state.compose = .blank(id: UUID())
                 } label: {

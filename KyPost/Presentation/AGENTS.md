@@ -173,8 +173,9 @@ Domain.
   **The unfolded iPhone Duo in portrait (669 pt) does not split, by the
   maintainer's decision** (2026-10-13): keep 800 pt, as Android does, even
   though Apple's Duo listing screenshot is portrait. Do not lower the
-  threshold to make the Duo portrait split. The
-  `TabView` is `.sidebarAdaptable` (iPhone: the same tab bar).
+  threshold to make the Duo portrait split. The `TabView` keeps its default
+  style (iPad: the floating top tab bar); `.sidebarAdaptable` opened a second
+  sidebar beside the folders in a landscape split and squeezed the reader.
   - **Everything either layout shows lives in `MailShellState`**, owned by
     `MainTabView` above the switch: the open message (the row, by (folder,
     id)), the open contact (by local id), select mode and its rows, the search

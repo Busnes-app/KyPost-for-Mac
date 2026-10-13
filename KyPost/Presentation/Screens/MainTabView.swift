@@ -87,9 +87,9 @@ struct MainTabView: View {
                 }
             }
         }
-        // A tab bar on iPhone, as before; on iPad the top tab bar that can
-        // become a sidebar (iPadOS 18+ convention).
-        .tabViewStyle(.sidebarAdaptable)
+        // The default style: a tab bar on iPhone, the floating top tab bar on
+        // iPad. Not `.sidebarAdaptable`: in a landscape split it opens a tab
+        // sidebar beside the folder sidebar and squeezes the reader.
         .tint(themeManager.palette.accent)
         .environment(\.theme, themeManager.palette)
         .environment(\.shellLayout, shell.layout)
