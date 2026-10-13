@@ -144,8 +144,11 @@ nonisolated struct ClientEncryptedSender: Sendable {
     private let resolver: any RecipientKeyResolving
     private let transport: any ClientEncryptedTransport
     private let crypto: any PgpEncrypting
-    /// Keys verified on this device. Not defaulted, like the reader's.
-    private let pins: RecipientPinSnapshot
+    /// Keys verified on this device, read when keys are chosen and again
+    /// just before encrypting: a pin can be revoked or re-scanned while a
+    /// send waits on resolve or the unlock prompt. Not defaulted, like the
+    /// reader's.
+    private let pins: @MainActor @Sendable () -> RecipientPinSnapshot
     private let session: EnrollmentSession
     /// The address every delivery's `From` must carry, from bootstrap's
     /// `suggestedUserIDs[0]`. The relay compares each delivery's own header
@@ -159,7 +162,7 @@ nonisolated struct ClientEncryptedSender: Sendable {
         resolver: any RecipientKeyResolving,
         transport: any ClientEncryptedTransport,
         crypto: any PgpEncrypting,
-        pins: RecipientPinSnapshot,
+        pins: @escaping @MainActor @Sendable () -> RecipientPinSnapshot,
         accountAddress: String,
         session: EnrollmentSession = .shared,
         now: @escaping @Sendable () -> Date = { Date() },
@@ -205,6 +208,11 @@ nonisolated struct ClientEncryptedSender: Sendable {
             uniquingKeysWith: { first, _ in first }
         )
 
+        // Read after resolve, so a pin changed while it was in flight counts.
+        let pins = await self.pins()
+        // Kept to check the chosen keys against the pins again after unlock.
+        let relayKeys = byAddress
+
         // This device's own pins first: whatever the relay says about a key
         // (`key_changed`, unusable, absent), a pin its owner revoked is the
         // reason the send cannot happen.
@@ -246,6 +254,15 @@ nonisolated struct ClientEncryptedSender: Sendable {
             case .noSecureLockScreen: return .noSecureLockScreen
             case .failed(let message): return .unsealFailed(message)
             }
+        }
+
+        // The pins again, after the last await before encrypting: one revoked
+        // or re-scanned while the unlock prompt was up must stop the send,
+        // never be overridden by the keys chosen before it.
+        if let outcome = Self.recheckPins(
+            await self.pins(), addresses: addresses, relayKeys: relayKeys, chosen: byAddress
+        ) {
+            return outcome
         }
 
         // Built once and shared by every delivery and the Sent copy, so no
@@ -402,6 +419,27 @@ nonisolated struct ClientEncryptedSender: Sendable {
         if !revoked.isEmpty { return .revoked(revoked) }
         if !changed.isEmpty { return .changed(changed) }
         return .proceed
+    }
+
+    /// Re-applies fresh pins to the relay's keys and refuses the send unless
+    /// every recipient still lands on the key already chosen. Never
+    /// substitutes the fresh key: a pin that moved is the user's to verify.
+    static func recheckPins(
+        _ pins: RecipientPinSnapshot,
+        addresses: [String],
+        relayKeys: [String: ResolvedRecipientKey],
+        chosen: [String: ResolvedRecipientKey]
+    ) -> ClientSendOutcome? {
+        var fresh = relayKeys
+        switch applyPins(pins, addresses: addresses, resolved: &fresh) {
+        case .proceed: break
+        case .revoked(let revoked): return .recipientKeyRevoked(revoked)
+        case .changed(let mismatched): return .keyChanged(mismatched)
+        }
+        let moved = addresses.filter {
+            fresh[$0.lowercased()]?.publicKey != chosen[$0.lowercased()]?.publicKey
+        }
+        return moved.isEmpty ? nil : .keyChanged(moved)
     }
 
     private static func message(for error: Error) -> String {
