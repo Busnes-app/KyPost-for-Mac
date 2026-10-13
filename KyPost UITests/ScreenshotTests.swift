@@ -28,6 +28,10 @@ final class ScreenshotTests: XCTestCase {
             "Set KYPOST_SCREENSHOTS=1 (scripts/capture-screenshots.sh) to capture."
         )
         continueAfterFailure = true
+        // One test walks every screen. On a loaded machine (or the iPhone
+        // Duo's slower simulator) that outlasts the default 10-minute
+        // allowance, and a timeout kills the run before anything exports.
+        executionTimeAllowance = 30 * 60
     }
 
     // MARK: - Capture
@@ -53,8 +57,13 @@ final class ScreenshotTests: XCTestCase {
         screenshot = window.screenshot()
 #else
         // The Simulator's screen holds only the app under test, and the
-        // listing wants the status bar the window excludes.
-        screenshot = XCUIScreen.main.screenshot()
+        // listing wants the status bar the window excludes. On the iPhone
+        // Duo `XCUIScreen.main` is the outer display, dark while unfolded:
+        // take whichever screen is lit (a dark one compresses to almost
+        // nothing).
+        screenshot = XCUIScreen.screens.map { $0.screenshot() }
+            .max { $0.pngRepresentation.count < $1.pngRepresentation.count }
+            ?? XCUIScreen.main.screenshot()
 #endif
         let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
@@ -136,8 +145,9 @@ final class ScreenshotTests: XCTestCase {
 #if os(iOS)
 
     /// A root tab. The iPhone's tab bar is a `tabBars` element; iPadOS draws
-    /// the same `TabView` as a floating bar at the top, which may surface as
-    /// plain buttons instead, so fall back to a button with that exact label.
+    /// the same `TabView` as a floating bar at the top, and the folded iPhone
+    /// Duo as part of a side rail, both of which surface as plain buttons
+    /// instead, so fall back to a button with that exact label.
     private func tab(_ app: XCUIApplication, _ name: String) -> XCUIElement {
         let barButton = app.tabBars.buttons[name]
         return barButton.waitForExistence(timeout: 2) ? barButton : app.buttons[name].firstMatch
@@ -161,7 +171,16 @@ final class ScreenshotTests: XCTestCase {
     /// navigation bar's first button is the sidebar or folder control.
     private func backToListIfCovered(_ app: XCUIApplication) {
         guard !app.buttons["Compose"].isHittable else { return }
-        tapIfPresent(app.navigationBars.buttons.element(boundBy: 0))
+        tapIfPresent(back(app))
+    }
+
+    /// The pushed screen's back button. Ordinarily the navigation bar's first
+    /// button; on the folded iPhone Duo, iOS 27 moves the bar's items into a
+    /// side rail where no navigation bar exists and back is the
+    /// `BackButton` identifier instead.
+    private func back(_ app: XCUIApplication) -> XCUIElement {
+        let barButton = app.navigationBars.buttons.element(boundBy: 0)
+        return barButton.waitForExistence(timeout: 2) ? barButton : app.buttons["BackButton"].firstMatch
     }
 
     @MainActor
@@ -217,6 +236,9 @@ final class ScreenshotTests: XCTestCase {
         if tapIfPresent(tab(app, "Settings")) {
             capture(app, "07-settings")
             if tapIfPresent(row(in: app, containing: "Theme")) {
+                // The push is still sliding in after `tapIfPresent`'s
+                // second on the iPhone Duo.
+                settle()
                 capture(app, "08-themes")
             }
         }
@@ -346,6 +368,15 @@ final class ScreenshotTests: XCTestCase {
             guard container.waitForExistence(timeout: 3) else { continue }
             guard (container.value as? String) != "1" else { continue }
             let control = container.switches.firstMatch
+            if control.exists, !control.isHittable {
+                // The folded iPhone Duo's side rail is a window-sized toolbar
+                // over the compose sheet, so XCUITest calls the switch
+                // unhittable though it is in plain view. Tap the inner
+                // switch's own centre, which is still not the gap.
+                control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                settle()
+                continue
+            }
             let target = control.exists ? control : container
             guard target.isHittable else { continue }
             target.tap()
