@@ -309,7 +309,10 @@ is the server's pin, not this device's.
 - **The decrypted body never leaves `EncryptedReadViewModel`.** It is not
   written to SwiftData, not assigned to the cached body field, and not carried
   into a scene value that state restoration would archive. `forget()` runs on
-  disappear.
+  disappear. An iOS layout switch rebuilds the reader, so it counts as one:
+  the message stays open (its row, in `MailShellState`), its plaintext goes,
+  and the new reader decrypts again at once if the key is still held, else
+  offers Decrypt.
 - **Opening client-protected mail decrypts immediately when its key is held.**
   If the key needs unlocking, opening the message shows Decrypt without
   prompting; that deliberate action raises the unlock prompt. Cancelling is a
@@ -721,7 +724,8 @@ old sentence edited out.
   list — never an older query's results. The search ends on clearing or
   cancelling the field, editing it away from the submitted query, a folder
   switch, a notification tap, and `forgetAccount` (wipe, rebuild, unpair).
-- **The query is never logged or persisted** — view `@State` and view-model
+- **The query is never logged or persisted** — scene memory (view `@State` on
+  macOS, `MailShellState` on iOS so a layout switch keeps it) and view-model
   memory only; no `@SceneStorage`, no state restoration, no defaults.
 - Known gap: results carry no PGP flags (the server sends none), so encrypted
   mail found only by search and not cached opens through `/api/mail/body` with no decrypt
@@ -791,9 +795,17 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
   (folder, id), never id alone, so a refresh cannot bring them back and a
   same-id row in another folder stays visible. The source folder is pinned at
   tap time.
-- **Commit points:** the timer, leaving the list (iOS `onDisappear`, which
-  includes opening a message; macOS switching to Contacts or closing the
-  window), iOS backgrounding (under a background-task assertion), and app lock.
+- **Commit points:** the timer, leaving the list, iOS backgrounding (under a
+  background-task assertion), and app lock. Leaving is switching tabs on iOS
+  or, in the iOS stack layout only, opening a message over the list; on macOS
+  switching to Contacts or closing the window. In the iOS split layout the
+  list stays beside the reader, so opening a message commits nothing and held
+  actions run out their 5 s timer. **A layout switch (rotation, multitasking
+  resize, fold) is never leaving**, even when it leaves the reader covering
+  the list: held actions stay undoable and on their timer
+  (`InboxListPresence.departure` → `leaveInbox(commitsHeldActions: false)`).
+  The iOS shell (`MainTabView`) decides this, not the list view's
+  `onDisappear`, which fires on every switch.
   The lock sites call `commitHeldActions()` **before** `lockAfterGrace()`,
   grace period or not: the commit binds the relay source synchronously, and
   `lock()` drops the gated device secret.

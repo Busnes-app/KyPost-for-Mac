@@ -156,6 +156,14 @@ final class ScreenshotTests: XCTestCase {
 
     private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
 
+    /// Back to the list after reading — in the stack only. A wide window
+    /// shows the reader beside the list (`ShellLayout.split`), where the
+    /// navigation bar's first button is the sidebar or folder control.
+    private func backToListIfCovered(_ app: XCUIApplication) {
+        guard !app.buttons["Compose"].isHittable else { return }
+        tapIfPresent(app.navigationBars.buttons.element(boundBy: 0))
+    }
+
     @MainActor
     func testCaptureScreenshots() throws {
         let app = launchDemo()
@@ -177,14 +185,14 @@ final class ScreenshotTests: XCTestCase {
         // the shot silently becomes a different screen.
         if tapIfPresent(row(in: app, containing: "Your ticket")) {
             capture(app, "03-read-message")
-            tapIfPresent(app.navigationBars.buttons.element(boundBy: 0))
+            backToListIfCovered(app)
         }
 
         // 5. Know how every message was protected — the encrypted, signed and
         // verified message at the top of the list.
         if tapIfPresent(row(in: app, containing: "Q3 rollout")) {
             capture(app, "05-message-protection")
-            tapIfPresent(app.navigationBars.buttons.element(boundBy: 0))
+            backToListIfCovered(app)
         }
 
         // 4. Compose with encryption and signing

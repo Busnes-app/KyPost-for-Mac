@@ -7,6 +7,11 @@
 //  with bulk actions, the 5-second Undo for list actions, and server-side
 //  search of the folder on screen.
 //
+//  The list column of both iOS layouts (`ShellLayout`): pushed messages in
+//  the stack, the content column of `InboxSplitView` in the split. What it
+//  shows lives in `MailShellState`, above the switch, so a rotation or a
+//  fold keeps the open message, the selection and the search.
+//
 
 import SwiftUI
 
@@ -15,26 +20,30 @@ struct InboxView: View {
     @Environment(NavigationRouter.self) private var router
 
     @Bindable var viewModel: InboxViewModel
-    @State private var showCompose = false
-    /// A `mailto:` compose taken from the router (iOS).
-    @State private var mailtoDraft: ComposeDraft?
-    @State private var presentedEmail: Email?
-    /// Selected rows by (folder, id); only meaningful while editing.
-    @State private var selection: Set<MailRowKey> = []
-    /// The search field. Plain view state: never stored or restored.
-    @State private var searchText = ""
-    @State private var isSearchPresented = false
-#if os(iOS)
-    @State private var editMode: EditMode = .inactive
-#endif
+    /// The open message, selection and search field, held by the shell.
+    @Bindable var state: MailShellState
 
     private var isSelecting: Bool {
 #if os(iOS)
-        editMode.isEditing
+        state.isSelecting
 #else
         false
 #endif
     }
+
+    private var selection: Set<MailRowKey> { state.selection }
+
+#if os(iOS)
+    /// Select mode as the list's edit mode, kept in the shell state.
+    private var editMode: Binding<EditMode> {
+        Binding(
+            get: { state.isSelecting ? .active : .inactive },
+            set: { mode in
+                if mode.isEditing { state.beginSelection() } else { state.endSelection() }
+            }
+        )
+    }
+#endif
 
     var body: some View {
         VStack(spacing: 0) {
@@ -107,8 +116,8 @@ struct InboxView: View {
         .background(theme.bg)
         .inboxSearch(
             viewModel: viewModel,
-            text: $searchText,
-            isPresented: $isSearchPresented,
+            text: $state.searchText,
+            isPresented: $state.isSearchPresented,
             placement: .automatic
         )
         .undoBar(viewModel)
@@ -118,9 +127,7 @@ struct InboxView: View {
         .toolbarTitleMenu {
             folderPicker
         }
-        .navigationDestination(item: $presentedEmail) { email in
-            EmailDetailView(email: email, inboxViewModel: viewModel)
-        }
+        .modifier(StackedReader(viewModel: viewModel, state: state))
         .toolbar {
             // Explicit folder button — the title menu's chevron is easy to miss.
             ToolbarItem(placement: .navigation) {
@@ -136,7 +143,7 @@ struct InboxView: View {
                     if isSelecting {
                         endSelection()
                     } else {
-                        editMode = .active
+                        state.beginSelection()
                     }
                 }
                 .disabled(!isSelecting && viewModel.filteredEmails.isEmpty)
@@ -144,7 +151,7 @@ struct InboxView: View {
 #endif
             ToolbarItem {
                 Button {
-                    showCompose = true
+                    state.compose = .blank(id: UUID())
                 } label: {
                     Label("Compose", systemImage: "square.and.pencil")
                 }
@@ -162,24 +169,11 @@ struct InboxView: View {
             }
         }
 #if os(iOS)
-        .environment(\.editMode, $editMode)
+        .environment(\.editMode, editMode)
         .safeAreaInset(edge: .bottom) {
             if isSelecting {
                 selectionBar
             }
-        }
-        .sheet(isPresented: $showCompose, onDismiss: takeComposeRequestIfIdle) {
-            ComposeView().environment(\.theme, theme)
-        }
-        .sheet(item: $mailtoDraft, onDismiss: takeComposeRequestIfIdle) { draft in
-            ComposeView(draft: draft).environment(\.theme, theme)
-        }
-        .onChange(of: router.composeRequest, initial: true) {
-            takeComposeRequestIfIdle()
-        }
-#else
-        .sheet(isPresented: $showCompose) {
-            ComposeView().environment(\.theme, theme)
         }
 #endif
         .task {
@@ -189,35 +183,13 @@ struct InboxView: View {
             openPendingMessageIfNeeded()
             await viewModel.loadSubfolders()
         }
-        .onDisappear {
-            endSelection()
-            viewModel.leaveInbox()
-        }
-        // A selection never outlives the folder it was made in, nor a search
-        // starting, landing, or ending.
-        .onChange(of: viewModel.folder) { endSelection() }
-        .onChange(of: viewModel.selectionResetRequest) { endSelection() }
-        .onChange(of: viewModel.filteredEmails) {
-            // Rows that left the list (held for Undo, moved by a refresh)
-            // leave the selection with them.
-            let visible = Set(viewModel.filteredEmails.map(\.id))
-            selection.formIntersection(visible)
-        }
+        // Leaving the list, ending the selection on a folder switch or a
+        // search, and dropping rows that left the list are the shell's
+        // (`MainTabView`), so a layout switch is not mistaken for any of them.
         .onChange(of: router.pendingMessageId) {
             openPendingMessageIfNeeded()
         }
     }
-
-#if os(iOS)
-    /// Opens a `mailto:` compose only when no compose is on screen; a link
-    /// that arrives meanwhile waits in the router and opens when the current
-    /// compose closes (`takeComposeRequest(composeIsOpen:)`).
-    private func takeComposeRequestIfIdle() {
-        if let draft = router.takeComposeRequest(composeIsOpen: mailtoDraft != nil || showCompose) {
-            mailtoDraft = draft
-        }
-    }
-#endif
 
     private var navigationTitle: String {
         isSelecting && !selection.isEmpty
@@ -234,7 +206,7 @@ struct InboxView: View {
                 EmailListRow(email: email)
             } else {
                 Button {
-                    presentedEmail = email
+                    state.open(email)
                 } label: {
                     EmailListRow(email: email)
                 }
@@ -267,29 +239,31 @@ struct InboxView: View {
                 emailActions(for: [email.serverId])
             }
         }
-        .listRowBackground(theme.bg)
+        // The split's detail pane names the row it shows.
+        .listRowBackground(
+            state.layout == .split && state.openKey == email.id
+                ? theme.accent.opacity(0.18)
+                : theme.bg
+        )
         .listRowSeparatorTint(theme.line)
     }
 
     /// The selection, refusing to grow past the relay's per-request cap.
     private var cappedSelection: Binding<Set<MailRowKey>> {
         Binding(
-            get: { selection },
+            get: { state.selection },
             set: { newValue in
-                if newValue.count > MailRepository.maxActionIds, newValue.count > selection.count {
+                if newValue.count > MailRepository.maxActionIds, newValue.count > state.selection.count {
                     viewModel.reportSelectionLimit()
                 } else {
-                    selection = newValue
+                    state.selection = newValue
                 }
             }
         )
     }
 
     private func endSelection() {
-        selection = []
-#if os(iOS)
-        editMode = .inactive
-#endif
+        state.endSelection()
     }
 
     /// Bulk actions for the rows selected in edit mode. Each one is held for
@@ -347,29 +321,36 @@ struct InboxView: View {
     /// button; same set and order as the macOS sidebar. Sent and Drafts are
     /// resolved from the account's real folders on each pick.
     private var folderPicker: some View {
-        Picker("Folder", selection: folderSelection) {
-            Label("Inbox", systemImage: "tray").tag(StandardFolder.inbox)
-            ForEach(viewModel.inboxSubfolders, id: \.name) { sub in
-                Label(StandardFolder.displayName(sub.name), systemImage: "folder")
-                    .tag(sub.name)
-            }
-            Label(SpecialFolder.drafts.label, systemImage: SpecialFolder.drafts.systemImage)
-                .tag(Self.specialTag(.drafts))
-            Label("Junk", systemImage: "xmark.bin").tag(StandardFolder.junk)
-            Label(SpecialFolder.sent.label, systemImage: SpecialFolder.sent.systemImage)
-                .tag(Self.specialTag(.sent))
-            Label("Trash", systemImage: "trash").tag(StandardFolder.trash)
-            Label("Archive", systemImage: "archivebox").tag(StandardFolder.archive)
-            ForEach(viewModel.archiveSubfolders, id: \.name) { sub in
-                Label(StandardFolder.displayName(sub.name), systemImage: "folder")
-                    .tag(sub.name)
-            }
+        Picker("Folder", selection: Self.folderSelection(viewModel)) {
+            Self.folderRows(viewModel)
+        }
+    }
+
+    /// Every folder choice, tagged for `folderSelection`: the picker's
+    /// content and the split's sidebar rows.
+    @ViewBuilder
+    static func folderRows(_ viewModel: InboxViewModel) -> some View {
+        Label("Inbox", systemImage: "tray").tag(StandardFolder.inbox)
+        ForEach(viewModel.inboxSubfolders, id: \.name) { sub in
+            Label(StandardFolder.displayName(sub.name), systemImage: "folder")
+                .tag(sub.name)
+        }
+        Label(SpecialFolder.drafts.label, systemImage: SpecialFolder.drafts.systemImage)
+            .tag(specialTag(.drafts))
+        Label("Junk", systemImage: "xmark.bin").tag(StandardFolder.junk)
+        Label(SpecialFolder.sent.label, systemImage: SpecialFolder.sent.systemImage)
+            .tag(specialTag(.sent))
+        Label("Trash", systemImage: "trash").tag(StandardFolder.trash)
+        Label("Archive", systemImage: "archivebox").tag(StandardFolder.archive)
+        ForEach(viewModel.archiveSubfolders, id: \.name) { sub in
+            Label(StandardFolder.displayName(sub.name), systemImage: "folder")
+                .tag(sub.name)
         }
     }
 
     /// Picker tag for Sent/Drafts. Not a mailbox path — the control character
     /// keeps it from ever colliding with one.
-    private nonisolated static func specialTag(_ kind: SpecialFolder) -> String {
+    nonisolated static func specialTag(_ kind: SpecialFolder) -> String {
         "\u{1}special:\(kind.rawValue)"
     }
 
@@ -404,8 +385,9 @@ struct InboxView: View {
         }
     }
 
-    /// Folder choice for the menus; switching reloads the list.
-    private var folderSelection: Binding<String> {
+    /// Folder choice for the menus and the split's sidebar; switching
+    /// reloads the list.
+    static func folderSelection(_ viewModel: InboxViewModel) -> Binding<String> {
         Binding(
             get: {
                 viewModel.currentSpecialFolder.map(Self.specialTag) ?? viewModel.folder
@@ -429,8 +411,27 @@ struct InboxView: View {
         endSelection()
         Task {
             if let email = await viewModel.prepareForPushTap(messageId: messageId) {
-                presentedEmail = email
+                state.openEmail = email
             }
+        }
+    }
+}
+
+/// The stack's reader: the open message pushed over the list. In the split
+/// the detail column shows it instead (`InboxSplitView`), so nothing pushes.
+private struct StackedReader: ViewModifier {
+    let viewModel: InboxViewModel
+    @Bindable var state: MailShellState
+
+    func body(content: Content) -> some View {
+        if state.layout == .stack {
+            content.navigationDestination(item: $state.openEmail) { email in
+                EmailDetailView(email: email, inboxViewModel: viewModel) {
+                    state.closeMessage()
+                }
+            }
+        } else {
+            content
         }
     }
 }

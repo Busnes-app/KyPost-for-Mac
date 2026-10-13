@@ -12,6 +12,10 @@ Domain.
 - `Components/` — reusable views with no screen-specific knowledge
 - `Shared/ViewModels/` — `@Observable @MainActor` state, injected from `SingletonGraph`
 - `macOS/` — macOS-only shells (`MacRootView`)
+- The iOS shell is `Screens/MainTabView` (tabs, the stack/split switch, the
+  one compose sheet) with `Screens/InboxSplitView`; its rules are
+  `Shared/Navigation/ShellLayout.swift` and its state
+  `Shared/ViewModels/MailShellState.swift`
 
 ## Local Contracts
 
@@ -133,8 +137,9 @@ Domain.
   to SwiftUI's. Closes the app forces (Hostile Location Protection, wipe) never
   ask.
 - **A compose open when the lock engages stays, covered, and sends nothing.**
-  The inbox owns the iOS compose sheets, so `dismissPresentedRoutes` cannot
-  reach them and the root `fullScreenCover` cannot present over them:
+  The iOS shell owns the one compose sheet (`MailShellState.compose`, below),
+  outside the router, so `dismissPresentedRoutes` cannot reach it and the
+  root `fullScreenCover` cannot present over it:
   `ComposeView` overlays `UnlockView` on itself (navigation bar included) and
   blocks the swipe-down while locked. `ComposeViewModel` takes `isLocked` and
   refuses send, pickup re-send and webmail hand-off while it is true, on both
@@ -158,6 +163,38 @@ Domain.
   (`takeComposeRequest(composeIsOpen:)`, latest wins) and opens when it
   closes — never by swapping the open sheet's content. The message body's link policy
   still never hands a `mailto:` link to `openURL`.
+- **Wide iOS windows split** (`ShellLayout`, `MainTabView`,
+  `InboxSplitView`). A regular-width window of at least
+  `ShellLayout.splitMinimumWidth` (800 pt, safe areas included — Android's
+  measured 800dp, so unfolding or rotating never narrows the list; measured
+  widths in its doc comment) shows Inbox as a collapsible folder sidebar,
+  the list and the reader, and Contacts as list and detail. Anything
+  narrower keeps the stacks exactly; Settings is always a stack. The
+  `TabView` is `.sidebarAdaptable` (iPhone: the same tab bar).
+  - **Everything either layout shows lives in `MailShellState`**, owned by
+    `MainTabView` above the switch: the open message (the row, by (folder,
+    id)), the open contact (by local id), select mode and its rows, the search
+    field, the compose sheet, the split's columns. Never view `@State` in
+    `InboxView`, `ContactsListView` or a column: the switch rebuilds them.
+    Scene memory only, replaced by `.id(generation)`.
+  - **The shell observes the inbox, not the list view** (`ShellObservers`):
+    a folder change (picker, sidebar, notification tap) closes the message
+    and ends the selection; a selection reset ends the selection;
+    `accountGeneration` (`forgetAccount`) clears message, search and contact;
+    a row leaving the list leaves the selection, and in the split also closes
+    the reader showing it (the stack's reader stays open, as before); a
+    deleted contact closes. Leaving the list is decided there too (root
+    "Inbox list actions").
+  - The reader closes through `onClose` (the stack pops, the split empties)
+    and hides the tab bar only in the stack (`\.shellLayout`).
+  - **One compose sheet** for new mail, `mailto:` and Reply/Forward
+    (`\.presentCompose`), at `.presentationSizing(.page)`. At
+    `ComposeView.twoColumnMinimumWidth` (600 pt of its own width, iOS only —
+    Android's two-column compose) the envelope takes the left 40% and the
+    body the rest. Discard guard, lock cover and mailto queueing unchanged.
+  - Not kept across a switch: transient UI of the rebuilt views (an alert,
+    Quick Look, the New Contact sheet, a contact edit in progress) and the
+    reader's plaintext (root "Reading client-protected mail").
 - **Uncommitted recipient text lives on the view model**, not in view `@State`,
   so `send()` can flush it. Typing an address and pressing ⌘↩ must still mail
   it.
@@ -383,13 +420,17 @@ Recorded so they aren't re-litigated as bugs:
   `ThemeTests`, `InboxParityTests.swift` for the inbox-list rules and the undo
   window, `OlderMailTests.swift` for older mail, delta overflow and bodies on
   open, `MailIdentityTests.swift` for the (folder, id) key,
-  `MailSearchTests.swift` for search).
+  `MailSearchTests.swift` for search, `WideLayoutTests.swift` for the iOS
+  stack/split decision, what a switch keeps, and its Undo rule).
 - Pass `debounceInterval: .zero` to `ComposeViewModel` in tests, and poll for
   the result rather than sleeping a fixed span — the search lands a scheduling
   hop later even at zero, so a fixed sleep goes flaky under load.
 - Focus, key routing, overlay z-order, and `FlowLayout` wrapping are not
   unit-testable — drive the app (XCUITest against the `New Email` window
   reaches them) and look at the result.
+- The iOS layouts: launch the demo build (`-KyPostDemo`) on an iPad and an
+  iPhone simulator, rotate (`xcrun simctl io <udid> screenshot` before and
+  after), and look. A foldable's pose cannot be scripted.
 
 ## Child DOX Index
 

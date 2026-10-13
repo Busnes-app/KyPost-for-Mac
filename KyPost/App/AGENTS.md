@@ -322,7 +322,9 @@ Rules:
   through `tab(_:_:)` (iPadOS draws the `TabView` as a floating top bar),
   keyword chips through `keywordChip(_:_:)` (a row's label carries its own
   tags, so a label match can land on a message), and iPad hides its
-  half-screen keyboard before the compose shot.
+  half-screen keyboard before the compose shot. The 13-inch iPad splits
+  (`ShellLayout`), so after a reading shot the flow goes back only when the
+  reader covers the list (`backToListIfCovered`).
 - `-KyPostDemoScreen mfa` exists because MFA approval arrives by push and has
   no navigable route. Add a case there rather than a new launch argument.
 - The fixtures are invented. Keep them invented, and keep the addresses on
