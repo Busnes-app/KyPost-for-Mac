@@ -343,13 +343,18 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
     ///
     /// - A primary revocation is taken when the pin reads revoked with it
     ///   (`IsRevoked` verifies against the primary).
-    /// - A subkey revocation is carried whenever it is a well-formed signature
-    ///   of the key's version and the library still reads the pin, as the same
-    ///   key and with no ability gained, once it is added. Its effect cannot
-    ///   always be observed beforehand — a revoked signing subkey whose primary
-    ///   also signs leaves `CanVerify` true, and GopenPGP exposes no per-subkey
-    ///   query — so requiring an observed effect drops genuine revocations.
-    ///   One that does not verify changes nothing at use.
+    /// - A subkey revocation must be a well-formed signature of the key's
+    ///   version that leaves the library reading the pin as the same key with
+    ///   no ability gained. Then, judged on the subkey alone:
+    ///   - where the subkey grants something the primary does not (encrypting,
+    ///     or signing under a primary that cannot sign), it is carried only if
+    ///     the library honours it — that capability goes. Nothing it disregards
+    ///     is stored, so no bound can keep a genuine one out.
+    ///   - otherwise (a signing subkey whose primary also signs) GopenPGP has no
+    ///     per-subkey query, so it is carried unjudged, up to
+    ///     `maxRevocationsPerSubkey`; one more withdraws the subkey from the pin
+    ///     rather than being refused, so a full bound cannot keep out a genuine
+    ///     revocation either.
     func withRevocations(pinned: String, synced: String) -> String? {
         guard let pinnedSections = OpenPgpKeySections(armored: pinned),
               let syncedSections = OpenPgpKeySections(armored: synced),
@@ -366,6 +371,9 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         var carried = pinnedSections.subkeys.map {
             $0.filter { $0.signatureType == OpenPgpPacket.subkeyRevocation }.count
         }
+        var probes: [Int: SubkeyProbe] = [:]
+        var revokedHere: Set<Int> = []
+        var withdrawn: Set<Int> = []
         var taken: [OpenPgpKeySections.Candidate] = []
         for candidate in candidates {
             switch candidate.target {
@@ -377,30 +385,64 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
                 taken.append(candidate)
             case .subkey(let index):
                 let signature = candidate.signature.body
-                guard signature.first == keyVersion,
+                guard !withdrawn.contains(index), !revokedHere.contains(index),
+                      signature.first == keyVersion,
                       signature.count <= Self.maxRevocationSignatureBytes,
-                      carried[index] < Self.maxRevocationsPerSubkey,
                       let after = Self.key(pinnedSections.adding([candidate])),
                       after.getFingerprint() == pinnedKey.getFingerprint(),
                       !after.isRevoked(now) || pinnedKey.isRevoked(now),
                       !after.canEncrypt(now) || pinnedKey.canEncrypt(now),
                       !after.canVerify(now) || pinnedKey.canVerify(now)
                 else { continue }
-                carried[index] += 1
-                taken.append(candidate)
+
+                let probe = probes[index] ?? Self.probe(pinnedSections, subkey: index, at: now)
+                probes[index] = probe
+                switch probe {
+                case .alreadyRevoked:
+                    continue
+                case .observable(let capability):
+                    // The library's own verdict on this subkey alone: carried
+                    // only when it withdraws what the subkey could do. One that
+                    // does not is disregarded at use anyway, so it is never
+                    // stored and can never stand in a genuine one's way.
+                    guard let isolated = Self.key(pinnedSections.isolating(subkey: index).adding(
+                              [OpenPgpKeySections.Candidate(target: .subkey(0), signature: candidate.signature)]
+                          )),
+                          !capability.holds(for: isolated, at: now)
+                    else { continue }
+                    revokedHere.insert(index)
+                    taken.append(candidate)
+                case .unobservable:
+                    // Nothing the library exposes tells a genuine revocation
+                    // of this subkey from one that does not verify. Carry it;
+                    // once the bound is reached, withdraw the subkey from the
+                    // pin instead of refusing — a full bound must never keep
+                    // a genuine revocation out.
+                    if carried[index] < Self.maxRevocationsPerSubkey {
+                        carried[index] += 1
+                        taken.append(candidate)
+                    } else {
+                        withdrawn.insert(index)
+                    }
+                }
             }
         }
-        guard !taken.isEmpty else { return nil }
+        guard !taken.isEmpty || !withdrawn.isEmpty else { return nil }
+
+        var result = pinnedSections.adding(taken)
+        result.subkeys = result.subkeys.enumerated()
+            .filter { !withdrawn.contains($0.offset) }
+            .map(\.element)
 
         var error: NSError?
-        let armored = ArmorArmorKey(pinnedSections.adding(taken).data, &error)
+        let armored = ArmorArmorKey(result.data, &error)
         guard error == nil, !armored.isEmpty,
               CryptoKey(fromArmored: armored)?.getFingerprint() == pinnedKey.getFingerprint()
         else { return nil }
         return armored
     }
 
-    /// Bounds on what a synced copy can make the pin carry. A genuine
+    /// Bounds on what a synced copy can make the pin carry unjudged. A genuine
     /// revocation is a few hundred bytes, and a subkey is revoked once.
     static let maxRevocationSignatureBytes = 8 * 1024
     static let maxRevocationsPerSubkey = 4
@@ -412,6 +454,48 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
 
     private static func key(_ sections: OpenPgpKeySections) -> CryptoKey? {
         CryptoKey(sections.data)
+    }
+
+    /// Something a subkey lets the key do, as the library reports it.
+    private enum Capability: CaseIterable {
+        case encrypt, verify
+
+        func holds(for key: CryptoKey, at time: Int64) -> Bool {
+            switch self {
+            case .encrypt: key.canEncrypt(time)
+            case .verify: key.canVerify(time)
+            }
+        }
+    }
+
+    /// Whether the library can tell, for one subkey, if a revocation of it
+    /// verifies.
+    private enum SubkeyProbe {
+        /// The subkey alone grants this and the primary alone does not, so a
+        /// revocation the library honours takes it away.
+        case observable(Capability)
+        /// The pin already carries a revocation the library honours.
+        case alreadyRevoked
+        /// The primary grants everything the subkey does (a signing subkey
+        /// under a signing primary), or the subkey grants nothing now.
+        case unobservable
+    }
+
+    private static func probe(_ sections: OpenPgpKeySections, subkey index: Int, at time: Int64) -> SubkeyProbe {
+        let held = sections.isolating(subkey: index)
+        var stripped = held
+        stripped.subkeys[0].removeAll { $0.signatureType == OpenPgpPacket.subkeyRevocation }
+        guard let primaryOnly = key(OpenPgpKeySections(primary: sections.primary, subkeys: [])),
+              let strippedKey = key(stripped),
+              let heldKey = key(held)
+        else { return .unobservable }
+        var observable: Capability?
+        for capability in Capability.allCases
+        where capability.holds(for: strippedKey, at: time) && !capability.holds(for: primaryOnly, at: time) {
+            guard capability.holds(for: heldKey, at: time) else { return .alreadyRevoked }
+            observable = observable ?? capability
+        }
+        return observable.map(SubkeyProbe.observable) ?? .unobservable
     }
 
     // MARK: - Private
