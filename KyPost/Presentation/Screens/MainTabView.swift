@@ -13,6 +13,7 @@
 //
 
 import SwiftUI
+import os
 
 struct MainTabView: View {
     @Environment(ThemeManager.self) private var themeManager
@@ -23,18 +24,43 @@ struct MainTabView: View {
 
     /// Scene memory, replaced with the rest of the tree by `.id(generation)`.
     @State private var shell = MailShellState()
+    /// False for a moment after a switch to the stack. A stack built with a
+    /// message already on its path pops it (SwiftUI's navigation state
+    /// writes the path back empty), so the open message is pushed once the
+    /// new stack exists, and nothing it writes before then counts.
+    @State private var mailStackReady = true
+    @State private var contactStackReady = true
 
     private var inboxViewModel: InboxViewModel { SingletonGraph.shared.inboxViewModel }
     private var contactsViewModel: ContactsViewModel { SingletonGraph.shared.contactsViewModel }
 
     var body: some View {
         GeometryReader { proxy in
-            let resolved = layout(forWindowWidth: proxy.size.width
-                + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing)
+            let width = proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing
+            let resolved = layout(forWindowWidth: width)
             tabs
-                .onChange(of: resolved, initial: true) {
-                    shell.layout = resolved
+                .onChange(of: resolved, initial: true) { old, new in
+                    shell.layout = new
+                    guard new == .stack, old != new else { return }
+                    mailStackReady = false
+                    contactStackReady = false
+                    // Re-armed from here, not from the new stacks' own
+                    // lifecycle: a stack that is rebuilt again, or never
+                    // appears (another tab), must not stay deaf for good.
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        guard shell.layout == .stack else { return }
+                        mailStackReady = true
+                        contactStackReady = true
+                    }
                 }
+#if DEBUG && os(iOS)
+                // What the threshold was decided from, for checking it on a
+                // new device. Geometry only: no mail, no account.
+                .onChange(of: width, initial: true) {
+                    Log.app.notice("shell layout: width \(width, privacy: .public) pt, size class \(String(describing: horizontalSizeClass), privacy: .public) -> \(String(describing: resolved), privacy: .public)")
+                }
+#endif
         }
     }
 
@@ -114,7 +140,7 @@ struct MainTabView: View {
         case .split:
             InboxSplitView(viewModel: inboxViewModel, state: shell)
         case .stack:
-            NavigationStack {
+            NavigationStack(path: mailPath) {
                 InboxView(viewModel: inboxViewModel, state: shell)
             }
         }
@@ -152,11 +178,25 @@ struct MainTabView: View {
         }
     }
 
+    /// The inbox stack's path: the open message, if any.
+    private var mailPath: Binding<[Email]> {
+        Binding(
+            get: { mailStackReady ? shell.openEmail.map { [$0] } ?? [] : [] },
+            set: { path in
+                guard mailStackReady else { return }
+                shell.openEmail = path.last
+            }
+        )
+    }
+
     /// The contacts stack's path: the open contact, by id.
     private var contactPath: Binding<[UUID]> {
         Binding(
-            get: { shell.openContactID.map { [$0] } ?? [] },
-            set: { shell.openContactID = $0.last }
+            get: { contactStackReady ? shell.openContactID.map { [$0] } ?? [] : [] },
+            set: { path in
+                guard contactStackReady else { return }
+                shell.openContactID = path.last
+            }
         )
     }
 

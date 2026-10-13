@@ -417,15 +417,18 @@ struct InboxView: View {
     }
 }
 
-/// The stack's reader: the open message pushed over the list. In the split
-/// the detail column shows it instead (`InboxSplitView`), so nothing pushes.
+/// The stack's reader: the open message pushed over the list, by the
+/// stack's path (`MainTabView.mailPath`). Not `navigationDestination(item:)`:
+/// a stack rebuilt with the item already set (a switch back from the split)
+/// writes nil through it and the message closes. In the split the detail
+/// column shows it instead (`InboxSplitView`), so nothing pushes.
 private struct StackedReader: ViewModifier {
     let viewModel: InboxViewModel
-    @Bindable var state: MailShellState
+    let state: MailShellState
 
     func body(content: Content) -> some View {
         if state.layout == .stack {
-            content.navigationDestination(item: $state.openEmail) { email in
+            content.navigationDestination(for: Email.self) { email in
                 EmailDetailView(email: email, inboxViewModel: viewModel) {
                     state.closeMessage()
                 }
