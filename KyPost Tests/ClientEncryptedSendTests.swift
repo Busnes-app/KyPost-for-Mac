@@ -80,7 +80,7 @@ private func makeSender(
         resolver: StubResolver(result: resolve),
         transport: transport,
         crypto: crypto,
-        pins: pins,
+        pins: { pins },
         accountAddress: accountAddress,
         session: session,
         now: { Date(timeIntervalSince1970: 1_760_000_000) },
@@ -474,5 +474,200 @@ private func makeSender(
             }
             #expect(failure.kind == kind)
         }
+    }
+}
+
+// MARK: - Pins that change while a send is in progress
+
+/// The device's pins, changeable mid-test the way the QR flow or a contact
+/// sync changes `RecipientPinStore` while a send is suspended.
+private final class PinBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: RecipientPinSnapshot
+
+    init(_ initial: RecipientPinSnapshot) { current = initial }
+
+    var snapshot: RecipientPinSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        return current
+    }
+
+    func set(_ next: RecipientPinSnapshot) {
+        lock.lock(); defer { lock.unlock() }
+        current = next
+    }
+}
+
+/// Runs `during` while the user would be looking at the unlock prompt.
+private struct ChangingOpener: VaultOpening {
+    var during: @Sendable () -> Void
+    func open() async -> VaultOpenOutcome {
+        during()
+        return .opened(privateKey: Data("PRIVATE".utf8))
+    }
+}
+
+/// Runs `during` while the resolve request is in flight.
+private struct ChangingResolver: RecipientKeyResolving {
+    var result: ResolveResult
+    var during: @Sendable () -> Void
+    func resolve(addresses: [String]) async -> ResolveResult {
+        during()
+        return result
+    }
+}
+
+/// Wired the way `SingletonGraph.makeClientEncryptedSender` wires it.
+private func makeSender(
+    pinBox: PinBox,
+    opener: any VaultOpening,
+    resolver: any RecipientKeyResolving,
+    transport: RecordingTransport,
+    crypto: RecordingCrypto
+) -> ClientEncryptedSender {
+    ClientEncryptedSender(
+        opener: opener,
+        resolver: resolver,
+        transport: transport,
+        crypto: crypto,
+        pins: { pinBox.snapshot },
+        accountAddress: "me@example.com",
+        session: EnrollmentSession(),
+        now: { Date(timeIntervalSince1970: 1_760_000_000) },
+        boundaryToken: { "FIXEDTOKEN" }
+    )
+}
+
+@Suite(.serialized) struct ClientEncryptedSendPinChangeTests {
+
+    private static func intact(_ armored: String) -> PinnedKeyState {
+        .intact(publicKey: armored, fingerprint: PgpFingerprint.compute(fromArmored: armored)!)
+    }
+
+    /// A pin revoked while the unlock prompt is up stops the send; nothing is
+    /// encrypted to the key that was chosen before it.
+    @Test func aPinRevokedDuringUnlockStopsTheSend() async {
+        let box = PinBox(RecipientPinSnapshot(states: ["alice@b.com": Self.intact(PinnedKeyFixtures.alicePinned)]))
+        let crypto = RecordingCrypto()
+        let transport = RecordingTransport()
+        let sender = makeSender(
+            pinBox: box,
+            opener: ChangingOpener { box.set(RecipientPinSnapshot(states: ["alice@b.com": .revoked])) },
+            resolver: StubResolver(result: .success([usable("alice@b.com", key: PinnedKeyFixtures.alicePinned)])),
+            transport: transport,
+            crypto: crypto
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "alice@b.com"))
+        #expect(outcome == .recipientKeyRevoked(["alice@b.com"]))
+        #expect(crypto.encryptCalls.isEmpty)
+        #expect(transport.sent == nil)
+    }
+
+    /// A pin replaced by a QR re-scan while the unlock prompt is up is a key
+    /// change, not a send to the key it replaced.
+    @Test func aPinReplacedDuringUnlockIsAKeyChange() async {
+        let box = PinBox(RecipientPinSnapshot(states: ["alice@b.com": Self.intact(PinnedKeyFixtures.alicePinned)]))
+        let crypto = RecordingCrypto()
+        let transport = RecordingTransport()
+        let sender = makeSender(
+            pinBox: box,
+            opener: ChangingOpener {
+                box.set(RecipientPinSnapshot(states: ["alice@b.com": Self.intact(PinnedKeyFixtures.bobRevoked)]))
+            },
+            resolver: StubResolver(result: .success([usable("alice@b.com", key: PinnedKeyFixtures.alicePinned)])),
+            transport: transport,
+            crypto: crypto
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "alice@b.com"))
+        #expect(outcome == .keyChanged(["alice@b.com"]))
+        #expect(crypto.encryptCalls.isEmpty)
+        #expect(transport.sent == nil)
+    }
+
+    /// A recipient first pinned while the unlock prompt is up, to a key that
+    /// is not the one chosen, is a key change.
+    @Test func aNewPinThatDisagreesDuringUnlockIsAKeyChange() async {
+        let box = PinBox(.none)
+        let crypto = RecordingCrypto()
+        let transport = RecordingTransport()
+        let sender = makeSender(
+            pinBox: box,
+            opener: ChangingOpener {
+                box.set(RecipientPinSnapshot(states: ["alice@b.com": Self.intact(PinnedKeyFixtures.bobRevoked)]))
+            },
+            resolver: StubResolver(result: .success([
+                usable("alice@b.com", key: PinnedKeyFixtures.alicePinned), usable("carol@b.com"),
+            ])),
+            transport: transport,
+            crypto: crypto
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "alice@b.com, carol@b.com"))
+        #expect(outcome == .keyChanged(["alice@b.com"]))
+        #expect(crypto.encryptCalls.isEmpty)
+        #expect(transport.sent == nil)
+    }
+
+    /// A BCC recipient is checked too, not only the shared delivery.
+    @Test func aBccPinRevokedDuringUnlockStopsTheSend() async {
+        let box = PinBox(RecipientPinSnapshot(states: ["alice@b.com": Self.intact(PinnedKeyFixtures.alicePinned)]))
+        let crypto = RecordingCrypto()
+        let transport = RecordingTransport()
+        let sender = makeSender(
+            pinBox: box,
+            opener: ChangingOpener { box.set(RecipientPinSnapshot(states: ["alice@b.com": .revoked])) },
+            resolver: StubResolver(result: .success([
+                usable("carol@b.com"), usable("alice@b.com", key: PinnedKeyFixtures.alicePinned),
+            ])),
+            transport: transport,
+            crypto: crypto
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "carol@b.com", bcc: "alice@b.com"))
+        #expect(outcome == .recipientKeyRevoked(["alice@b.com"]))
+        #expect(crypto.encryptCalls.isEmpty)
+        #expect(transport.sent == nil)
+    }
+
+    /// A pin revoked while resolve is in flight counts, and stops the send
+    /// before the user is asked to unlock.
+    @Test func aPinRevokedDuringResolveStopsTheSendBeforeUnlock() async {
+        let box = PinBox(RecipientPinSnapshot(states: ["alice@b.com": Self.intact(PinnedKeyFixtures.alicePinned)]))
+        let crypto = RecordingCrypto()
+        let transport = RecordingTransport()
+        let sender = makeSender(
+            pinBox: box,
+            opener: StubOpener(outcome: .cancelled),
+            resolver: ChangingResolver(
+                result: .success([usable("alice@b.com", key: PinnedKeyFixtures.alicePinned)]),
+                during: { box.set(RecipientPinSnapshot(states: ["alice@b.com": .revoked])) }
+            ),
+            transport: transport,
+            crypto: crypto
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "alice@b.com"))
+        #expect(outcome == .recipientKeyRevoked(["alice@b.com"]))
+        #expect(crypto.encryptCalls.isEmpty)
+        #expect(transport.sent == nil)
+    }
+
+    /// Reading pins that did not change sends exactly as before, to the
+    /// pinned bytes.
+    @Test func unchangedPinsStillSendToThePinnedKey() async throws {
+        let pinned = RecipientPinSnapshot(states: ["alice@b.com": Self.intact(PinnedKeyFixtures.alicePinned)])
+        let box = PinBox(pinned)
+        let crypto = RecordingCrypto()
+        let transport = RecordingTransport()
+        let sender = makeSender(
+            pinBox: box,
+            opener: ChangingOpener { box.set(pinned) },
+            resolver: StubResolver(result: .success([
+                usable("alice@b.com", key: PinnedKeyFixtures.alicePinned), usable("carol@b.com"),
+            ])),
+            transport: transport,
+            crypto: crypto
+        )
+        let outcome = await sender.send(draft: ClientSendDraft(to: "alice@b.com, carol@b.com"))
+        #expect(outcome == .sent(sentSaved: true, warning: ""))
+        #expect(crypto.encryptCalls.first == [PinnedKeyFixtures.alicePinned, "KEY-carol@b.com"])
+        #expect(try #require(transport.sent).deliveries.count == 1)
     }
 }
