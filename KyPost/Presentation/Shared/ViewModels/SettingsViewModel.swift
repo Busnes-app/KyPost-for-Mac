@@ -16,6 +16,16 @@ import AppKit
 import UIKit
 #endif
 
+/// The Connection section's display state. Text only: nothing that reaches
+/// the relay, registers a device or authenticates is derived from it.
+nonisolated struct PairingDisplay: Equatable, Sendable {
+    let serverHost: String
+    let deviceId: String?
+    /// The account address, when known. A stored pairing carries only an
+    /// opaque `sub`, so this is nil outside the screenshot build.
+    let account: String?
+}
+
 @Observable
 @MainActor
 final class SettingsViewModel {
@@ -68,6 +78,11 @@ final class SettingsViewModel {
     /// this view model — the inbox's held list actions, rows on screen, and
     /// in-flight refreshes (`InboxViewModel.forgetAccount`).
     private let onUnpaired: (() -> Void)?
+    /// What Settings → Connection shows instead of the stored pairing. Set
+    /// only by the DEBUG screenshot graph (`SingletonGraph.pairingDisplayOverride`);
+    /// display text and nothing else — `isPaired`, unpair, Fix Notifications
+    /// and every relay path still read `securePairingStore`.
+    private let pairingDisplayOverride: PairingDisplay?
 
     init(
         securePairingStore: SecurePairingStore,
@@ -85,7 +100,8 @@ final class SettingsViewModel {
         pushRepository: PushRepository? = nil,
         recipientPinStore: RecipientPinStore? = nil,
         mailSignatureStore: MailSignatureStore? = nil,
-        onUnpaired: (() -> Void)? = nil
+        onUnpaired: (() -> Void)? = nil,
+        pairingDisplayOverride: PairingDisplay? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
@@ -103,6 +119,7 @@ final class SettingsViewModel {
         self.recipientPinStore = recipientPinStore
         self.mailSignatureStore = mailSignatureStore
         self.onUnpaired = onUnpaired
+        self.pairingDisplayOverride = pairingDisplayOverride
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.exportToSystemContactsEnabled
     }
@@ -116,8 +133,17 @@ final class SettingsViewModel {
         return URL(string: pairing.srv)?.host() ?? pairing.srv
     }
 
-    var pairedDeviceId: String? {
-        (try? securePairingStore.loadPairing())?.lastDeviceId
+    /// What the Connection section renders: the stored pairing, or the demo
+    /// build's display-only stand-in. Nil reads as "Not paired". Views use
+    /// this; actions keep using `isPaired`.
+    var pairingDisplay: PairingDisplay? {
+        if let pairingDisplayOverride { return pairingDisplayOverride }
+        guard let pairing = try? securePairingStore.loadPairing() else { return nil }
+        return PairingDisplay(
+            serverHost: URL(string: pairing.srv)?.host() ?? pairing.srv,
+            deviceId: pairing.lastDeviceId,
+            account: nil
+        )
     }
 
     var deliveryMode: String {

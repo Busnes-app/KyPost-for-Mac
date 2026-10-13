@@ -11,8 +11,10 @@
 # or `simctl io screenshot`, because those need TCC grants a CI machine will
 # not have, and because the run has to navigate the app anyway.
 #
-# Usage: capture-screenshots.sh [ios|macos|all] [output-dir]
+# Usage: capture-screenshots.sh [ios|ipad|macos|all] [output-dir]
 #   output-dir defaults to ./Distribution/Screenshots
+#   ios writes <output-dir>/iOS (6.9" iPhone), ipad <output-dir>/iPad
+#   (13" iPad), macos <output-dir>/macOS; all does every one.
 #
 # macOS additionally needs UI automation enabled, once per machine:
 #   sudo DevToolsSecurity -enable
@@ -48,6 +50,33 @@ iphones = [entry for runtime, entries in reversed(devices.items())
 print(next((entry["udid"] for name in names for entry in iphones
             if entry["name"] == name), ""))
 '
+}
+
+# App Store Connect requires 13" iPad screenshots for an app that runs on
+# iPad, and scales them down for the smaller iPads.
+ipad_device() {
+    xcrun simctl list devices available --json \
+        | /usr/bin/python3 -c '
+import json, sys
+devices = json.load(sys.stdin)["devices"]
+names = ("iPad Pro 13-inch (M5)", "iPad Pro 13-inch (M4)",
+         "iPad Air 13-inch (M4)", "iPad Air 13-inch (M3)",
+         "iPad Air 13-inch (M2)", "iPad Pro (12.9-inch) (6th generation)")
+ipads = [entry for runtime, entries in reversed(devices.items())
+         if "iOS" in runtime for entry in entries]
+print(next((entry["udid"] for name in names for entry in ipads
+            if entry["name"] == name), ""))
+'
+}
+
+# Apple's own listings are shot at 9:41 with a full battery.
+prepare_simulator() {
+    local device="$1"
+    xcrun simctl boot "$device" 2>/dev/null || true
+    xcrun simctl bootstatus "$device" >/dev/null 2>&1 || true
+    xcrun simctl status_bar "$device" override \
+        --time "9:41" --batteryState discharging --batteryLevel 100 \
+        --cellularBars 4 --wifiBars 3 2>/dev/null || true
 }
 
 # Screenshot names are the attachment names set in ScreenshotTests; the
@@ -89,7 +118,9 @@ PY
 }
 
 run() {
-    local label="$1" destination="$2" dest="$3"
+    # build: the derived-data name. iPhone and iPad share one (both are the
+    # iphonesimulator SDK), so the second capture does not rebuild the app.
+    local label="$1" destination="$2" dest="$3" build="${4:-$1}"
     # Separate statement: bash expands every word of a `local` before it
     # assigns any of them, so $label is not readable on the line that sets it.
     local bundle="$derived/$label.xcresult"
@@ -100,7 +131,7 @@ run() {
         -project KyPost.xcodeproj \
         -configuration Debug \
         -destination "$destination" \
-        -derivedDataPath "$derived/dd-$label" \
+        -derivedDataPath "$derived/dd-$build" \
         -only-testing:"KyPost UITests/ScreenshotTests" \
         -resultBundlePath "$bundle" \
         >"$derived/$label.log" 2>&1 \
@@ -113,12 +144,15 @@ mkdir -p "$derived"
 if [[ "$platform" == "ios" || "$platform" == "all" ]]; then
     device="$(ios_device)"
     [[ -n "$device" ]] || { echo "no 6.9-inch iPhone simulator available" >&2; exit 1; }
-    xcrun simctl boot "$device" 2>/dev/null || true
-    # Apple's own listings are shot at 9:41 with a full battery.
-    xcrun simctl status_bar "$device" override \
-        --time "9:41" --batteryState discharging --batteryLevel 100 \
-        --cellularBars 4 --wifiBars 3 2>/dev/null || true
+    prepare_simulator "$device"
     run ios "platform=iOS Simulator,id=$device" "$outdir/iOS"
+fi
+
+if [[ "$platform" == "ipad" || "$platform" == "all" ]]; then
+    device="$(ipad_device)"
+    [[ -n "$device" ]] || { echo "no 13-inch iPad simulator available" >&2; exit 1; }
+    prepare_simulator "$device"
+    run ipad "platform=iOS Simulator,id=$device" "$outdir/iPad" ios
 fi
 
 if [[ "$platform" == "macos" || "$platform" == "all" ]]; then

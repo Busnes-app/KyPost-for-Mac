@@ -69,6 +69,8 @@ import Testing
                 .filter { !$0.isEmpty }
         }
         addresses += DemoContent.contacts.flatMap { $0.emails.map(\.value) }
+        addresses += [DemoContent.pairingDisplay.serverHost]
+        addresses += [DemoContent.pairingDisplay.account].compactMap { $0 }
 
         #expect(addresses.count > DemoContent.emails.count)
         for address in addresses {
@@ -162,5 +164,61 @@ import Testing
         _ = try await graph.mailRepository.refreshFolder(StandardFolder.inbox)
 
         #expect(requests.value == 0)
+    }
+
+    // MARK: - Settings → Connection
+
+    /// The screenshot's Connection section reads as a paired account, and
+    /// that is all it is: no pairing is stored, so registration, pulls, mail
+    /// and Fix Notifications all still see an unpaired device.
+    @Test func theDemoGraphShowsAPairedAccountThatNothingCanUse() async throws {
+        let production = Production()
+        let requests = Box(0)
+        let graph = try makeDemoGraph(production)
+        graph.httpClient = HTTPClient(transport: { _ in
+            requests.mutate { $0 += 1 }
+            throw URLError(.notConnectedToInternet)
+        })
+        let settings = SettingsViewModel(
+            securePairingStore: graph.securePairingStore,
+            pushSettingsStore: graph.pushSettingsStore,
+            desktopSessionStore: graph.desktopSessionStore,
+            mailRepository: graph.mailRepository,
+            keywordRepository: graph.keywordRepository,
+            contactsSettingsStore: graph.contactsSettingsStore,
+            systemContactsExporter: graph.systemContactsExporter,
+            deviceRegistrationService: graph.deviceRegistrationService,
+            deregisterDeviceUseCase: graph.deregisterDeviceUseCase,
+            pushNotificationDispatcher: graph.pushNotificationDispatcher,
+            pairingDisplayOverride: graph.pairingDisplayOverride
+        )
+
+        // Presented as paired.
+        #expect(settings.pairingDisplay == DemoContent.pairingDisplay)
+        #expect(settings.pairingDisplay?.account == DemoContent.accountAddress)
+        #expect(settings.deliveryMode == "Push")
+
+        // Nothing paired is readable.
+        #expect(!settings.isPaired)
+        #expect(try graph.securePairingStore.loadPairing() == nil)
+        #expect(try graph.securePairingStore.loadActivePairing() == nil)
+        let reregistered = await graph.deviceRegistrationService.reregisterIfPaired(deviceToken: "demo-token")
+        #expect(reregistered == nil)
+        await settings.repairNotifications()
+        #expect(settings.statusMessage == "Not paired — pair this device first.")
+        await graph.pullPollingScheduler.pollNow()
+        _ = try await graph.mailRepository.refreshFolder(StandardFolder.inbox)
+        #expect(requests.value == 0)
+    }
+
+    @Test func anOrdinaryGraphHasNoPairingDisplayOverride() throws {
+        let production = Production()
+        let graph = try SingletonGraph(
+            userDefaults: production.defaults,
+            keychain: production.keychain,
+            database: AppDatabase(inMemory: true),
+            isDemo: false
+        )
+        #expect(graph.pairingDisplayOverride == nil)
     }
 }
