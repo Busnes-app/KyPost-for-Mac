@@ -136,7 +136,9 @@ enum SecurityWipeSteps {
             }
         })
 
-        steps.append(WipeStep("appLock") { try graph.appLockStore.reset() })
+        // Everything but Require Unlock to Open, which `releaseLock` removes
+        // once every step here has succeeded.
+        steps.append(WipeStep("appLock") { try graph.appLockStore.reset(keepingLockEnabled: true) })
 
         // Last of the local steps, because several above read state that lives
         // here. Cursor keys are server folder *paths*, so they leak the folder
@@ -144,6 +146,9 @@ enum SecurityWipeSteps {
         // to cards in the OS database; the keyword store holds every label the
         // server has ever applied.
         steps.append(WipeStep("userDefaults") {
+            // Under Hostile Location Protection several stores keep their
+            // values here instead of in the domain below.
+            graph.hostileMemoryDefaults?.removeAll()
             guard let defaultsDomain else { return }
             let defaults = graph.userDefaults
             guard let domain = defaults.persistentDomain(forName: defaultsDomain) else { return }
@@ -158,6 +163,14 @@ enum SecurityWipeSteps {
         })
 
         return steps
+    }
+
+    /// Turns Require Unlock to Open off — run by `SecurityWipe` only after
+    /// every step above succeeded. Until then the rebuilt app comes up locked,
+    /// so neither the failed-unlock reset nor the threshold wipe ever shows an
+    /// unlocked app over data a step could not delete.
+    static func releaseLock(graph: SingletonGraph) -> WipeStep {
+        WipeStep("appLockOff") { try graph.appLockStore.clearLockEnabled() }
     }
 }
 

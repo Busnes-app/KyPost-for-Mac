@@ -11,8 +11,12 @@ import Foundation
 import Testing
 @testable import KyPost
 
-private func makeWipeStore() -> WipeStateStore {
-    WipeStateStore(defaults: UserDefaults(suiteName: "tests.\(UUID().uuidString)")!)
+private func makeWipeStore(keychain: KeychainStorage? = nil) -> WipeStateStore {
+    WipeStateStore(defaults: UserDefaults(suiteName: "tests.\(UUID().uuidString)")!, keychain: keychain)
+}
+
+private func scratchKeychain() -> KeychainStorage {
+    KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
 }
 
 @MainActor
@@ -64,17 +68,17 @@ private func steps(_ names: [String], failing: Set<String> = []) -> (list: [Wipe
         #expect(state.failedSteps == ["a"])
     }
 
-    /// Three attempts ride out a transient failure; the fourth is where the app
-    /// stops re-wiping itself at every launch, which without a ceiling is a
-    /// brick with no way past it.
+    /// Three runs — the first and two resumes — ride out a transient failure;
+    /// the third failure is where the app stops re-wiping itself at every
+    /// launch, which without a ceiling is a brick with no way past it.
     @Test func theCeilingEndsTheAutomaticRetries() async {
         let state = makeWipeStore()
         let wipe = SecurityWipe(state: state)
 
-        for attempt in 1...SecurityWipe.maxResumes {
+        for attempt in 1...SecurityWipe.maxAttempts {
             let (list, _) = steps(["a"], failing: ["a"])
             let result = await wipe.run(steps: list)
-            let expectRetry = attempt < SecurityWipe.maxResumes
+            let expectRetry = attempt < SecurityWipe.maxAttempts
             #expect(result == .incomplete(failedSteps: ["a"], willRetry: expectRetry))
         }
         #expect(wipe.blockedByAbandonedWipe)
@@ -86,7 +90,7 @@ private func steps(_ names: [String], failing: Set<String> = []) -> (list: [Wipe
     @Test func givingUpKeepsTheEvidence() async {
         let state = makeWipeStore()
         let wipe = SecurityWipe(state: state)
-        for _ in 1...SecurityWipe.maxResumes {
+        for _ in 1...SecurityWipe.maxAttempts {
             let (list, _) = steps(["a"], failing: ["a"])
             _ = await wipe.run(steps: list)
         }
@@ -121,7 +125,7 @@ private func steps(_ names: [String], failing: Set<String> = []) -> (list: [Wipe
     @Test func aWipeAfterAnAbandonedOneStartsANewEpisode() async {
         let state = makeWipeStore()
         let wipe = SecurityWipe(state: state)
-        for _ in 1...SecurityWipe.maxResumes {
+        for _ in 1...SecurityWipe.maxAttempts {
             let (list, _) = steps(["a"], failing: ["a"])
             _ = await wipe.run(steps: list)
         }
@@ -198,5 +202,103 @@ private func steps(_ names: [String], failing: Set<String> = []) -> (list: [Wipe
         #expect(result == .incomplete(
             failedSteps: ["restoreHostileLocationProtection"], willRetry: true
         ))
+    }
+
+    // MARK: - The release step
+
+    /// The lock comes off only when everything else went. A wipe that left
+    /// data behind must not bring the app back unlocked over it.
+    @Test func theReleaseRunsOnlyAfterACompleteRun() async {
+        let wipe = SecurityWipe(state: makeWipeStore())
+        let released = Box(0)
+        let release = WipeStep("appLockOff") { released.mutate { $0 += 1 } }
+
+        let (failing, _) = steps(["a", "b"], failing: ["b"])
+        #expect(await wipe.run(steps: failing, release: release)
+            == .incomplete(failedSteps: ["b"], willRetry: true))
+        #expect(released.value == 0)
+
+        let (clean, _) = steps(["a", "b"])
+        #expect(await wipe.run(steps: clean, release: release) == .complete)
+        #expect(released.value == 1)
+    }
+
+    /// A release that fails is a failed step: the marker stays, and the wipe
+    /// resumes.
+    @Test func aFailedReleaseIsIncomplete() async {
+        let state = makeWipeStore()
+        let wipe = SecurityWipe(state: state)
+        let (list, _) = steps(["a"])
+        let release = WipeStep("appLockOff") { throw WipeStepFailure("no") }
+
+        #expect(await wipe.run(steps: list, release: release)
+            == .incomplete(failedSteps: ["appLockOff"], willRetry: true))
+        #expect(state.inProgress)
+    }
+
+    // MARK: - The Keychain mirror
+
+    /// A defaults plist any process can delete was the only record that a wipe
+    /// was owed. The Keychain copy keeps the app from opening as if nothing
+    /// happened.
+    @Test func theInProgressMarkerSurvivesLosingTheDefaults() async {
+        let keychain = scratchKeychain()
+        let wipe = SecurityWipe(state: makeWipeStore(keychain: keychain))
+        let (list, _) = steps(["a"], failing: ["a"])
+        _ = await wipe.run(steps: list)
+
+        // The same Keychain, a fresh (deleted) defaults domain.
+        let fresh = SecurityWipe(state: makeWipeStore(keychain: keychain))
+        #expect(fresh.hasInterruptedWipe)
+    }
+
+    /// An abandoned wipe whose defaults were deleted resumes rather than
+    /// opening — and rather than blocking forever: the same shape is a
+    /// reinstall, and reinstalling has to stay the recovery.
+    @Test func anAbandonedMarkerWithoutItsDefaultsResumesTheWipe() async {
+        let keychain = scratchKeychain()
+        let wipe = SecurityWipe(state: makeWipeStore(keychain: keychain))
+        for _ in 1...SecurityWipe.maxAttempts {
+            let (list, _) = steps(["a"], failing: ["a"])
+            _ = await wipe.run(steps: list)
+        }
+        #expect(wipe.blockedByAbandonedWipe)
+
+        let state = makeWipeStore(keychain: keychain)
+        let fresh = SecurityWipe(state: state)
+        #expect(fresh.hasInterruptedWipe)
+        #expect(!fresh.blockedByAbandonedWipe)
+
+        // A clean resume clears both copies.
+        let (clean, _) = steps(["a"])
+        #expect(await fresh.run(steps: clean) == .complete)
+        #expect(!SecurityWipe(state: makeWipeStore(keychain: keychain)).hasInterruptedWipe)
+        #expect(!state.inProgress)
+    }
+
+    /// Either copy saying "abandoned" blocks, as long as the episode's
+    /// defaults record is there.
+    @Test func eitherCopyOfAbandonedBlocks() async {
+        let keychain = scratchKeychain()
+        let defaults = UserDefaults(suiteName: "tests.\(UUID().uuidString)")!
+        let state = WipeStateStore(defaults: defaults, keychain: keychain)
+        let wipe = SecurityWipe(state: state)
+        for _ in 1...SecurityWipe.maxAttempts {
+            let (list, _) = steps(["a"], failing: ["a"])
+            _ = await wipe.run(steps: list)
+        }
+        // Someone flips the plist's copy back.
+        defaults.set(false, forKey: "wipe.abandoned")
+        #expect(wipe.blockedByAbandonedWipe)
+    }
+
+    /// A clean wipe leaves nothing in the Keychain to resume.
+    @Test func aCleanRunClearsTheKeychainCopy() async throws {
+        let keychain = scratchKeychain()
+        let wipe = SecurityWipe(state: makeWipeStore(keychain: keychain))
+        let (list, _) = steps(["a"])
+        #expect(await wipe.run(steps: list) == .complete)
+        #expect(try keychain.string(forKey: "wipe.inProgress") == nil)
+        #expect(try keychain.string(forKey: "wipe.abandoned") == nil)
     }
 }
