@@ -4,7 +4,7 @@
 <dict>
 	<!-- Picked up automatically: the KyPost folder is a synchronized root
 	     group (objectVersion 77), so this file needs no pbxproj entry. Only
-	     Info.plist and Presentation/AGENTS.md are membership exceptions. -->
+	     Info.plist and the AGENTS.md files are membership exceptions. -->
 
 	<key>NSPrivacyTracking</key>
 	<false/>
@@ -38,10 +38,43 @@
 
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
-		<!-- The only required-reason API in the tree. Audited across all
-		     five categories: no file-timestamp, disk-space, boot-time or
-		     active-keyboard APIs are used. Re-check that before adding a
-		     dependency, not after an upload is rejected. -->
+		<!-- Three categories, audited across all five (file timestamp,
+		     system boot time, disk space, active keyboards, user defaults)
+		     against Apple's "Describing use of required reason API" list.
+		     The audit covers the GopenPGP XCFramework too: it is a static
+		     Go archive with no manifest of its own, so its required-reason
+		     calls are this file's to declare. Check its imports with
+		     `nm -u` on the framework binary. Re-check before adding a
+		     dependency, not after an upload is rejected. No disk-space or
+		     active-keyboard API is used, by the app or by the archive. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<!-- C617.1: metadata of files inside the app container or
+				     its app group container. SignOnHandoff reads
+				     .contentModificationDateKey to sweep stale KyIdentity
+				     responses from the sign-on App Group, and the Go
+				     runtime and standard library in the GopenPGP archive
+				     import stat, fstat, fstatat and lstat. Nothing touches
+				     a file outside the containers, and no timestamp leaves
+				     the device. -->
+				<string>C617.1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<!-- 35F9.1: elapsed time and timers inside the app. The Go
+				     runtime in the GopenPGP archive calls mach_absolute_time
+				     as its monotonic clock (nanotime) for its scheduler and
+				     timers. The value is never sent off the device. -->
+				<string>35F9.1</string>
+			</array>
+		</dict>
 		<dict>
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>

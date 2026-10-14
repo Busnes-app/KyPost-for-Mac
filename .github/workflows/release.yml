@@ -10,7 +10,8 @@ name: Release
 # during review. If this project ever adds a direct-download channel — the
 # equivalent of Android's GitHub Releases APK — that channel needs a Developer
 # ID identity and a notarise-and-staple step, and it is a separate job, not a
-# flag on this one.
+# flag on this one. (Cloud signing cannot do Developer ID either: Apple calls
+# that a known bug, even with an Admin key.)
 #
 # Modelled on kypost-android's release.yml, which gates publication on the tag
 # matching the versioned manifest and on the artifact carrying the expected
@@ -18,6 +19,58 @@ name: Release
 # silent and expensive: App Store Connect files a build under whatever
 # CFBundleShortVersionString it carries, and that cannot be corrected after
 # upload.
+#
+# SIGNING IS AUTOMATIC, with an App Store Connect API key.
+#
+#   archive        signs with an Apple Development identity. xcodebuild
+#                  creates or refreshes the development profiles itself
+#                  (-allowProvisioningUpdates plus the API key).
+#   -exportArchive re-signs for the store with the team's cloud-managed
+#                  Apple Distribution certificate and fetches the App Store
+#                  profiles. No distribution certificate or profile exists
+#                  as a secret.
+#
+# The development certificate IS a secret, and that is deliberate. Left to
+# itself, xcodebuild creates a new "Apple Development: Created via API"
+# certificate on a runner that has none, keeps the private key only in that
+# runner's keychain, and on the next fresh runner refuses: "Your account
+# already has an Apple Development signing certificate for this machine, but
+# its private key is not installed in your keychain." Revoking it only resets
+# the cycle (Apple Developer Forums thread 695759, reproduced through Xcode
+# 15.4). Importing one fixed development identity is the known way out.
+#
+# ONE-TIME SETUP — what the maintainer creates (nothing here creates it):
+#
+#   GitHub → Settings → Environments → New environment named `release`.
+#   Add required reviewers and limit deployment to tags matching `v*`, so a tag
+#   pushed by anyone with write access cannot reach App Store Connect alone.
+#   Then add these environment secrets:
+#
+#   APP_STORE_CONNECT_PRIVATE_KEY   the .p8 file, base64-encoded
+#                                   (`base64 -i AuthKey_XXXX.p8 | pbcopy`).
+#                                   Users and Access → Integrations → Team
+#                                   Keys. The key MUST have the Admin role:
+#                                   cloud-managed distribution certificates
+#                                   are refused to every other role, and an
+#                                   API key has no per-key cloud-signing
+#                                   permission to grant instead.
+#   APP_STORE_CONNECT_KEY_ID        the key's ID (10 characters).
+#   APP_STORE_CONNECT_ISSUER_ID     the issuer UUID shown above the key list.
+#   APPLE_DEVELOPMENT_CERTIFICATE   an Apple Development certificate of team
+#                                   TATYN4X57D with its private key, exported
+#                                   from Keychain Access as .p12, base64-encoded.
+#   APPLE_DEVELOPMENT_CERTIFICATE_PASSWORD
+#                                   the password chosen for that .p12 export.
+#
+#   The team needs at least one registered iOS device: automatic signing
+#   cannot create an iOS development profile for a team with none.
+#
+# The build number (CFBundleVersion) is `<run_number>.<run_attempt>` of this
+# workflow, passed as CURRENT_PROJECT_VERSION. It rises with every release run,
+# and a re-run of a failed run (which may already have uploaded one platform)
+# gets a new number instead of a duplicate App Store Connect would refuse.
+# project.pbxproj keeps CURRENT_PROJECT_VERSION = 1 for local builds; nothing
+# commits the CI value back.
 
 on:
   push:
@@ -36,16 +89,15 @@ jobs:
     environment: release
 
     env:
-      DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_DISTRIBUTION_CERTIFICATE }}
-      DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERTIFICATE_PASSWORD }}
-      PROVISIONING_PROFILE_MACOS: ${{ secrets.APPLE_PROVISIONING_PROFILE_MACOS }}
-      PROVISIONING_PROFILE_IOS: ${{ secrets.APPLE_PROVISIONING_PROFILE_IOS }}
+      DEVELOPMENT_CERTIFICATE: ${{ secrets.APPLE_DEVELOPMENT_CERTIFICATE }}
+      DEVELOPMENT_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPMENT_CERTIFICATE_PASSWORD }}
       ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
       ASC_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
       # Not a secret: it is already in project.pbxproj. Named here so the
       # signer check has something to compare against.
       EXPECTED_TEAM_ID: TATYN4X57D
+      BUILD_NUMBER: ${{ github.run_number }}.${{ github.run_attempt }}
 
     steps:
       - uses: actions/checkout@v7
@@ -57,8 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=""
-          for name in DISTRIBUTION_CERTIFICATE DISTRIBUTION_CERTIFICATE_PASSWORD \
-                      PROVISIONING_PROFILE_MACOS PROVISIONING_PROFILE_IOS \
+          for name in DEVELOPMENT_CERTIFICATE DEVELOPMENT_CERTIFICATE_PASSWORD \
                       ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
             eval "value=\${$name:-}"
             [ -n "$value" ] || missing="$missing $name"
@@ -90,7 +141,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: ./scripts/verify-version.sh "$TAG"
 
-      - name: Install signing identity
+      - name: Install development identity
         run: |
           set -euo pipefail
           KEYCHAIN=$RUNNER_TEMP/release.keychain-db
@@ -100,21 +151,16 @@ jobs:
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$PASSWORD" "$KEYCHAIN"
 
-          echo "$DISTRIBUTION_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/dist.p12"
-          security import "$RUNNER_TEMP/dist.p12" -k "$KEYCHAIN" \
-            -P "$DISTRIBUTION_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          rm -f "$RUNNER_TEMP/dist.p12"
+          echo "$DEVELOPMENT_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/dev.p12"
+          security import "$RUNNER_TEMP/dev.p12" -k "$KEYCHAIN" \
+            -P "$DEVELOPMENT_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/dev.p12"
 
           # Without this codesign blocks on a GUI prompt no one can answer and
           # the job hangs until it times out rather than failing.
           security set-key-partition-list -S apple-tool:,apple: \
             -k "$PASSWORD" "$KEYCHAIN" > /dev/null
           security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
-
-          PROFILES=~/Library/MobileDevice/Provisioning\ Profiles
-          mkdir -p "$PROFILES"
-          echo "$PROVISIONING_PROFILE_MACOS" | base64 --decode > "$PROFILES/macos.provisionprofile"
-          echo "$PROVISIONING_PROFILE_IOS" | base64 --decode > "$PROFILES/ios.mobileprovision"
 
       - name: App Store Connect API key
         run: |
@@ -127,10 +173,10 @@ jobs:
       # fork or without secrets, so a tag is the first point at which a green
       # check has actually meant the tests passed.
       - name: Test
-        # On the simulator, which needs no identity: the distribution profile
-        # installed above signs archives but cannot be used to RUN the app,
-        # and a development profile cannot cover an ephemeral runner. Same
-        # arrangement as ci.yml, for the same reasons — see its header.
+        # On the simulator, which needs no identity: a development profile
+        # cannot cover an ephemeral, unregistered runner, so the app cannot be
+        # run here signed. Same arrangement as ci.yml, for the same reasons —
+        # see its header.
         run: |
           set -euo pipefail
           UDID=$(xcrun simctl list devices available --json \
@@ -140,27 +186,29 @@ jobs:
             -destination "platform=iOS Simulator,id=${UDID}" \
             -only-testing:"KyPost Tests"
 
-      - name: Archive macOS
+      # CODE_SIGN_STYLE stays Automatic, as project.pbxproj sets it.
+      - name: Archive
         run: |
-          .github/scripts/run-xcodebuild.sh archive \
-            -scheme KyPost \
-            -destination 'generic/platform=macOS' \
-            -archivePath "$RUNNER_TEMP/KyPost-macOS.xcarchive" \
-            CODE_SIGN_STYLE=Manual
+          set -euo pipefail
+          for platform in macOS iOS; do
+            .github/scripts/run-xcodebuild.sh archive \
+              -scheme KyPost \
+              -destination "generic/platform=${platform}" \
+              -archivePath "$RUNNER_TEMP/KyPost-${platform}.xcarchive" \
+              -allowProvisioningUpdates \
+              -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+              -authenticationKeyID "$ASC_KEY_ID" \
+              -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+              CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+          done
 
-      - name: Archive iOS
-        run: |
-          .github/scripts/run-xcodebuild.sh archive \
-            -scheme KyPost \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$RUNNER_TEMP/KyPost-iOS.xcarchive" \
-            CODE_SIGN_STYLE=Manual
-
-      # Proves the artifact carries the identity we think it does, before it
-      # reaches anyone. A swapped or regenerated certificate secret produces a
+      # Proves the artifact carries the identity and build number we think it
+      # does, before it reaches anyone. A swapped certificate secret produces a
       # perfectly valid build signed by the wrong team, which cannot be walked
-      # back once it is on App Store Connect.
-      - name: Signer identity is the expected team
+      # back once it is on App Store Connect. The export re-signs with the
+      # distribution certificate of the teamID in ExportOptions, which is the
+      # same team.
+      - name: Archive carries the expected team and build number
         run: |
           set -euo pipefail
           for platform in macOS iOS; do
@@ -179,7 +227,14 @@ jobs:
               echo "::error::${platform} build is signed by ${actual}, expected ${EXPECTED_TEAM_ID}. Refusing to upload."
               exit 1
             fi
-            echo "${platform} signer verified: ${actual}"
+            plist="$app/Info.plist"
+            [ -f "$plist" ] || plist="$app/Contents/Info.plist"
+            build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")
+            if [ "$build" != "$BUILD_NUMBER" ]; then
+              echo "::error::${platform} build number is ${build}, expected ${BUILD_NUMBER}. Refusing to upload."
+              exit 1
+            fi
+            echo "${platform}: signer ${actual}, build ${build}"
           done
 
       # Export and upload are one step: ExportOptions carries
@@ -193,18 +248,17 @@ jobs:
               -archivePath "$RUNNER_TEMP/KyPost-${platform}.xcarchive" \
               -exportOptionsPlist "Distribution/ExportOptions-${platform}.plist" \
               -exportPath "$RUNNER_TEMP/export-${platform}" \
+              -allowProvisioningUpdates \
               -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
               -authenticationKeyID "$ASC_KEY_ID" \
               -authenticationKeyIssuerID "$ASC_ISSUER_ID"
           done
 
       - name: Remove the signing keychain
-        # `always()`: a keychain holding the distribution identity, and a
+        # `always()`: a keychain holding the team's development identity, and a
         # private key that can upload to App Store Connect, should not outlive
         # the job even when the job failed.
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
           rm -rf "$RUNNER_TEMP/private_keys"
-          rm -f ~/Library/MobileDevice/Provisioning\ Profiles/macos.provisionprofile
-          rm -f ~/Library/MobileDevice/Provisioning\ Profiles/ios.mobileprovision

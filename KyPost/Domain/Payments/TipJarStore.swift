@@ -22,6 +22,17 @@ final class TipJarStore {
     private(set) var isLoading = false
     private(set) var errorMessage: String?
 
+    /// The one line the tip section shows under its buttons: the last error,
+    /// or, once loading has finished with nothing to offer, why the list is
+    /// empty. Never both — the views used to print an error twice.
+    var statusMessage: String? {
+        if let errorMessage { return errorMessage }
+        if products.isEmpty && !isLoading {
+            return String(localized: "Tips are not available right now.")
+        }
+        return nil
+    }
+
     private var updatesTask: Task<Void, Never>?
     private let source: TipJarTransactionSource
 
@@ -57,7 +68,7 @@ final class TipJarStore {
             products = try await source.loadProducts(ProductID.all)
                 .sorted { ProductID.all.firstIndex(of: $0.id)! < ProductID.all.firstIndex(of: $1.id)! }
         } catch {
-            errorMessage = "Support options are temporarily unavailable. Please try again later."
+            errorMessage = String(localized: "Tips are temporarily unavailable. Please try again later.")
         }
     }
 
@@ -70,7 +81,7 @@ final class TipJarStore {
             @unknown default: break
             }
         } catch {
-            errorMessage = "The purchase could not be completed. Please try again."
+            errorMessage = String(localized: "The tip could not be completed. Please try again.")
         }
     }
 

@@ -16,10 +16,11 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 - **Push notifications** (APNs) for new mail and MFA challenges. A polling fallback also runs (90 s in the foreground, background refresh on iOS).
 - **MFA approval** — approve login challenges from a notification tap.
 - **Contact sync** — two-way sync with the relay. Local edits win first, and the reconciliation keeps the data safe from conflicts. Contacts carry the full extended schema: groups, photo, IM and social handles, websites, relations, extra dates, phonetic names, department, custom fields, pronouns, and a PGP public key.
-- **PGP key exchange with QR** — share your public key in person. *My QR Code* makes a pickup link that expires in 2 minutes. *Scan to add contact key* reads the link of another person, shows their fingerprint for out-of-band confirmation, and saves the key to a contact. iOS scans with the camera and accepts a pasted link as a fallback. macOS accepts only a pasted link, because it has no VisionKit scanner.
+- **PGP key exchange with QR** — share your public key in person. *My QR Code* makes a pickup link that expires in 2 minutes. The code carries the fingerprint of the key on your device. *Scan to add contact key* reads the link of another person, checks the key against that fingerprint, and saves it to a contact. A code without one (the other device holds no key) saves the key as not verified in person. iOS scans with the camera and accepts a pasted link as a fallback. macOS accepts only a pasted link, because it has no VisionKit scanner.
 - **Encryption state on every message** — a message that the server decrypted says so, and you can then see that the server read your mail. A message only your own key can open says that too; on a device you enrolled it decrypts here. The decrypted body is never stored; it lives only while the message is on screen. Previewing a decrypted attachment writes it to a temporary file, deleted when the preview closes, when the message closes, and by the security wipe; saving one writes it where you choose. For a server-custody account the app holds no private key at all. For a client-custody account it holds one only after you deliberately run device enrollment, sealed in the Secure Enclave and released on user presence; enabling Hostile Location Protection or resetting a stranded app lock destroys it, and neither brings it back. See `docs/E2E_PGP.md` in the server repo.
 - **Encrypted and signed send** — for an account whose key the server holds, the Encrypt and Sign flags travel with the message, and the relay does the OpenPGP work. If a recipient has no usable key, the relay refuses first and asks you. If you confirm, the relay mails a one-time link to the recipient. It also stores the plaintext of that message on your server for up to 7 days, together with the named recipients. For an account whose key the server does not hold, a device you enrolled encrypts and signs on the device itself (PGP/MIME, each Bcc recipient gets a separate ciphertext, and the Sent copy is encrypted to your own key). On a device that is not enrolled, the app saves the draft on the server and webmail takes over.
 - **17 themes** — the palettes match the web and Android apps exactly. The default theme is **Busnes Light**; a theme you already chose is kept.
+- **Tip Jar** — an optional one-off tip through In-App Purchase, in About (iOS: Settings → About & Tip Jar; macOS: KyPost → About KyPost). It unlocks nothing. About also lists the open-source software KyPost includes, with each licence, under **Acknowledgements**.
 
 ### Security (Settings → Security)
 
@@ -81,7 +82,7 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 
 ## Requirements
 
-- Xcode 26 (deployment target macOS and iOS 26.5)
+- Xcode 26 (deployment target macOS and iOS 26.0; iPhone, iPad and Mac)
 - A running llama-labels backend (the live deployment is behind Cloudflare at `mail.urlxl.com`)
 - For push: an APNs key configured on the backend
 
@@ -156,6 +157,11 @@ The network-facing tests run against a stubbed `HTTPClient`. They need no backen
 - **Desktop pairing is half-built.** `kypost://desktop-pair` registers this
   computer and stores the session token it gets back, but no request sends that
   token yet.
+- **The release workflow has not run end to end.** `release.yml` signs
+  automatically with an App Store Connect API key and uploads both platforms,
+  but no tag has exercised it yet. Its one-time setup (the `release`
+  environment and five secrets) is listed at the top of the workflow.
+- **No visionOS build.** The app targets iPhone, iPad and Mac only.
 
 ## License
 
