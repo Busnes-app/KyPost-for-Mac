@@ -21,7 +21,9 @@ struct KyPostCommands: Commands {
         MessageCommands.resolve(
             reader: readerCommands,
             list: listCommands,
-            isLocked: SingletonGraph.shared.appLockManager.isLocked,
+            // A pending startup wipe check or an abandoned wipe gates mail
+            // like the lock does (`MailAccessGate`).
+            isLocked: SingletonGraph.shared.appLockManager.isLocked || !MailAccessGate.isOpen(),
             isPaired: SingletonGraph.shared.securePairingStore.isPaired
         )
     }
@@ -84,7 +86,12 @@ struct KyPostCommands: Commands {
     }
 
     private func item(_ title: LocalizedStringKey, _ action: (() -> Void)?) -> some View {
-        Button(title) { action?() }
+        // Re-checked when chosen: a key equivalent can arrive before the
+        // menu re-validates after the lock engages.
+        Button(title) {
+            guard !SingletonGraph.shared.appLockManager.isLocked, MailAccessGate.isOpen() else { return }
+            action?()
+        }
             .disabled(action == nil)
     }
 }

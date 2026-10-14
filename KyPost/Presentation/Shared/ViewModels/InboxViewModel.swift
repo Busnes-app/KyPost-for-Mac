@@ -27,6 +27,9 @@ final class InboxViewModel {
     /// the sidebar's Inbox row *is* the folder and its keyword rows sit under
     /// it, so there is no All chip to hide.
     private let appliesAllTabSetting: Bool
+    /// Whether a reader window may resolve mail now (`MailAccessGate`): not
+    /// while the startup wipe check runs or an abandoned wipe blocks the app.
+    private let windowGate: @MainActor () -> Bool
 
     private(set) var folder = Config.defaultFolder
     private(set) var emails: [Email] = []
@@ -127,8 +130,10 @@ final class InboxViewModel {
         noticeDuration: Duration = .seconds(4),
         pushTapRefreshWait: Duration = .seconds(30),
         appliesAllTabSetting: Bool = InboxViewModel.platformHasTabStrip,
+        windowGate: @escaping @MainActor () -> Bool = { true },
         now: @escaping () -> Date = Date.init
     ) {
+        self.windowGate = windowGate
         self.mailRepository = mailRepository
         self.keywordRepository = keywordRepository
         self.initialRefreshErrorDelay = initialRefreshErrorDelay
@@ -802,12 +807,15 @@ final class InboxViewModel {
     /// window was opened with, else the cached row — which is how a restored
     /// window finds its message after a relaunch. Nil only when none of the
     /// three has it (an uncached search result after a relaunch, or mail of
-    /// a forgotten account).
+    /// a forgotten account), and always nil while `windowGate` is shut: a
+    /// window macOS restores at launch must not show cached mail before the
+    /// startup wipe check, or behind an abandoned wipe.
     func resolveEmail(for key: MailRowKey) async -> Email? {
+        guard windowGate() else { return nil }
         if let row = email(for: key) ?? windowRows[key] { return row }
         let account = accountGeneration
         guard let cached = try? await mailRepository.cachedEmail(key),
-              account == accountGeneration
+              account == accountGeneration, windowGate()
         else { return nil }
         return cached
     }

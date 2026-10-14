@@ -11,7 +11,10 @@ import Testing
 @testable import KyPost
 
 @MainActor
-private func makeViewModel(client: HTTPClient) throws -> InboxViewModel {
+private func makeViewModel(
+    client: HTTPClient,
+    windowGate: @escaping @MainActor () -> Bool = { true }
+) throws -> InboxViewModel {
     let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
     let db = try AppDatabase(inMemory: true)
     return InboxViewModel(
@@ -20,7 +23,8 @@ private func makeViewModel(client: HTTPClient) throws -> InboxViewModel {
             emailDAO: EmailDAO(modelContainer: db.container),
             httpClient: client
         ),
-        keywordRepository: KeywordRepository(settingsStore: KeywordSettingsStore(defaults: defaults))
+        keywordRepository: KeywordRepository(settingsStore: KeywordSettingsStore(defaults: defaults)),
+        windowGate: windowGate
     )
 }
 
@@ -31,8 +35,9 @@ private func respond(_ request: URLRequest, _ status: Int, _ body: String) -> (D
 
 /// INBOX holds message 1; every other folder is empty. Attachment downloads
 /// and actions fail with a 500 when `failing` is set.
-private func mailClient(failing: Bool = false) -> HTTPClient {
+private func mailClient(failing: Bool = false, requests: Box<Int>? = nil) -> HTTPClient {
     HTTPClient { request in
+        requests?.mutate { $0 += 1 }
         let url = request.url!
         let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let mailbox = query.first { $0.name == "mailbox" }?.value ?? "INBOX"
@@ -76,6 +81,27 @@ private func mailClient(failing: Bool = false) -> HTTPClient {
         let resolved = await viewModel.resolveEmail(for: key)
         #expect(resolved?.subject == "Kept")
         #expect(await viewModel.resolveEmail(for: MailRowKey(folder: "Archive", serverId: "1")) == nil)
+    }
+
+    /// A window macOS restores at launch must not show cached mail before
+    /// the startup wipe check settles, or behind an abandoned wipe — the
+    /// main window shows neither — and must not reach the relay meanwhile.
+    @Test @MainActor func aShutGateResolvesNothingAndSendsNothing() async throws {
+        let gateOpen = Box(true)
+        let requests = Box(0)
+        let viewModel = try makeViewModel(client: mailClient(requests: requests)) { gateOpen.value }
+        await viewModel.load()
+        let row = try #require(viewModel.email(for: key))
+        viewModel.rememberForWindow(row)
+        await viewModel.selectFolder("Archive")
+
+        gateOpen.value = false
+        let before = requests.value
+        #expect(await viewModel.resolveEmail(for: key) == nil)
+        #expect(requests.value == before)
+
+        gateOpen.value = true
+        #expect(await viewModel.resolveEmail(for: key)?.subject == "Kept")
     }
 
     /// A search result is never cached, so only the remembered row finds it —

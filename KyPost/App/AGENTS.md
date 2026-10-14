@@ -145,7 +145,11 @@ intact and the wipe landed a few hundred milliseconds later.
   `presentMfaLocally`, `deliveredRemotePushes`, the KyIdentity sign-on
   (`KyIdentitySignOnCoordinator.appIsGated`), and notification history
   (`NotificationHistoryAccess`), which the macOS Settings scene shows outside
-  the main window's recovery screen.
+  the main window's recovery screen. macOS pop-out readers, which macOS
+  restores at launch outside the main window, check `MailAccessGate`
+  (pending verdict or abandoned wipe) before resolving or showing mail
+  (`EmailWindowView`, `InboxViewModel.resolveEmail`), and the Message menu
+  and a pop-out's ⌫ treat a shut gate like the lock.
 
 `AppLockManager.onWipe` is wired in `onLaunch`. Left unset it fails closed and
 reports a wipe that could not run, rather than rejecting the eleventh wrong PIN

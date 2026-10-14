@@ -191,8 +191,11 @@ struct EmailDetailView: View {
         .modifier(ReaderCommandHandling(
             commands: messageCommands,
             isPopOut: isPopOut,
-            canDelete: !isActing,
-            delete: { act(.delete) }
+            canDelete: !isActing && !isLocked && MailAccessGate.isOpen(),
+            // Checked again on the key press: enablement is only as fresh
+            // as the last redraw. The pairing is read only here, since it
+            // is a Keychain read.
+            delete: { if keyboardActionsAllowed { act(.delete) } }
         ))
 #if os(iOS)
         // The mail actions live in the bottom bar; hide the app tab bar
@@ -518,6 +521,13 @@ struct EmailDetailView: View {
     }
 
     private var isLocked: Bool { SingletonGraph.shared.appLockManager.isLocked }
+
+    /// ⌫ acts only where the Message menu would (`MessageCommands.resolve`):
+    /// a key press reaches a pop-out behind `LockedOverlay`, which covers the
+    /// window but takes no keys.
+    private var keyboardActionsAllowed: Bool {
+        !isLocked && MailAccessGate.isOpen() && SingletonGraph.shared.securePairingStore.isPaired
+    }
 
     /// Our own relay address (the pairing's sub), excluded from Reply All.
     private var ownAddress: String? {

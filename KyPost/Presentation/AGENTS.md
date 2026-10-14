@@ -389,7 +389,11 @@ Domain.
   no unread action (KyPost-Server `server_inbox.go`, 2026-10-13).
 - **A pop-out reader owns its row** (`EmailWindowView`,
   `InboxViewModel.resolveEmail`; root "Inbox search"). Never read the main
-  list from the window's body.
+  list from the window's body. It resolves only while `MailAccessGate` is
+  open (App AGENTS.md) and only for the account it resolved under: a gate
+  or `accountGeneration` change removes the reader, dropping its
+  plaintext, and resolves again. Its ⌫ re-checks lock, gate and pairing on
+  the key press — `LockedOverlay` covers a window but takes no keys.
 - Encrypted send is decided by key custody, not by hope.
   `Domain/Models/PgpKeyCustody.swift` maps `/api/pgp/bootstrap` to
   `serverHeld` / `clientHeld` / `noIdentity`, and anything unrecognised

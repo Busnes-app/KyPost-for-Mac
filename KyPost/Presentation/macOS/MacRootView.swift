@@ -799,6 +799,12 @@ private extension View {
 /// keeps it: the main list empties on every folder switch and search, and a
 /// window that re-read it went blank. A restored window finds its row in the
 /// cache; the reader fetches a missing body itself.
+///
+/// Mail shows only behind the same gates as the main window
+/// (`MailAccessGate`: not before the startup wipe check, not after an
+/// abandoned wipe), and only for the account it was resolved under: when
+/// either changes the reader is removed, which drops its plaintext
+/// (`EmailDetailView.onDisappear`), and the row is resolved again.
 struct EmailWindowView: View {
     @Environment(\.theme) private var theme
 
@@ -809,9 +815,27 @@ struct EmailWindowView: View {
 
     private var inboxViewModel: InboxViewModel { SingletonGraph.shared.inboxViewModel }
 
+    private struct Resolution: Equatable {
+        let key: MailRowKey?
+        let account: Int
+        let gateOpen: Bool
+    }
+
     var body: some View {
+        let resolution = Resolution(
+            key: key,
+            account: inboxViewModel.accountGeneration,
+            gateOpen: MailAccessGate.isOpen()
+        )
         Group {
-            if let email {
+            if !resolution.gateOpen {
+                EmptyStateView(
+                    message: "Open the main KyPost window to continue.",
+                    systemImage: "lock"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(theme.bg)
+            } else if let email {
                 EmailDetailView(email: email, inboxViewModel: inboxViewModel, isPopOut: true)
             } else if !resolved {
                 ProgressView()
@@ -826,10 +850,14 @@ struct EmailWindowView: View {
                 .background(theme.bg)
             }
         }
-        .task(id: key) {
+        .task(id: resolution) {
             resolved = false
             email = nil
-            if let key { email = await inboxViewModel.resolveEmail(for: key) }
+            guard let key = resolution.key, resolution.gateOpen else { return }
+            let found = await inboxViewModel.resolveEmail(for: key)
+            // An answer for an account forgotten meanwhile is not shown.
+            guard !Task.isCancelled, inboxViewModel.accountGeneration == resolution.account else { return }
+            email = found
             resolved = true
         }
     }
