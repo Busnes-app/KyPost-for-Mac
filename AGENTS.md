@@ -214,10 +214,10 @@ per-address on-device pin before — `VerifiedPgpKeyStore` is per-uid memory for
 holding a synced key change for review, and the relay's TOFU (`key_changed`)
 is the server's pin, not this device's.
 
-- **A key verified here by QR is authoritative for its addresses.** The QR
-  save (`saveContact(_:verifiedInPerson: true)`) pins the contact's key for
-  each of its emails, replacing what was pinned; re-scanning is how a pin
-  changes. A contact with no email gets no pin. Sync never writes a pin.
+- **A key verified here by QR is authoritative for its addresses.** A QR
+  save whose code carried a matching `#fp=` (`saveContact(_:verifiedInPerson:
+  true)`, see "In-person key exchange") pins the contact's key for each of its
+  emails, replacing what was pinned; re-scanning is how a pin changes. A contact with no email gets no pin. Sync never writes a pin.
 - **The one thing a synced copy may do is revoke it**, recorded on every
   contact write (sync and local), never on a lookup:
   `PgpKeyRevocation.withRevocations` takes only revocation signatures of
@@ -261,6 +261,24 @@ is the server's pin, not this device's.
   defaults when the mode turns on and at every launch while it is on
   (`AppEnvironment.eraseHostileLocationDefaults`) — swept by the wipe, cleared
   on unpair.
+
+### In-person key exchange (`Data/Networking/PgpQrClient.swift`, `PgpQrViewModel.swift`)
+
+Same protocol as KyPost for Android and Linux; change it in all three.
+
+- **The code is the pickup URL plus `#fp=<FPR>`**: the primary key's v4
+  fingerprint, 40 uppercase hex, no spaces. `FPR` is computed from the key
+  this device signs with (`ownPublicKey` → `PgpFingerprint`), never from the
+  server and never from `VaultRecord.identityFingerprint` (a legacy record's
+  came from the server). `qrPayload` drops any fragment the server's URL had.
+- **No key held: no `fp`.** The screen shows bootstrap's fingerprint, labelled
+  as the server's. An enrolled device offers "Unlock Key to Verify" (presence
+  prompt, `DeviceVaultOpener`); opening the screen never prompts.
+- **Scanning** splits the fragment off before the fetch; it never reaches the
+  server. `fp` equal to the fingerprint of the fetched bytes is the only path
+  to `verifiedInPerson: true`. `fp` different or malformed: refused, nothing
+  saved. `fp` absent: may be saved, never pinned, and the screen says it was
+  not verified in person.
 
 ### Contacts: sync status and vCard export
 
