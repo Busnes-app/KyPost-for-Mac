@@ -139,15 +139,18 @@ final class PushRepository {
 
     // MARK: - Pull mode
 
-    /// What one pull handed over. Mail is already persisted to history and
-    /// contains only entries that were new to it; MFA challenges are never
-    /// persisted (spec §5).
+    /// What one pull handed over. MFA challenges are never persisted (spec
+    /// §5). From `fetchPull`, `mail` is what history does not hold yet — none
+    /// of it recorded; from `pullOnce`, what it recorded.
     struct PullBatch: Equatable, Sendable {
         var mail: [PushNotification] = []
         var mfaChallenges: [PulledMfaChallenge] = []
         /// The pairing session it was fetched under; present nothing from it
         /// once `isCurrent(session:)` is false.
         var session = 0
+        /// Where the cursor goes once the batch is handed off (`commitPull`).
+        var cursor = 0
+        var deliveryMode: RegistrationResponse.DeliveryMode?
     }
 
     struct PulledMfaChallenge: Equatable, Sendable {
@@ -155,7 +158,25 @@ final class PushRepository {
         var userInfo: [String: String]
     }
 
-    /// One poll of the pull endpoint.
+    /// One poll of the pull endpoint, recording every new mail entry in
+    /// history and advancing the cursor before returning. For callers that
+    /// present nothing; `PullPollingScheduler` uses the three steps below, so
+    /// an entry is recorded only once it was presented.
+    @discardableResult
+    func pullOnce(now: Date = Date(), minCreatedAt: Date? = nil) async throws -> PullBatch {
+        var batch = try await fetchPull(now: now, minCreatedAt: minCreatedAt)
+        var recorded: [PushNotification] = []
+        for notification in batch.mail {
+            if try await recordPulled(notification, session: batch.session, now: now) {
+                recorded.append(notification)
+            }
+        }
+        batch.mail = recorded
+        try commitPull(batch, now: now)
+        return batch
+    }
+
+    /// Fetches the pull queue and writes nothing.
     ///
     /// `minCreatedAt` drops entries queued before it (entries without a
     /// `createdAt` stay) while still advancing the cursor past them. The
@@ -165,8 +186,16 @@ final class PushRepository {
     /// already delivered that history no longer remembers. A first pull
     /// (cursor 0, i.e. fresh or re-paired) applies `firstPullWindow` for the
     /// same reason: the queue holds the account's whole recent backlog.
-    @discardableResult
-    func pullOnce(now: Date = Date(), minCreatedAt: Date? = nil) async throws -> PullBatch {
+    ///
+    /// Mail already in history (same seq or message id — push delivered it,
+    /// or an earlier poll presented it) is left out. Nothing is recorded
+    /// here: history is the record of what was *presented*, so an entry is
+    /// recorded only after its banner was raised (`recordPulled`), and the
+    /// cursor moves only once the whole batch was (`commitPull`). A poll cut
+    /// short in between — a background task expiring, the process killed —
+    /// fetches the same entries again next time instead of losing them; the
+    /// banner identifier is the seq, so one presented twice replaces itself.
+    func fetchPull(now: Date = Date(), minCreatedAt: Date? = nil) async throws -> PullBatch {
         // Session first, then the pairing: a teardown retires the pairing
         // before it moves the session, so either the session is stale or the
         // old pairing is refused.
@@ -199,36 +228,55 @@ final class PushRepository {
             }
             .sorted { $0.seq < $1.seq }
 
-        var batch = PullBatch()
+        var batch = PullBatch(session: session)
+        var messageIds = Set<String>()
         for dto in fresh {
             switch dto.routed(now: now) {
             case .mail(let notification):
-                // History is the dedupe against what push already delivered:
-                // same messageId, no second alert.
-                if try await dao.insert(notification: notification, session: session, now: now) {
-                    batch.mail.append(notification)
+                // History is the dedupe against what push already delivered
+                // and what an earlier poll already presented: same messageId,
+                // no second alert.
+                if try await dao.contains(seq: notification.seq) { continue }
+                if try await dao.contains(messageId: notification.messageId) { continue }
+                if !notification.messageId.isEmpty, !messageIds.insert(notification.messageId).inserted {
+                    continue
                 }
+                batch.mail.append(notification)
             case .mfaChallenge(let challenge, let userInfo):
                 batch.mfaChallenges.append(PulledMfaChallenge(challenge: challenge, userInfo: userInfo))
             case nil:
                 break
             }
         }
-
-        // Re-checked after the last suspension; from here to the return there
-        // is none, so an unpair cannot interleave with these writes.
         try Task.checkCancellation()
         guard isCurrent(session: session) else { throw CancellationError() }
+        batch.cursor = max(lastCursor, response.cursor)
+        batch.deliveryMode = response.deliveryMode.flatMap(RegistrationResponse.DeliveryMode.wire)
+        return batch
+    }
+
+    /// Records one pulled entry in history, after it was presented. False
+    /// when history already held it.
+    @discardableResult
+    func recordPulled(_ notification: PushNotification, session: Int, now: Date = Date()) async throws -> Bool {
+        guard isCurrent(session: session) else { throw CancellationError() }
+        return try await dao.insert(notification: notification, session: session, now: now)
+    }
+
+    /// The batch was handed off: apply its delivery mode and only now advance
+    /// the cursor (spec §3).
+    func commitPull(_ batch: PullBatch, now: Date = Date()) throws {
+        // No suspension from here to the end, so an unpair cannot interleave
+        // with these writes.
+        try Task.checkCancellation()
+        guard isCurrent(session: batch.session) else { throw CancellationError() }
         // The response mode is authoritative: a flip to pull makes the next
         // tick poll unconditionally, a flip back makes it a heartbeat again.
-        if let mode = response.deliveryMode.flatMap(RegistrationResponse.DeliveryMode.wire) {
+        if let mode = batch.deliveryMode {
             pushSettingsStore.deliveryMode = mode
         }
-        // Hand-off complete; only now advance the cursor (spec §3).
-        cursorStore.advance(to: max(lastCursor, response.cursor))
+        cursorStore.advance(to: batch.cursor)
         pushSettingsStore.lastPulledAt = now
-        batch.session = session
-        return batch
     }
 
     /// How far back a first pull (cursor 0) reaches.

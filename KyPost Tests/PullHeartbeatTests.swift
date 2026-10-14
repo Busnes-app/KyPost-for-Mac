@@ -89,6 +89,7 @@ private func makeScheduler(
     _ env: PullEnvironment,
     deliveredPushes: [DeliveredPush] = [],
     log: PresentationLog? = nil,
+    presenter: PulledPresenter? = nil,
     clock: @escaping () -> Date = Date.init
 ) throws -> PullPollingScheduler {
     let dispatcher = PushNotificationDispatcher(
@@ -104,7 +105,7 @@ private func makeScheduler(
         pushSettingsStore: env.settings,
         dispatcher: dispatcher,
         deliveredPushes: { deliveredPushes },
-        presenter: log?.presenter,
+        presenter: presenter ?? log?.presenter,
         clock: clock
     )
 }
@@ -842,5 +843,83 @@ private func rfc3339(_ date: Date) -> String {
             (payload: Self.payload("new"), receivedAt: now.addingTimeInterval(-60)),
         ], now: now, includingBeforeRegistration: true)
         #expect(try await env.repository.history().map(\.messageId) == ["new"])
+    }
+}
+
+// MARK: - Presented, then recorded
+
+/// History is the record of what was *presented*. A pulled entry used to be
+/// recorded and the cursor advanced before its banner was raised, so a poll
+/// cut short in between (a background task expiring) lost the banner for
+/// good: the next pull started past it, and history said it was delivered.
+@MainActor
+@Suite struct PullPresentThenRecordTests {
+    private static func mailJSON(seq: Int, messageId: String) -> String {
+        """
+        { "seq": \(seq), "createdAt": "\(rfc3339(Date()))",
+          "data": { "messageId": "\(messageId)", "senderName": "Ada", "emailSubject": "Hi" } }
+        """
+    }
+
+    private static let twoMails = """
+    { "cursor": 2, "deliveryMode": "pull", "notifications": [
+        \(mailJSON(seq: 1, messageId: "m-1")), \(mailJSON(seq: 2, messageId: "m-2"))
+    ] }
+    """
+
+    @Test func fetchingWritesNothingUntilCommitted() async throws {
+        let env = try makePullEnvironment(client: stubClient(json: Self.twoMails))
+
+        let batch = try await env.repository.fetchPull()
+
+        #expect(batch.mail.map(\.messageId) == ["m-1", "m-2"])
+        #expect(try allRows(env).isEmpty)
+        #expect(env.cursorStore.lastCursor == 0)
+        #expect(env.settings.lastPulledAt == nil)
+
+        try env.repository.commitPull(batch)
+        #expect(env.cursorStore.lastCursor == 2)
+        #expect(env.settings.deliveryMode == .pull)
+    }
+
+    @Test func whatHistoryHoldsIsNotFetchedAgain() async throws {
+        let env = try makePullEnvironment(client: stubClient(json: Self.twoMails))
+        let batch = try await env.repository.fetchPull()
+        try await env.repository.recordPulled(batch.mail[0], session: batch.session)
+
+        // The cursor never moved: the same entries come back.
+        let again = try await env.repository.fetchPull()
+
+        #expect(again.mail.map(\.messageId) == ["m-2"])
+    }
+
+    @Test func aPollCutShortPresentsTheRestNextTime() async throws {
+        let env = try makePullEnvironment(client: stubClient(json: Self.twoMails))
+        env.settings.deliveryMode = .pull
+        var presented: [String] = []
+        var scheduler: PullPollingScheduler?
+        scheduler = try makeScheduler(env, presenter: { item in
+            guard case .mail(let mail) = item else { return }
+            presented.append(mail.messageId)
+            // The background task expires right after the first banner.
+            if presented.count == 1 { scheduler?.cancelInFlightPoll() }
+        })
+
+        await scheduler?.pollNow()
+
+        #expect(presented == ["m-1"])
+        #expect(try allRows(env).isEmpty, "nothing is recorded by a cancelled poll")
+        #expect(env.cursorStore.lastCursor == 0)
+
+        await scheduler?.pollNow()
+
+        // The first banner is raised again under the same `pull-<seq>`
+        // identifier, which replaces it rather than adding a second.
+        #expect(presented == ["m-1", "m-1", "m-2"])
+        #expect(try allRows(env).map(\.messageId).sorted() == ["m-1", "m-2"])
+        #expect(env.cursorStore.lastCursor == 2)
+
+        await scheduler?.pollNow()
+        #expect(presented.count == 3, "a completed poll presents nothing twice")
     }
 }

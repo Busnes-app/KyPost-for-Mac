@@ -239,14 +239,20 @@ final class HTTPClient: Sendable {
         return try await execute(request, streamingUpTo: maxBytes)
     }
 
+    /// - Parameter timeout: this request's idle timeout; the session's
+    ///   (60 s) when nil.
     func post<Response: Decodable>(
         _ type: Response.Type,
         url: URL,
         query: [URLQueryItem] = [],
         headers: [String: String] = [:],
-        jsonBody: some Encodable
+        jsonBody: some Encodable,
+        timeout: TimeInterval? = nil
     ) async throws -> Response {
-        try await send(type, method: "POST", url: url, query: query, headers: headers, jsonBody: jsonBody)
+        try await send(
+            type, method: "POST", url: url, query: query, headers: headers,
+            jsonBody: jsonBody, timeout: timeout
+        )
     }
 
     func put<Response: Decodable>(
@@ -283,10 +289,12 @@ final class HTTPClient: Sendable {
         url: URL,
         query: [URLQueryItem],
         headers: [String: String],
-        jsonBody: some Encodable
+        jsonBody: some Encodable,
+        timeout: TimeInterval? = nil
     ) async throws -> Response {
         var request = URLRequest(url: try url.appending(queryOrThrow: query))
         request.httpMethod = method
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         for (field, value) in headers {
             request.setValue(value, forHTTPHeaderField: field)
