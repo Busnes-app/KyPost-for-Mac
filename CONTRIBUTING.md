@@ -164,11 +164,9 @@ if a job is genuinely flaky, that is a bug to fix in the job.
 
 | Job | What it runs |
 |---|---|
-| `ci-backend-api` | `gofmt -l`, `go vet`, `golangci-lint`, `govulncheck`, `go test -race ./internal/api/...` |
-| `ci-backend-other` | Same lint gates, `go test -race` on every other backend package |
-| `ci-frontend` | `npm audit --omit=dev --audit-level=low` (blocking), `tsc --noEmit`, `vitest`, `vite build` |
-| `ci-relay` | Typecheck both relay Workers, `node --test` on the relay behaviour suites |
-| `ci-docker` | `docker build`, container reaches `healthy`, and the entrypoint still refuses a non-loopback cleartext bind |
+| `ios-tests` | Builds for an iOS Simulator, then runs the `KyPost Tests` unit target on it (the UI target is not run) |
+| `macos-build` | `build-for-testing` for macOS, unsigned: the compile check for the other platform |
+| `test` | Passes only when both jobs above passed. This is the check the `main` ruleset requires |
 
 Notes that trip people up:
 
