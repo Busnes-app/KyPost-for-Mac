@@ -231,6 +231,31 @@ import Testing
         #expect(AppDatabase.storeMayOpen(defaults: defaults, at: url), "the mark is cleared once erased")
     }
 
+    /// A directory that cannot be traversed hides the file from `fileExists`;
+    /// that is not "erased", and the mark must survive until it really is.
+    @MainActor
+    @Test func anUntraversableDirectoryKeepsTheEraseMark() async throws {
+        let (directory, url) = try scratchStore()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        try storeWithMail(at: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: directory.path)
+
+        #expect(!AppDatabase.erasePreservedStore(defaults: defaults, at: url))
+        #expect(defaults.bool(forKey: AppDatabase.pendingEraseKey))
+        #expect(!AppDatabase.storeMayOpen(defaults: defaults, at: url))
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(AppDatabase.storeMayOpen(defaults: defaults, at: url))
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        let reopened = try AppDatabase(url: url)
+        #expect(try ModelContext(reopened.container).fetch(FetchDescriptor<EmailEntity>()).isEmpty)
+    }
+
     @Test func noFileMeansNothingToDiscard() throws {
         let (directory, url) = try scratchStore()
         defer { try? FileManager.default.removeItem(at: directory) }

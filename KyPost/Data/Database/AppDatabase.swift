@@ -221,12 +221,31 @@ final class AppDatabase: Sendable {
     /// pre-toggle survives a Hostile Location Protection switch. Plain
     /// delete, not a secure overwrite (explicitly out of scope in the
     /// design). Missing files are not an error.
+    ///
+    /// Removes directly and forgives only "not found". Checking `fileExists`
+    /// first read a directory that cannot be traversed as "no file", so the
+    /// delete reported success over a store still on disk — and an erase
+    /// marker cleared on that success let the store reopen later.
     static func deleteStoreFiles(at url: URL = storeURL) throws {
         for suffix in ["", "-wal", "-shm"] {
             let file = URL(fileURLWithPath: url.path + suffix)
-            if FileManager.default.fileExists(atPath: file.path) {
+            do {
                 try FileManager.default.removeItem(at: file)
+            } catch let error as NSError where isNotFound(error) {
+                continue
             }
         }
+    }
+
+    private static func isNotFound(_ error: NSError) -> Bool {
+        if error.domain == NSCocoaErrorDomain,
+           error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError {
+            return true
+        }
+        if error.domain == NSPOSIXErrorDomain, error.code == Int(ENOENT) { return true }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
+            return underlying.domain == NSPOSIXErrorDomain && underlying.code == Int(ENOENT)
+        }
+        return false
     }
 }
