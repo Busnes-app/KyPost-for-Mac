@@ -254,6 +254,10 @@ is the server's pin, not this device's.
   opens with no await before encrypting (`recheckPins`). A recipient whose
   pin no longer lands on the key already chosen stops the send with the same
   two outcomes; it is never re-chosen silently.
+- **Stored pins that will not decode are never written over.** Every write
+  is refused while `persistedPinsUnreadable` holds (a write would replace the
+  map with the one new pin), and the QR save throws
+  `RecipientPinStoreError.unreadable` after keeping the contact.
 - A pin is trusted only while its bytes fingerprint to the stored fingerprint
   (`broken` otherwise, never "absent"). The reader and sender each take a
   provider returning a `RecipientPinSnapshot` value, never a snapshot taken
@@ -274,6 +278,32 @@ is the server's pin, not this device's.
   description, which `localizedDescription` would drop. The outbox count also
   lives in `health.pending`, recounted by the repository after every write and
   every sync, so syncs the change monitor runs reach the banner.
+- **Contact sync never discards or duplicates the user's work**
+  (`ContactSyncRepository`):
+  - The cursor describes rows held: with the table empty and a cursor above 0
+    the sync resets it and pulls from 0 (MailRepository's `hasRows` rule). It
+    is also reset wherever the store files are deleted.
+  - Tombstones are removed only for the uids the request carried
+    (`ContactPendingDeletesStore.remove`); `tooOld` and store deletion never
+    clear them.
+  - Server writes are stamped with the sync's start time, never "now", so
+    `ContactDAO.upsert`'s newer-wins guard keeps an edit made while the
+    request was out. `assignUid` takes the pushed `updatedAt` for the same
+    reason.
+  - `tooOld` drops only synced rows (`ContactDAO.clearSynced`): `needsSync`
+    rows keep their localIds, tombstones stay, and the re-pull runs at once
+    (once — a second `tooOld` stops).
+  - Every create carries its localId as `clientRef`, and reconciliation
+    matches an echoed `clientRef` exactly before falling back to content.
+    **The relay does not store or echo it yet** (KyPost-Server
+    `contactSyncChange` ignores the field), so until it does the protection
+    is `ContactCursorStore.createsInFlight`: set while a push with creates is
+    unanswered, it makes the next sync pull and reconcile pending creates
+    before pushing them again.
+  - The Apple Contacts reconcile refuses a pass that would delete every
+    linked card or more than half of them (cards already gone do not count),
+    aborts on a failed Contacts read, and reports withheld deletes through
+    `ContactSyncHealth.withheldCardDeletes` to `ContactSyncBanner`.
 - **vCard** (`Utilities/VCard.swift`, Android #184): 4.0 or 3.0; every value
   escaped and stripped of control characters by **unicode scalar** (C0, DEL,
   C1, U+2028/2029 — wider than Android), so no field can start a property or a
@@ -612,6 +642,22 @@ old sentence edited out.
   `<meta http-equiv="refresh">` is plain HTML and a main-frame navigation, so
   neither the JavaScript switch nor `loadsSubresources` touches it.
 
+### The local store (`Data/Database/AppDatabase.swift`, `AppSchemaVersions.swift`)
+
+- **Each schema version lists every entity as it was at that version** — a
+  nested snapshot, never a live `@Model` that changed later. V3 once listed
+  the live `ContactEntity` (which gained `isSelf` at V6), so every V3 store
+  read as an unknown version and was deleted at launch. A new version is
+  added to `SchemaMigrationTests`, which writes a store at every version and
+  opens it with the current plan.
+- **A store that will not open is deleted only when this build can never
+  read it** (`AppDatabase.openFailureDisposition`): an unknown model version,
+  a failed migration (its hashes are not the current version's), or a file
+  that is not a database. A full disk, a locked or unreadable file, an I/O
+  error, or a current-version store that fails anyway keeps the file and runs
+  the session in memory. The store holds unsynced contacts, and Apple
+  Contacts cards follow its rows; it is not a disposable cache.
+
 ### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
 
 - **A message is (folder, messageId), never the id alone** (`MailRowKey`,
@@ -635,6 +681,9 @@ old sentence edited out.
 - **Only a full window may prune, and only window rows.** A partial delta
   describes what changed; everything it omits is still legitimately in the
   mailbox. Pruning against one deletes the folder.
+- **One empty full window over cached rows prunes nothing**
+  (`EmailDAO.unconfirmedEmptyWindows`): the next refresh asks for the full
+  window again, and only a second empty answer in a row prunes.
 - **Mail older than the window is kept** (KyPost-Server `before=` paging and
   `agedOut`/`hasMore`/`nextBefore`; Android #183). `EmailEntity.inWindow` is
   false for rows paged in by "Load older mail" (`MailRepository.loadOlder`) or
@@ -749,6 +798,14 @@ old sentence edited out.
   not a form.
 - 502 is `.upstreamFailure` and retryable with backoff; other 5xx are not.
   Telling the user to retry is only honest for the one that is.
+- **A send is the exception** (`MailRepository.send`,
+  `MailOutcome.sendOutcomeUnknown`): a transport error, any 5xx, or a 2xx
+  that will not decode is `.mayHaveBeenSent` — the relay answers only after
+  SMTP accepted the message, so the message may be out. `/api/mail/send`
+  carries an `Idempotency-Key` header (`OutgoingEmail.idempotencyKey`) and,
+  with attachments, a 180 s timeout. **The relay does not dedupe on the key
+  yet**; until it does, the guard is compose refusing a second send without
+  the user's explicit retry. The client-custody `send-pgp` path has neither.
 
 ### KyIdentity sign-on via KyAuth, iOS only (`Domain/SignOn`, `Data/Networking/KyIdentitySignOnClient.swift`, `KyIdentitySignOnCoordinator`)
 
@@ -796,7 +853,8 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
   same-id row in another folder stays visible. The source folder is pinned at
   tap time.
 - **Commit points:** the timer, leaving the list, iOS backgrounding (under a
-  background-task assertion), and app lock. Leaving is switching tabs on iOS
+  background-task assertion), app lock, and quitting on macOS
+  (`QuitPreparation`, waiting at most 10 s for the relay). Leaving is switching tabs on iOS
   or, in the iOS stack layout only, opening a message over the list; on macOS
   switching to Contacts or closing the window. In the iOS split layout the
   list stays beside the reader, so opening a message commits nothing and held
