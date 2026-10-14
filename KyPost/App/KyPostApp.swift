@@ -35,6 +35,20 @@ struct KyPostApp: App {
     private var graph: SingletonGraph { .shared }
     private var environment: AppEnvironment { .shared }
 
+    init() {
+        Self.sweepStaleAttachmentFiles()
+    }
+
+    /// Runs once per process, before any scene exists. Attachment previews
+    /// (decrypted ones included) are deleted when the preview closes, but a
+    /// crash or force-quit skips that, and the plaintext would otherwise sit
+    /// in the temporary directory until the system reaps it. Nothing from a
+    /// previous process can still be on screen, so everything under the
+    /// staging root goes.
+    static func sweepStaleAttachmentFiles() {
+        InboxViewModel.purgeAttachmentTempFiles()
+    }
+
     var body: some Scene {
 #if os(macOS)
         mainWindow
