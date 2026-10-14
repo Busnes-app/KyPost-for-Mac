@@ -2,44 +2,26 @@
 //  DesktopSessionStore.swift
 //  KyPost
 //
-//  Keychain-backed store for the desktop pairing session (Desktop Pairing
-//  guide checklist: token lives only in the credential store, never in logs).
+//  What is left of desktop pairing (`kypost://desktop-pair`): the eraser.
+//  Older builds exchanged a desktop pairing code for a session token and kept
+//  it in the Keychain, but nothing ever sent it — mail, contacts and
+//  notifications all authenticate with the native pairing
+//  (`SecurePairingStore`). The flow is gone; a token an older build stored
+//  is still removed by unpair, the security wipe and the failed-unlock reset.
 //
 
 import Foundation
 
-/// Session established by exchanging a desktop pairing code for a token.
-struct DesktopSession: Equatable, Sendable {
-    var sessionToken: String
-    var expiresAt: Date
-    var userId: String?
-    var userEmail: String?
-    /// Server base URL the session was established against.
-    var srv: String
-    var pairedAt: Date
-
-    var isExpired: Bool {
-        expiresAt <= Date()
-    }
-
-    /// Guide Step 4: authenticated requests send Authorization: Bearer <token>.
-    var authorizationHeaders: [String: String] {
-        ["Authorization": "Bearer \(sessionToken)"]
-    }
-}
-
 final class DesktopSessionStore: Sendable {
-    private enum Key {
-        static let sessionToken = "desktopSessionToken"
-        static let expiresAtTimestamp = "desktopSessionExpiresAt"
-        static let userId = "desktopSessionUserId"
-        static let userEmail = "desktopSessionUserEmail"
-        static let srv = "desktopSessionSrv"
-        static let pairedAtTimestamp = "desktopSessionPairedAt"
-        static let all = [
-            sessionToken, expiresAtTimestamp, userId, userEmail, srv, pairedAtTimestamp,
-        ]
-    }
+    /// The Keychain accounts older builds wrote. Never written now.
+    nonisolated static let legacyKeys = [
+        "desktopSessionToken",
+        "desktopSessionExpiresAt",
+        "desktopSessionUserId",
+        "desktopSessionUserEmail",
+        "desktopSessionSrv",
+        "desktopSessionPairedAt",
+    ]
 
     private let keychain: KeychainStorage
 
@@ -47,68 +29,17 @@ final class DesktopSessionStore: Sendable {
         self.keychain = keychain
     }
 
-    func saveSession(_ session: DesktopSession) throws {
-        try keychain.set(session.sessionToken, forKey: Key.sessionToken)
-        try keychain.set(
-            String(session.expiresAt.timeIntervalSince1970),
-            forKey: Key.expiresAtTimestamp
-        )
-        try keychain.set(session.srv, forKey: Key.srv)
-        try keychain.set(
-            String(session.pairedAt.timeIntervalSince1970),
-            forKey: Key.pairedAtTimestamp
-        )
-        if let userId = session.userId {
-            try keychain.set(userId, forKey: Key.userId)
-        } else {
-            try keychain.remove(Key.userId)
-        }
-        if let userEmail = session.userEmail {
-            try keychain.set(userEmail, forKey: Key.userEmail)
-        } else {
-            try keychain.remove(Key.userEmail)
-        }
-    }
-
-    /// Returns nil unless token, expiry, and srv are all present.
-    func loadSession() throws -> DesktopSession? {
-        guard
-            let token = try keychain.string(forKey: Key.sessionToken), !token.isEmpty,
-            let srv = try keychain.string(forKey: Key.srv), !srv.isEmpty,
-            let expiresAt = try keychain.string(forKey: Key.expiresAtTimestamp)
-                .flatMap(TimeInterval.init)
-                .map(Date.init(timeIntervalSince1970:))
-        else { return nil }
-
-        let pairedAt = try keychain.string(forKey: Key.pairedAtTimestamp)
-            .flatMap(TimeInterval.init)
-            .map(Date.init(timeIntervalSince1970:)) ?? .distantPast
-
-        return DesktopSession(
-            sessionToken: token,
-            expiresAt: expiresAt,
-            userId: try keychain.string(forKey: Key.userId),
-            userEmail: try keychain.string(forKey: Key.userEmail),
-            srv: srv,
-            pairedAt: pairedAt
-        )
-    }
-
-    /// Stored session, or nil if missing or expired. Expired sessions are
-    /// cleared so stale tokens never linger in the Keychain (guide checklist:
-    /// handle token expiration gracefully).
-    func activeSession() -> DesktopSession? {
-        guard let session = try? loadSession() else { return nil }
-        if session.isExpired {
-            try? clear()
-            return nil
-        }
-        return session
-    }
-
+    /// Removes every legacy key. Each gets its own attempt; the first error
+    /// still propagates, so a wipe reports what it could not remove.
     func clear() throws {
-        for key in Key.all {
-            try keychain.remove(key)
+        var firstError: Error?
+        for key in Self.legacyKeys {
+            do {
+                try keychain.remove(key)
+            } catch {
+                firstError = firstError ?? error
+            }
         }
+        if let firstError { throw firstError }
     }
 }

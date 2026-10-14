@@ -165,7 +165,7 @@ struct SettingsView: View {
             .listRowBackground(theme.panel)
 
             Section("About") {
-                NavigationLink("Donate / Support KyPost") {
+                NavigationLink("About & Tip Jar") {
                     AboutView()
                 }
             }

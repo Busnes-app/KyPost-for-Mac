@@ -744,12 +744,12 @@ private func rfc3339(_ date: Date) -> String {
             date: delivered
         )
         let scheduler = try makeScheduler(env, deliveredPushes: [pushed], log: log)
-        let service = DeviceRegistrationService(
-            client: NativeRegistrationClient(httpClient: stubClient(
+        let service = makeRegistrationService(
+            client: stubClient(
                 json: #"{"ok": true, "deviceId": "dev-1", "deviceSecret": "s2", "deliveryMode": "push"}"#
-            )),
-            securePairingStore: env.pairingStore,
-            pushSettingsStore: env.settings
+            ),
+            pairingStore: env.pairingStore,
+            settings: env.settings
         )
         service.reconcileExistingPairingPushes = {
             await scheduler.reconcileDeliveredPushesForExistingPairing(now: now)
@@ -775,12 +775,10 @@ private func rfc3339(_ date: Date) -> String {
     @Test func aNewPairingDoesNotRunTheExistingPairingReconcile() async throws {
         let env = try makePullEnvironment(client: stubClient(), paired: false)
         let ran = Box(false)
-        let service = DeviceRegistrationService(
-            client: NativeRegistrationClient(httpClient: stubClient(
-                json: #"{"ok": true, "deviceId": "dev-1", "deviceSecret": "s2"}"#
-            )),
-            securePairingStore: env.pairingStore,
-            pushSettingsStore: env.settings
+        let service = makeRegistrationService(
+            client: stubClient(json: #"{"ok": true, "deviceId": "dev-1", "deviceSecret": "s2"}"#),
+            pairingStore: env.pairingStore,
+            settings: env.settings
         )
         service.reconcileExistingPairingPushes = { ran.mutate { $0 = true } }
         _ = await service.pair(params: PairingParams(sub: "u1", srv: server, pt: "pt"), deviceToken: "apns")

@@ -21,7 +21,7 @@ enum NetworkError: Error, Equatable, LocalizedError {
     case badRequest(body: String)
     /// 409 — backend rejected the request state (e.g. expired MFA challenge).
     case conflict(body: String)
-    /// 429 — rate limited (e.g. too many desktop pairing attempts, or the
+    /// 429 — rate limited (e.g. too many pairing attempts, or the
     /// relay's per-device lockout after repeated bad credentials). `retryAfter`
     /// is the `Retry-After` header in seconds, or nil when it was absent or
     /// unparseable — callers must still back off rather than retrying at once.
@@ -30,6 +30,10 @@ enum NetworkError: Error, Equatable, LocalizedError {
     /// (TOFU). Deliberately distinct from `.transport`: either a legitimate
     /// certificate rotation (clear the pairing and re-pair) or interception.
     case certificateMismatch
+    /// The relay's stored pin could not be read from the Keychain, so the
+    /// connection was refused rather than left to system trust. Not a
+    /// mismatch: nothing was compared, and re-pairing is not the remedy.
+    case pinUnreadable
     /// 503 — backend config issue; persistent error, cannot retry (spec §3).
     case serviceUnavailable
     /// The response body exceeded the caller's cap. A hostile or broken relay
@@ -51,6 +55,8 @@ enum NetworkError: Error, Equatable, LocalizedError {
         switch self {
         case .certificateMismatch:
             String(localized: "The server's security certificate changed and no longer matches this pairing. If you rotated your server's certificate, remove the pairing in Settings → Connection and re-pair; otherwise the connection may be intercepted.")
+        case .pinUnreadable:
+            String(localized: "KyPost couldn't read this server's certificate pin from the Keychain, so it didn't connect. Unlock this device and try again.")
         case .responseTooLarge:
             String(localized: "The server sent more data than KyPost will accept for this request.")
         case .rateLimited(let retryAfter):
@@ -153,9 +159,36 @@ final class HTTPClient: Sendable {
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
 
-    init(session: URLSession = .shared) {
+    /// No default session on purpose. `URLSession.shared` has no pinning
+    /// delegate and a shared disk cache, so a client that silently took it
+    /// would reach the relay with neither pin nor redirect checks.
+    init(session: URLSession) {
         transport = { try await session.data(for: $0) }
         streamTransport = Self.streamTransport(session: session)
+    }
+
+    /// A client over a session whose delegate is `delegate`, with a refused
+    /// handshake reported as the reason it was refused rather than as a bare
+    /// cancellation. Both seams are wrapped: attachment downloads go through
+    /// the streaming transport.
+    static func pinned(session: URLSession, delegate: PinnedSessionDelegate) -> HTTPClient {
+        let streaming = streamTransport(session: session)
+        return HTTPClient(
+            transport: { request in
+                do {
+                    return try await session.data(for: request)
+                } catch {
+                    throw delegate.mapPinFailure(request, error)
+                }
+            },
+            streamTransport: { request, limit in
+                do {
+                    return try await streaming(request, limit)
+                } catch {
+                    throw delegate.mapPinFailure(request, error)
+                }
+            }
+        )
     }
 
     init(transport: @escaping Transport) {

@@ -518,7 +518,7 @@ nonisolated func rsvpRefusedBeforeSending(_ error: Error) -> Bool {
     switch error {
     case NetworkError.badRequest, NetworkError.unauthorized, NetworkError.conflict,
          NetworkError.rateLimited, NetworkError.serviceUnavailable,
-         NetworkError.certificateMismatch, NetworkError.invalidURL:
+         NetworkError.certificateMismatch, NetworkError.pinUnreadable, NetworkError.invalidURL:
         true
     case MailSourceError.notPaired, MailSourceError.credentialUnavailable,
          MailSourceError.invalidServerURL, MailSourceError.notConfigured,

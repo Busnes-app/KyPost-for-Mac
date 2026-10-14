@@ -5,8 +5,8 @@
 //  Keychain-backed app-lock settings and PIN state. Keys are a binding
 //  contract: appLock.enabled, appLock.credentialGateEnabled, appLock.pinSalt,
 //  appLock.pinHash, appLock.pinVersion, appLock.failedAttempts,
-//  appLock.lockoutUntil, appLock.lockoutDuration, appLock.wipeThreshold,
-//  appLock.wipeThresholdTag, appLock.graceSeconds.
+//  appLock.lockoutUntil, appLock.lockoutDuration, appLock.lockoutBoot,
+//  appLock.wipeThreshold, appLock.wipeThresholdTag, appLock.graceSeconds.
 //
 //  **The PIN fields reverse this file's original decision.** It used to say
 //  "deliberately no PIN or lockout fields — verification is LAContext's job,
@@ -31,6 +31,7 @@ final class AppLockStore: Sendable {
         static let failedAttempts = "appLock.failedAttempts"
         static let lockoutUntil = "appLock.lockoutUntil"
         static let lockoutDuration = "appLock.lockoutDuration"
+        static let lockoutBoot = "appLock.lockoutBoot"
         static let wipeThreshold = "appLock.wipeThreshold"
         static let wipeThresholdTag = "appLock.wipeThresholdTag"
         static let graceSeconds = "appLock.graceSeconds"
@@ -78,22 +79,30 @@ final class AppLockStore: Sendable {
     /// about to be written. A no-op outside tests, which use it to fail the
     /// second half and prove what a half-written record reads as.
     private let beforeThresholdWrite: @Sendable (String) throws -> Void
+    /// Runs before a lockout deadline is written. A no-op outside tests, which
+    /// use it to prove a failed write still leaves the delay in force.
+    private let beforeLockoutWrite: @Sendable () throws -> Void
 
     init(
         keychain: KeychainStorage,
         defaults: UserDefaults = .standard,
-        beforeThresholdWrite: @escaping @Sendable (String) throws -> Void = { _ in }
+        beforeThresholdWrite: @escaping @Sendable (String) throws -> Void = { _ in },
+        beforeLockoutWrite: @escaping @Sendable () throws -> Void = {}
     ) {
         self.keychain = keychain
         self.defaults = defaults
         self.beforeThresholdWrite = beforeThresholdWrite
+        self.beforeLockoutWrite = beforeLockoutWrite
     }
 
-    /// Feature 1: Require Unlock to Open. Callers that only decide what to
-    /// *show* use `lockEnabled`, which still reports false on a read failure —
-    /// a Keychain outage severe enough to break this read also breaks the
-    /// pairing credential, so locking the user out on top of it helps nobody.
-    /// Callers that act destructively must use `lockState` instead.
+    /// Feature 1: Require Unlock to Open.
+    ///
+    /// **Whether the app starts locked is decided from this, never from
+    /// `lockEnabled`**, and `.unreadable` counts as on. A Mac login item reads
+    /// it before the Keychain is ready (`errSecInteractionNotAllowed`), and
+    /// reading that as "off" started the app unlocked and made `lock()` a
+    /// no-op for the whole session. `AppLockManager` re-reads it until it
+    /// answers.
     var lockState: FlagState {
         do {
             return try keychain.string(forKey: Key.lockEnabled) == "true" ? .on : .off
@@ -102,6 +111,8 @@ final class AppLockStore: Sendable {
         }
     }
 
+    /// True only when the flag reads as on. A display convenience: anything
+    /// that decides whether to lock, or acts destructively, uses `lockState`.
     var lockEnabled: Bool { lockState == .on }
 
     /// **Does not arm the tripwire.** The marker vouches for a stored PIN, and
@@ -111,6 +122,13 @@ final class AppLockStore: Sendable {
     /// launch would erase the user's mail for switching a setting.
     func setLockEnabled(_ enabled: Bool) throws {
         try keychain.set(enabled ? "true" : "false", forKey: Key.lockEnabled)
+    }
+
+    /// Removes the flag outright — the last thing a complete security wipe
+    /// does (`SecurityWipeSteps.releaseLock`), so an incomplete one leaves the
+    /// app locked over whatever it could not delete.
+    func clearLockEnabled() throws {
+        try keychain.remove(Key.lockEnabled)
     }
 
     /// Feature 3: Require unlock to receive push/MFA. Stored here so the
@@ -244,12 +262,12 @@ final class AppLockStore: Sendable {
         try keychain.set(String(count), forKey: Key.failedAttempts)
     }
 
-    /// Lockout deadline on the **monotonic** timebase (`ContinuousClock`), not
-    /// the wall clock: a wall-clock deadline is cleared by setting the date
-    /// forward, which is not a defence at all. `lockoutDurationMillis` is
-    /// stored beside it purely to clamp the remaining time after a reboot,
-    /// where the monotonic clock restarts and the stored deadline would
-    /// otherwise read as the machine's entire previous uptime.
+    /// Lockout deadline on the **monotonic** timebase (`CLOCK_MONOTONIC_RAW`),
+    /// not the wall clock: a wall-clock deadline is cleared by setting the date
+    /// forward, which is not a defence at all. The monotonic clock restarts at
+    /// zero on reboot, so `lockoutBootId` records which boot the deadline was
+    /// written in, and `lockoutDurationMillis` is what a later boot restarts
+    /// the countdown from (`AppLockManager.remainingLockoutMillis`).
     var lockoutUntilMillis: Int64 {
         Int64((try? keychain.string(forKey: Key.lockoutUntil)) ?? "") ?? 0
     }
@@ -258,33 +276,54 @@ final class AppLockStore: Sendable {
         Int64((try? keychain.string(forKey: Key.lockoutDuration)) ?? "") ?? 0
     }
 
-    func setLockout(untilMillis: Int64, durationMillis: Int64) throws {
-        try keychain.set(String(untilMillis), forKey: Key.lockoutUntil)
+    /// The boot session the deadline was written in (`kern.bootsessionuuid`),
+    /// nil when none was recorded or it cannot be read — which the manager
+    /// treats as another boot, restarting the delay rather than shortening it.
+    var lockoutBootId: String? {
+        try? keychain.string(forKey: Key.lockoutBoot)
+    }
+
+    /// Duration first and deadline last, so an interrupted write never leaves
+    /// a new deadline without the duration a later boot restarts from.
+    func setLockout(untilMillis: Int64, durationMillis: Int64, bootId: String?) throws {
+        try beforeLockoutWrite()
         try keychain.set(String(durationMillis), forKey: Key.lockoutDuration)
+        if let bootId {
+            try keychain.set(bootId, forKey: Key.lockoutBoot)
+        } else {
+            try keychain.remove(Key.lockoutBoot)
+        }
+        try keychain.set(String(untilMillis), forKey: Key.lockoutUntil)
     }
 
     func resetFailedAttempts() throws {
         try setFailedAttempts(0)
-        try setLockout(untilMillis: 0, durationMillis: 0)
+        try setLockout(untilMillis: 0, durationMillis: 0, bootId: nil)
     }
 
     /// Clears the PIN, both feature flags, the attempt counters, the wipe
-    /// threshold and the grace period — the app-lock half of `SecurityWipe`,
-    /// and also what "turn off Require Unlock to Open" runs.
+    /// threshold and the grace period — the app-lock half of `SecurityWipe`.
+    ///
+    /// `keepingLockEnabled` leaves Require Unlock to Open in place: the wipe
+    /// removes it last, and only once every other step succeeded, so a wipe
+    /// that could not finish never brings the app back unlocked over the data
+    /// it left.
     ///
     /// Tripwire first, for `clearPin`'s reason. Every removal is attempted
     /// even after one fails, and the first error is rethrown: a caller told
     /// "the lock could not be cleared" while three of five items are already
     /// gone is better served by the remaining two also being gone.
-    func reset() throws {
+    func reset(keepingLockEnabled: Bool = false) throws {
         defaults.set(false, forKey: Self.tripwireKey)
         var firstError: Error?
-        for key in [
+        var keys = [
             Key.pinSalt, Key.pinHash, Key.pinVersion,
-            Key.failedAttempts, Key.lockoutUntil, Key.lockoutDuration,
-            Key.lockEnabled, Key.credentialGateEnabled,
+            Key.failedAttempts, Key.lockoutUntil, Key.lockoutDuration, Key.lockoutBoot,
+            Key.credentialGateEnabled,
             Key.wipeThreshold, Key.wipeThresholdTag, Key.graceSeconds,
-        ] {
+        ]
+        if !keepingLockEnabled { keys.append(Key.lockEnabled) }
+        for key in keys {
             do { try keychain.remove(key) } catch { firstError = firstError ?? error }
         }
         if let firstError { throw firstError }

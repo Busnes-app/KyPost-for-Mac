@@ -36,7 +36,14 @@ Domain.
   per view, so a sheet already on screen stops the `fullScreenCover`
   presenting at all. Either way MFA approval and pairing were reachable on a
   locked app. A new scene root gets `.lockAwareRouting(router)` alongside its
-  `.id(generation)`, `LockedOverlay`, and `protectedFromCapture()`.
+  `.id(generation)`, `lockCover(theme:)`, and `protectedFromCapture()`.
+- **The macOS lock cover covers the chrome, not just the content**
+  (`lockCover(theme:)`, `UnlockView.swift`). While locked it hides the window
+  toolbar (`.toolbar(.hidden, for: .windowToolbar)`), disables the content
+  (which reaches the toolbar items it declares) and hides it from
+  accessibility; the `LockedOverlay` sits outside all three. An overlay alone
+  left toolbar Delete/Archive/Move and the search field working behind it.
+  Never apply `LockedOverlay` on its own.
 - **`PushPairingView` closes itself on iOS when the lock engages.** Settings
   presents it outside the router, so `dismissPresentedRoutes` cannot reach
   it, and "Sign in with KyIdentity" backgrounds the app on purpose. A sign-on
@@ -44,6 +51,17 @@ Domain.
   confirmation step; otherwise it goes through `router.handle`, which defers it
   until unlock. A link the screen never took (it was dismissed first) goes to
   the router when the last pairing screen disappears, so it is never stranded.
+- **An unpaired Mac says exactly how to pair** (`PairingInstructions`): on the
+  web, Settings → Security → Devices → Pair a new device → Pair this device,
+  which opens a `kypost://native-pair` link. The wording follows KyPost-Server
+  `frontend/src/pages/security/PairingPanel.tsx`; change both together. The
+  inbox empty state and Settings → Connection use it; Settings → Connection
+  offers only "Paste Pairing Link…" (the native `PushPairingView`, for the
+  link the web page shows when the browser could not open it). There is no
+  desktop pairing screen.
+- **A new pairing reloads the Mac window at once.** `MacRootView` observes
+  `.kyPostPaired` and loads the inbox, its subfolders and a contact sync,
+  rather than leaving "not paired" up until the 90 s refresh.
 - **Notification history renders nothing while locked or after an abandoned
   wipe.** `NotificationHistorySections` (iOS Settings → Notifications →
   Notification History; macOS Notifications tab) shows sender and subject
@@ -63,7 +81,12 @@ Domain.
   `LAContext` only when one is not. A system authentication sheet raised over a
   PIN field asks for something the user did not ask for; a PIN exists only
   because they chose it. Removing a PIN is an *off* path and re-authenticates
-  like the rest.
+  like the rest. The automatic prompt goes through
+  `AppLockManager.autoPromptUnlock` — once per lock, and on macOS only from
+  the key window (`controlActiveState`); every window's lock screen shares one
+  in-flight `requestUnlock`, so no window stacks a second Touch ID sheet. A
+  reset that finished incomplete keeps the app locked; the lock screen says so
+  and keeps Reset offered.
 - **Every PIN outcome gets its own sentence, and `verifierUnavailable` is the
   one that matters.** It means the PIN was *not* wrong — telling the user it was
   invites them to burn attempts against a threshold that outcome deliberately
@@ -397,8 +420,14 @@ Domain.
 - About and Support are shared across iOS Settings and the macOS About window.
   macOS exposes one standard About KyPost app-menu item; it does not duplicate
   the surface as a Preferences tab. `AboutView` owns the version, 2026
-  Busnes.app copyright, privacy-policy link, embedded MIT license, and StoreKit
-  2 donation presentation. `TipJarStore` uses `CupOJoe4Mail` for one-off
+  Busnes.app copyright, privacy-policy link, embedded MIT license, the
+  Acknowledgements link (`AcknowledgementsView`: pushed on iOS, a sheet in
+  the macOS About window), and the StoreKit 2 Tip Jar. The user-facing name
+  is **Tip Jar**, never "Donate": App Review reads "donate" as a charitable
+  donation, which it allows only for approved nonprofits, while a tip to the
+  developer through In-App Purchase is ordinary. The tip section shows one status line,
+  `TipJarStore.statusMessage`; do not render `errorMessage` beside it.
+  `TipJarStore` uses `CupOJoe4Mail` for one-off
   purchases only; prices come from App Store Connect and must not be hardcoded.
   Do not offer recurring support without an ongoing customer benefit.
   `start()` keeps the `Transaction.updates` listener and drains
@@ -437,7 +466,8 @@ Recorded so they aren't re-litigated as bugs:
   window, `OlderMailTests.swift` for older mail, delta overflow and bodies on
   open, `MailIdentityTests.swift` for the (folder, id) key,
   `MailSearchTests.swift` for search, `WideLayoutTests.swift` for the iOS
-  stack/split decision, what a switch keeps, and its Undo rule).
+  stack/split decision, what a switch keeps, and its Undo rule,
+  `TipJarStoreTests` for the tip transactions and status line).
 - Pass `debounceInterval: .zero` to `ComposeViewModel` in tests, and poll for
   the result rather than sleeping a fixed span — the search lands a scheduling
   hop later even at zero, so a fixed sleep goes flaky under load.

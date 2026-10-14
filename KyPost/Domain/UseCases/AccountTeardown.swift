@@ -77,6 +77,9 @@ struct AccountTeardown {
             Log.mail.error("Could not clear cached mail on leaving the account: \(error)")
             complete = false
         }
+        // Relay responses an older build's `.default` session cached on disk,
+        // and any cookies it kept. The relay session no longer writes either.
+        PinnedSessionDelegate.purgeLegacySharedHTTPState()
         // Again, now the cache is empty: rows the inbox repainted from it
         // while a step above awaited are the account just left.
         forgetInbox?()

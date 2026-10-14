@@ -101,9 +101,6 @@ struct MacRootView: View {
         .sheet(item: $router.pairingParams) { params in
             PushPairingView(initialParams: params).environment(\.theme, theme)
         }
-        .sheet(item: $router.desktopPairingParams) { params in
-            DesktopPairingView(initialParams: params).environment(\.theme, theme)
-        }
         .sheet(item: $router.mfaRoute) { route in
             MfaApprovalView(challenge: route.challenge).environment(\.theme, theme)
         }
@@ -133,6 +130,15 @@ struct MacRootView: View {
             inboxViewModel.startAutoRefresh()
             await inboxViewModel.loadSubfolders()
             await contactsViewModel.load()
+        }
+        // A pairing just landed: load now rather than leaving "not paired"
+        // up until the next 90-second refresh.
+        .onReceive(NotificationCenter.default.publisher(for: .kyPostPaired)) { _ in
+            Task {
+                await inboxViewModel.load()
+                await inboxViewModel.loadSubfolders()
+                await contactsViewModel.sync()
+            }
         }
         .onChange(of: router.pendingMessageId) {
             openPendingMessageIfNeeded()

@@ -16,12 +16,14 @@ graph at runtime (`AppEnvironment.rebuild`), so:
   unless that state sits inside a view tree keyed with
   `.id(environment.generation)` — those are torn down and rebuilt on swap.
 - Every scene root in `KyPostApp` carries `.id(environment.generation)`.
-  A new `WindowGroup`/`Settings` scene must too, plus the `LockedOverlay`
-  and `protectedFromCapture()` modifiers its siblings have.
+  A new `WindowGroup`/`Settings` scene must too, plus the
+  `lockCover(theme:)` and `protectedFromCapture()` modifiers its siblings
+  have.
 - `SingletonGraph.shutdown()` must stop any new long-lived task or resource
   a graph child owns (pollers, monitors, auto-refresh loops, and
   `relaySession`, whose delegate-backed `URLSession` holds its delegate and
-  connection pool until `invalidateAndCancel()`). If you add one, add its
+  connection pool until `invalidateAndCancel()`; it is ephemeral, with no
+  cache or cookies — see the root pinning contract). If you add one, add its
   stop call there, or the superseded graph keeps writing to a database the
   app no longer shows — or, worse, keeps relay connections open through the
   Hostile Location Protection swap that was meant to close them.
@@ -53,7 +55,13 @@ router, and `scenePhase == .active` makes it check for KyAuth's response.
 `AppEnvironment.eraseHostileLocationDefaults` runs when Hostile Location
 Protection turns on and at every launch while it is on (`PushLifecycle.onLaunch`).
 A `UserDefaults`-backed store that goes memory-only under the mode erases its
-persisted copy there; switching reads to memory does not remove it.
+persisted copy there; switching reads to memory does not remove it. Stores that
+describe the account (keyword settings, notification and contact cursors,
+pending contact deletes, verified keys, system-contact links) are built on
+`SingletonGraph.hostileMemoryDefaults` (`MemoryOnlyDefaults`) under the mode —
+the graph is rebuilt on every switch, so the choice is made once, at
+construction. A new account-describing store joins that list and the erase.
+`MailCursorStore` and `RecipientPinStore` branch per call instead.
 
 `shutdown()` also **drops** the inbox's held list actions (the undo window),
 its older-mail paging state and the rows it shows, voiding any refresh in
@@ -70,8 +78,11 @@ contract.
 **Leaving an account is one list, `AccountTeardown`** (a store file kept
 under an in-memory session, enrollment vault,
 session and pending reports; notification history and pull cursor; recipient
-pins; mail signature; cached mail and cursors; the inbox's held actions and
-rows). `SettingsViewModel.unpair` runs it after clearing the pairing, and a
+pins; mail signature; cached mail and cursors; the relay responses and cookies
+an older build's `.default` relay session left in `URLCache.shared` and
+`HTTPCookieStorage.shared`; the inbox's held actions and rows).
+`SettingsViewModel.unpair` runs it after clearing the pairing (and an older
+build's desktop session token), and a
 registration that stores a pairing for another `sub` or server over the
 current one runs it first (`DeviceRegistrationService.onAccountReplaced`,
 wired to `SingletonGraph.makeAccountTeardown`); an unreadable previous
@@ -123,16 +134,22 @@ the compose Discard question when any open compose has something to lose
 leaves held actions undoable.
 
 `AppEnvironment.resetAfterFailedUnlock` is the app lock's only escape hatch,
-offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true. It
-erases rather than bypasses: gated secret, pairing, desktop session, both lock
-flags, store, photos, temp attachments, delivered notifications, drafts, the
-mail signature. Keep
-it that way — anything that unlocks *without* erasing is a bypass.
+offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true (and
+again while `wipeNotice` says the last wipe was incomplete). It erases rather
+than bypasses, and it is `performSecurityWipe` — the same steps, resume marker
+and deregister — so the lock comes off only when the wipe reports complete.
+Those steps include the pairing and its pin, an older build's desktop session
+token, and the legacy shared URL cache and cookies.
+Keep it that way: anything that unlocks *without* erasing is a bypass, and a
+second, shorter step list is how this path once left the PIN hash, pepper,
+counters, tripwire, defaults and exported contacts behind while unlocking.
+`makeWipeSteps` / `makeGraphAfterWipe` exist for tests only.
 
 ## URL schemes
 
-`KyPost/Info.plist` declares two `CFBundleURLTypes`: `kypost` (pairing,
-desktop pairing, the iOS KyIdentity return) and `mailto`, which is what lets
+`KyPost/Info.plist` declares two `CFBundleURLTypes`: `kypost` (`native-pair`
+pairing and the iOS KyIdentity return; `desktop-pair` is no longer routed)
+and `mailto`, which is what lets
 macOS offer KyPost as the default mail app. iOS cannot become the default mail
 app without Apple's entitlement, so there a `mailto:` is handled only if
 something opens one here. Both arrive through `onOpenURL` →
@@ -206,7 +223,9 @@ for deciding what to *show* and wrong for deciding to repair: the repair writes
 the device secret back into the plain, non-presence-gated item, and one
 transient `errSecInteractionNotAllowed` at launch used to trigger it
 permanently. Any new caller that acts destructively on this flag uses
-`lockState` and fails closed on `.unreadable`.
+`lockState` and fails closed on `.unreadable`. `AppLockManager` decides
+whether the app starts locked the same way: `.unreadable` is locked (root
+AGENTS.md, "App lock").
 
 `PushLifecycle.runEnrollmentReporter()` restates an enrollment acknowledgement
 that did not land, or a Hostile Location Protection teardown. It runs from
@@ -314,7 +333,7 @@ Four seams carry it, and each one defaults to the real path:
 
 - `MailRepository(overrideSource:)` — serves `DemoMailSource` and **skips the
   pairing guard in `refreshFolder`**. Without it an unpaired build paints
-  "Pair this device (Settings → Connection) to load mail" over every shot.
+  the not-paired notice (`PairingInstructions.inbox`) over every shot.
 - `PgpSendService.preload(hasIdentity:protection:accountAddress:)` — installs
   a bootstrap answer so compose offers Encrypt/Sign. Nothing in a shipping
   build may decide custody locally; this is the only caller.
@@ -372,8 +391,9 @@ Rules:
 
 - `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (`AppEnvironmentTests`, `SecurityTests`, `SecurityWipeTests`,
-  `SecurityWipeStepsTests`, `PullHeartbeatTests`, `SchemaMigrationTests`
-  for the store-open policy, `DataLossTests` for `QuitPreparation`).
+  `SecurityWipeStepsTests`, `AppLockResetAndHostileTests`,
+  `PullHeartbeatTests`, `SchemaMigrationTests` for the store-open policy,
+  `DataLossTests` for `QuitPreparation`).
 - The rebuild path is exercised end-to-end by toggling Hostile Location
   Protection in Settings → Security on a paired build.
 

@@ -71,7 +71,7 @@ enum PairingLinkParser {
     /// Parses and validates a pairing link. All required params must be
     /// present and non-empty (spec §1), and `srv`/`reg` must be `https` URLs
     /// (mirrors the same check already applied to the PGP QR-key flow in
-    /// PgpQrClient.keyURL(fromScannedPayload:)).
+    /// PgpQrClient.scannedKeyCode(fromPayload:)).
     static func parse(_ url: URL) throws -> PairingParams {
         guard
             url.scheme?.lowercased() == Config.deepLinkScheme,
@@ -135,53 +135,9 @@ enum PairingLinkParser {
     }
 }
 
-/// Parameters carried by a desktop pairing deep link (Desktop Pairing guide).
-struct DesktopPairingParams: Equatable, Sendable {
-    /// One-time pairing code: 32 characters, 5-minute TTL, single use.
-    var code: String
-    /// Server base URL from the `srv` param.
-    var srv: String
-
-    /// Registration endpoint, derived from srv per the guide's Step 3.
-    var registerEndpoint: URL? {
-        URL(string: srv)?.appending(path: "api/notifications/desktop/register")
-    }
-}
-
-enum DesktopPairingLinkParser {
-    /// Parses kypost://desktop-pair?code=…&srv=… links. Both params are
-    /// required and non-empty, and `srv` must be an `https` URL (see
-    /// PairingLinkError.insecureServerURL).
-    static func parse(_ url: URL) throws -> DesktopPairingParams {
-        guard
-            url.scheme?.lowercased() == Config.deepLinkScheme,
-            url.host()?.lowercased() == Config.desktopPairingHost
-        else {
-            throw PairingLinkError.notAPairingLink
-        }
-
-        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        let query = (components?.queryItems ?? []).reduce(into: [String: String]()) {
-            $0[$1.name] = $1.value
-        }
-
-        guard let code = query["code"], !code.isEmpty else {
-            throw PairingLinkError.missingParameter("code")
-        }
-        guard let srv = query["srv"], !srv.isEmpty else {
-            throw PairingLinkError.missingParameter("srv")
-        }
-        guard URL(string: srv)?.scheme?.lowercased() == "https" else {
-            throw PairingLinkError.insecureServerURL
-        }
-        return DesktopPairingParams(code: code, srv: srv)
-    }
-}
-
 /// Where a deep link or notification tap should take the user (spec §10).
 enum NavigationAction: Equatable, Sendable {
     case openPairingFlow(PairingParams)
-    case openDesktopPairingFlow(DesktopPairingParams)
     case openEmail(messageId: String)
     /// Carries the whole challenge, not just its id: the approval screen needs
     /// the number-match digits, and they arrive on the same push payload.
@@ -196,12 +152,11 @@ struct DeepLinkHandler: Sendable {
     nonisolated init() {}
 
     /// Maps an incoming URL to a navigation action; nil for unrecognized URLs.
+    /// `kypost://desktop-pair` is one: its session token was never used for
+    /// anything, so every client pairs with `kypost://native-pair`.
     func handle(_ url: URL) -> NavigationAction? {
         if let params = try? PairingLinkParser.parse(url) {
             return .openPairingFlow(params)
-        }
-        if let params = try? DesktopPairingLinkParser.parse(url) {
-            return .openDesktopPairingFlow(params)
         }
         if let draft = MailtoLinkParser.parse(url) {
             return .composeMail(draft)

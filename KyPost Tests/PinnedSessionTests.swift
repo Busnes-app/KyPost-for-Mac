@@ -77,21 +77,102 @@ private func certificate(fromBase64 base64: String) throws -> SecCertificate {
     @Test func recordsTheLastSeenHashPerHost() {
         let delegate = PinnedSessionDelegate { _ in nil }
         #expect(delegate.lastSeenHash(forHost: "relay.test") == nil)
-        #expect(!delegate.pinFailed(forHost: "relay.test"))
+        #expect(delegate.pinFailure(forHost: "relay.test") == nil)
     }
 
     @Test @MainActor func pinnedHashRoundTripsThroughThePairingStore() throws {
         let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
         let store = SecurePairingStore(keychain: keychain)
-        #expect(store.pinnedSpkiHash == nil)
+        #expect(try store.pinnedSpkiHash(forHost: "relay.test") == nil)
 
-        try store.setPinnedSpkiHash(rsaExpectedSpki)
-        #expect(store.pinnedSpkiHash == rsaExpectedSpki)
+        try store.setPinnedSpkiHash(rsaExpectedSpki, forHost: "Relay.Test")
+        #expect(try store.pinnedSpkiHash(forHost: "relay.test") == rsaExpectedSpki)
+        // Bound to its host: another host has no pin.
+        #expect(try store.pinnedSpkiHash(forHost: "other.test") == nil)
 
         // The pin clears with the pairing — re-pairing is the rotation
         // recovery path.
         try store.clear()
+        #expect(try store.pinnedSpkiHash(forHost: "relay.test") == nil)
+    }
+}
+
+// MARK: - A pin belongs to its host
+
+@MainActor
+@Suite struct HostBoundPinTests {
+    private func pairing(srv: String) -> Pairing {
+        Pairing(
+            sub: "u1", deviceSecret: "s", srv: srv, registrationUrl: nil,
+            pairingToken: "pt", lastDeviceId: "d", pairedAt: Date()
+        )
+    }
+
+    private func makeStore() -> (SecurePairingStore, KeychainStorage) {
+        let keychain = KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)")
+        return (SecurePairingStore(keychain: keychain), keychain)
+    }
+
+    @Test func aPairingStoresItsPinBoundToItsHost() throws {
+        let (store, _) = makeStore()
+        try store.savePairing(pairing(srv: "https://relay.example.com"), pinnedSpkiHash: "hash-a")
+        #expect(try store.pinnedSpkiHash(forHost: "relay.example.com") == "hash-a")
+        #expect(store.pinnedSpkiHash == "hash-a")
+    }
+
+    /// Re-registration saves the same host with no pin: the pin stays.
+    @Test func savingTheSameHostKeepsThePin() throws {
+        let (store, _) = makeStore()
+        try store.savePairing(pairing(srv: "https://relay.example.com"), pinnedSpkiHash: "hash-a")
+        try store.savePairing(pairing(srv: "https://relay.example.com/"))
+        #expect(try store.pinnedSpkiHash(forHost: "relay.example.com") == "hash-a")
+    }
+
+    /// The old server's key must not govern the new server, and must not
+    /// sit there to lock the device out of it.
+    @Test func changingHostDropsTheOldHostsPin() throws {
+        let (store, _) = makeStore()
+        try store.savePairing(pairing(srv: "https://old.example.com"), pinnedSpkiHash: "hash-old")
+        try store.savePairing(pairing(srv: "https://new.example.com"))
+        #expect(try store.pinnedSpkiHash(forHost: "old.example.com") == nil)
+        #expect(try store.pinnedSpkiHash(forHost: "new.example.com") == nil)
         #expect(store.pinnedSpkiHash == nil)
+    }
+
+    @Test func changingHostWithAPinStoresTheNewOne() throws {
+        let (store, _) = makeStore()
+        try store.savePairing(pairing(srv: "https://old.example.com"), pinnedSpkiHash: "hash-old")
+        try store.savePairing(pairing(srv: "https://new.example.com"), pinnedSpkiHash: "hash-new")
+        #expect(try store.pinnedSpkiHash(forHost: "new.example.com") == "hash-new")
+        #expect(try store.pinnedSpkiHash(forHost: "old.example.com") == nil)
+    }
+
+    /// A pin an older build stored without a host belongs to the srv it was
+    /// captured with — the host it was always enforced against.
+    @Test func aLegacyUnboundPinBelongsToTheStoredServer() throws {
+        let (store, keychain) = makeStore()
+        try store.savePairing(pairing(srv: "https://relay.example.com"))
+        try keychain.set("hash-legacy", forKey: "pinnedSpkiHash")
+
+        #expect(try store.pinnedSpkiHash(forHost: "relay.example.com") == "hash-legacy")
+        #expect(try store.pinnedSpkiHash(forHost: "other.example.com") == nil)
+
+        // Saved again for the same host: kept, and now bound.
+        try store.savePairing(pairing(srv: "https://relay.example.com"))
+        #expect(try keychain.string(forKey: "pinnedSpkiHost") == "relay.example.com")
+
+        // Saved for another host: gone.
+        try store.savePairing(pairing(srv: "https://other.example.com"))
+        #expect(try keychain.string(forKey: "pinnedSpkiHash") == nil)
+    }
+
+    /// The shared relay session's lookup is the same static read the store
+    /// uses, so the delegate enforces exactly the host-bound pin.
+    @Test func theSessionLookupIsHostBound() throws {
+        let (store, keychain) = makeStore()
+        try store.savePairing(pairing(srv: "https://relay.example.com"), pinnedSpkiHash: "hash-a")
+        #expect(try SecurePairingStore.pinnedSpkiHash(in: keychain, forHost: "RELAY.example.com") == "hash-a")
+        #expect(try SecurePairingStore.pinnedSpkiHash(in: keychain, forHost: "scanned.example.org") == nil)
     }
 }
 
@@ -118,6 +199,68 @@ private func certificate(fromBase64 base64: String) throws -> SecCertificate {
     /// check" on a host that is pinned.
     @Test func aPinnedHostWithAnUnhashableKeyIsRefused() {
         #expect(PinnedSessionDelegate.decision(pinned: "aa", observed: nil) == .refuse)
+    }
+
+    /// A Keychain error is not "no pin". Reading it as one handed a pinned
+    /// host to system trust whenever the Keychain would not answer.
+    @Test func aPinThatCannotBeReadIsRefused() {
+        struct KeychainDown: Error {}
+        #expect(PinnedSessionDelegate.failure(lookup: .failure(KeychainDown()), observed: "aa") == .unreadable)
+        #expect(PinnedSessionDelegate.failure(lookup: .failure(KeychainDown()), observed: nil) == .unreadable)
+    }
+
+    @Test func onlyAnAnsweredLookupDecidesByThePin() {
+        #expect(PinnedSessionDelegate.failure(lookup: .success(nil), observed: "aa") == nil)
+        #expect(PinnedSessionDelegate.failure(lookup: .success("aa"), observed: "aa") == nil)
+        #expect(PinnedSessionDelegate.failure(lookup: .success("aa"), observed: "bb") == .mismatch)
+        #expect(PinnedSessionDelegate.failure(lookup: .success("aa"), observed: nil) == .mismatch)
+    }
+
+    /// An ordinary cancellation on a host with no refused handshake stays an
+    /// ordinary cancellation.
+    @Test func anUnrelatedCancellationIsNotMappedToAPinFailure() {
+        let delegate = PinnedSessionDelegate { _ in nil }
+        let request = URLRequest(url: URL(string: "https://relay.test/api/inbox")!)
+        let mapped = delegate.mapPinFailure(request, URLError(.cancelled))
+        #expect((mapped as? URLError)?.code == .cancelled)
+    }
+
+    @Test func anUnreadablePinHasItsOwnMessage() {
+        #expect(NetworkError.pinUnreadable.errorDescription != NetworkError.certificateMismatch.errorDescription)
+        #expect(MailOutcome.message(for: .pinUnreadable).contains("Keychain"))
+    }
+}
+
+// MARK: - The relay session keeps nothing on disk
+
+@Suite struct RelaySessionConfigurationTests {
+    @Test func relaySessionsHaveNoCacheAndNoCookies() {
+        let configuration = PinnedSessionDelegate.relaySessionConfiguration()
+        #expect(configuration.urlCache == nil)
+        #expect(configuration.httpCookieStorage == nil)
+        #expect(configuration.httpShouldSetCookies == false)
+        #expect(configuration.requestCachePolicy == .reloadIgnoringLocalCacheData)
+    }
+
+    /// What an older build's `.default` relay session left in the shared
+    /// stores goes on unpair and wipe.
+    @Test func theLegacySharedStateIsPurged() throws {
+        let cache = URLCache(memoryCapacity: 1 << 20, diskCapacity: 0, directory: nil)
+        let url = URL(string: "https://relay.example.com/api/inbox")!
+        let response = try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+        cache.storeCachedResponse(CachedURLResponse(response: response, data: Data("mail".utf8)), for: URLRequest(url: url))
+        #expect(cache.cachedResponse(for: URLRequest(url: url)) != nil)
+
+        let cookies = HTTPCookieStorage.shared
+        let cookie = try #require(HTTPCookie(properties: [
+            .domain: "relay.purge-test.example", .path: "/", .name: "session", .value: "v",
+        ]))
+        cookies.setCookie(cookie)
+
+        PinnedSessionDelegate.purgeLegacySharedHTTPState(cache: cache, cookies: cookies)
+
+        #expect(cache.cachedResponse(for: URLRequest(url: url)) == nil)
+        #expect(cookies.cookies?.contains { $0.domain == "relay.purge-test.example" } != true)
     }
 }
 
@@ -164,6 +307,30 @@ private func certificate(fromBase64 base64: String) throws -> SecCertificate {
         #expect(PinnedSessionDelegate.allowsRedirect(
             from: origin,
             to: URL(string: "https://Relay.Example.COM/api/inbox")!
+        ))
+    }
+
+    /// Another port on the same host is another server; the device secret
+    /// was not meant for it.
+    @Test func aRedirectToAnotherPortIsRefused() {
+        #expect(!PinnedSessionDelegate.allowsRedirect(
+            from: origin,
+            to: URL(string: "https://relay.example.com:8443/api/inbox")!
+        ))
+        #expect(!PinnedSessionDelegate.allowsRedirect(
+            from: URL(string: "https://relay.example.com:8443/api/inbox")!,
+            to: URL(string: "https://relay.example.com/api/inbox")!
+        ))
+    }
+
+    @Test func theDefaultPortMatchesItsExplicitForm() {
+        #expect(PinnedSessionDelegate.allowsRedirect(
+            from: origin,
+            to: URL(string: "https://relay.example.com:443/api/inbox")!
+        ))
+        #expect(PinnedSessionDelegate.allowsRedirect(
+            from: URL(string: "https://relay.example.com:8443/a")!,
+            to: URL(string: "https://relay.example.com:8443/b")!
         ))
     }
 
