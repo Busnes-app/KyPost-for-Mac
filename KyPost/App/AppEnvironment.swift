@@ -58,27 +58,39 @@ extension AppEnvironment {
 @Observable
 @MainActor
 final class AppEnvironment {
-    /// A `ModelContainer` that will not open — a corrupt store, a migration
-    /// that failed, a full disk — used to crash the app on launch, forever,
-    /// with a crash log the user could do nothing about. Mail lives on the
-    /// server and the local store is a disposable cache, so discarding it is
-    /// the obviously correct response; in-memory is the last resort so the app
-    /// still opens and can be re-paired.
+    /// A `ModelContainer` that will not open used to crash the app on launch,
+    /// forever, with a crash log the user could do nothing about. It is not a
+    /// disposable cache, though: it holds contacts not yet synced, and the
+    /// Apple Contacts cards linked to every contact follow it. So the file is
+    /// deleted only when this build can never read it (an unknown model
+    /// version, a failed migration, a file that is not a database —
+    /// `AppDatabase.openFailureDisposition`). Anything else — a full disk, a
+    /// locked file, an I/O error — runs this session in memory and keeps the
+    /// file for the next launch.
     static let shared = AppEnvironment(graph: makeLaunchGraph())
 
     private static func makeLaunchGraph() -> SingletonGraph {
         do {
             return try SingletonGraph()
         } catch {
-            Log.storage.error("Local store unusable, recreating it: \(error.localizedDescription)")
-        }
-        try? AppDatabase.deleteStoreFiles()
-        do {
-            return try SingletonGraph()
-        } catch {
-            Log.storage.error(
-                "Could not recreate the local store, running without one: \(error.localizedDescription)"
-            )
+            switch AppDatabase.openFailureDisposition(for: error) {
+            case .discard:
+                Log.storage.error("Local store unreadable by this build, recreating it: \(error.localizedDescription)")
+                try? AppDatabase.deleteStoreFiles()
+                // The cursor describes rows the deleted file held.
+                ContactCursorStore(defaults: SingletonGraph.launchUserDefaults).reset()
+                do {
+                    return try SingletonGraph()
+                } catch {
+                    Log.storage.error(
+                        "Could not recreate the local store, running without one: \(error.localizedDescription)"
+                    )
+                }
+            case .keep:
+                Log.storage.error(
+                    "Local store would not open; keeping it and running in memory: \(error.localizedDescription)"
+                )
+            }
         }
         do {
             return try SingletonGraph(database: AppDatabase(inMemory: true))
@@ -134,6 +146,8 @@ final class AppEnvironment {
             // it. SingletonGraph re-runs this wipe at launch for the same
             // reason.
             try AppDatabase.deleteStoreFiles()
+            // The contact cursor describes rows the deleted file held.
+            graph.contactCursorStore.reset()
             try ContactPhotoCache.deleteAll()
             InboxViewModel.purgeAttachmentTempFiles()
             // Sender and subject of everything already delivered sit in
@@ -340,6 +354,7 @@ final class AppEnvironment {
         try? graph.appLockStore.setCredentialGateEnabled(false)
         try graph.appLockStore.setLockEnabled(false)
         try? AppDatabase.deleteStoreFiles()
+        graph.contactCursorStore.reset()
         try? ContactPhotoCache.deleteAll()
         InboxViewModel.purgeAttachmentTempFiles()
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
