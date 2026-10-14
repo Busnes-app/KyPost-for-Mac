@@ -23,8 +23,33 @@ Domain.
   name.** A fresh install, a saved name no longer offered, and a missing
   palette all resolve through it; an explicit saved choice is always kept
   (`ThemeManager` discards only unknown names). Palettes match web
-  `THEME_OPTIONS` and Android `AppTheme.kt` hex for hex and are opaque — the
-  Busnes `line` is Android's composite of the web's translucent value.
+  `THEME_OPTIONS` and Android `AppTheme.kt` hex for hex, except the WCAG
+  deviations below, and are opaque — the Busnes `line` is Android's
+  composite of the web's translucent value.
+- **Every text color reads at least 4.5:1 (WCAG AA) on every theme**
+  (`Contrast`, `ThemeContrastTests`: ink, inkStrong, `secondaryInk` and
+  `link` on bg and panel; `readableOnAccent` on accent; danger, success and
+  warning on bg and panel, danger and inkStrong on `dangerFill`). Secondary
+  text is `theme.secondaryInk`, never `ink.opacity(…)`. New text colors join
+  the test. **Deviations from web/Android, decided 2026-10-13 for those
+  apps to follow:**
+  - Patina Ky `ink` `#7C8BA1` (web/Android `#64748B`: 4.0:1 on bg, 3.7:1 on
+    panel).
+  - `SemanticColors` text has light/dark variants resolved by appearance
+    (every scene sets `preferredColorScheme` from `isLight`): danger
+    `#B71C1C` / `#FF8A8A` (web `#FF5F5F`: 2.7:1 on light, 4.2:1 on its own
+    fill on Busnes Dark panel), success `#1B5E20` / `#A5DCA5` (web `#A5DCA5`:
+    1.5:1 on light), warning `#8A5A00` / `#FFD64D` (web `#FFD64D`: 1.3:1 on
+    light). Fills and borders are unchanged.
+  - `secondaryInk` replaces `ink` at 60–90% opacity (3.0:1 on Busnes Light,
+    2.6:1 on Patina Ky): `ink` blended toward `bg` from 70% in 5% steps until
+    it reads on bg and panel.
+  - The HTML reader's `link` is the accent where it reads, else the accent
+    blended toward `inkStrong` until it does (Light Matter, Tropics, White
+    Cliffs, Sky, Sun, Polished Ky; Tropics' lime was 1.8:1), and underlined.
+  - `readableOnAccent` keeps the web's charcoal/white pick unless it fails,
+    then takes the other: Coffee and Polished Ky get charcoal (white was
+    3.4:1 and 3.7:1).
 - **Sheets do not inherit `\.theme`.** Every `.sheet` re-injects
   `.environment(\.theme, theme)`. A sheet that skips it renders unthemed.
 - **Nothing presents while the app is locked — the router enforces it, not
@@ -366,8 +391,36 @@ Domain.
   resync is skipped (`refresh` returns false), it reports failure and returns
   nil, never the cached row.
 - `notice` is the inbox's transient toast (rejected actions, missing Sent
-  folder, selection limit); it expires itself. `connectionNotice` keeps its
-  own contract above.
+  folder, selection limit, a failed bulk mark-read, a refused folder
+  create/rename/delete); it expires itself. `connectionNotice` keeps its own
+  contract above. **`errorMessage` is only for a list that cannot load**
+  (unpaired): it renders in place of an empty list, so anything else put
+  there is never seen.
+- **The reader says its own failures** (`EmailDetailView.readerNotice`, a
+  toast): attachment preview/download, Save As, mark-as-read. The view model
+  throws `ReaderFailure` with the sentence (`InboxViewModel.readerFailure`:
+  what failed, then the relay's reason, never a transport description).
+  Forward and the invite card treat a failed fetch as nil, as before.
+- **macOS Message menu** (`KyPostCommands`, `MessageCommands`): the reader
+  (`EmailDetailView`) and the list (`MacRootView`) each publish a
+  `MessageCommands` as a focused scene value; `MessageCommands.resolve`
+  takes Reply/Reply All/Forward from the reader (body readiness, the
+  client-protected gate) and Archive/Junk/Delete/Mark as Read from the list
+  (held for Undo), and disables everything while locked or unpaired. The
+  list composes only for one selected message whose body is cached and may
+  be quoted. Shortcuts are Apple Mail's; Refresh moved to ⇧⌘N. **No bare ⌫
+  key equivalent in a menu or the main window**: it would fire while typing
+  in the search field. ⌫ is the list's `onDeleteCommand`, the reader's when
+  it holds focus, and a hidden shortcut in pop-outs only
+  (`EmailDetailView.isPopOut`). No Mark as Unread: `/api/inbox/actions` has
+  no unread action (KyPost-Server `server_inbox.go`, 2026-10-13).
+- **A pop-out reader owns its row** (`EmailWindowView`,
+  `InboxViewModel.resolveEmail`; root "Inbox search"). Never read the main
+  list from the window's body. It resolves only while `MailAccessGate` is
+  open (App AGENTS.md) and only for the account it resolved under: a gate
+  or `accountGeneration` change removes the reader, dropping its
+  plaintext, and resolves again. Its ⌫ re-checks lock, gate and pairing on
+  the key press — `LockedOverlay` covers a window but takes no keys.
 - Encrypted send is decided by key custody, not by hope.
   `Domain/Models/PgpKeyCustody.swift` maps `/api/pgp/bootstrap` to
   `serverHeld` / `clientHeld` / `noIdentity`, and anything unrecognised
@@ -414,6 +467,8 @@ Domain.
   and `loadsSubresources = false` do not cover main-frame navigation — a
   `<meta http-equiv="refresh">` is neither script nor subresource — so an
   allow-by-default branch here silently reopens the remote-content beacon.
+  The remote-content block itself is a content rule list (root AGENTS.md);
+  build reader pages only through `EmailBodyWebView.makePage`.
 
 ## Work Guidance
 
@@ -467,7 +522,13 @@ Recorded so they aren't re-litigated as bugs:
   open, `MailIdentityTests.swift` for the (folder, id) key,
   `MailSearchTests.swift` for search, `WideLayoutTests.swift` for the iOS
   stack/split decision, what a switch keeps, and its Undo rule,
-  `TipJarStoreTests` for the tip transactions and status line).
+  `ThemeContrastTests` for WCAG AA, `RemoteContentBlockingTests` for the
+  reader's block against real WebKit, `ReaderWindowTests.swift` for pop-out
+  rows, reader failures and the Message menu, `TipJarStoreTests` for the tip
+  transactions and status line).
+- The Message menu's enablement and ⌫ routing are focus behaviour: check
+  them in the running app (main window with and without the preview pane,
+  a pop-out, typing ⌫ in the search field).
 - Pass `debounceInterval: .zero` to `ComposeViewModel` in tests, and poll for
   the result rather than sleeping a fixed span — the search lands a scheduling
   hop later even at zero, so a fixed sleep goes flaky under load.

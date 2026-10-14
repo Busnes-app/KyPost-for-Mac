@@ -31,6 +31,9 @@ struct EmailDetailView: View {
     /// passes one so the stack pops and the split's detail empties alike;
     /// without it the reader dismisses itself (macOS pop-out windows).
     var onClose: (() -> Void)?
+    /// A macOS pop-out window: the reader is the whole window, with no text
+    /// field a bare ⌫ could belong to, so ⌫ deletes the message.
+    var isPopOut = false
 
     /// Fetched lazily on open — the inbox listing has no attachment info.
     @State private var attachments: [EmailAttachment] = []
@@ -70,6 +73,11 @@ struct EmailDetailView: View {
     @State private var bodyFetchFailure: String?
     /// Why Reply/Forward did not open a draft yet; non-nil shows an alert.
     @State private var draftBlocked: String?
+    /// The reader's own toast: a failed attachment, mark-read or Save As.
+    /// The inbox's `errorMessage` only renders over an empty list, and a
+    /// pop-out window has no list at all.
+    @State private var readerNotice: String?
+    @State private var readerNoticeTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -180,6 +188,15 @@ struct EmailDetailView: View {
             }
 #endif
         }
+        .modifier(ReaderCommandHandling(
+            commands: messageCommands,
+            isPopOut: isPopOut,
+            canDelete: !isActing && !isLocked && MailAccessGate.isOpen(),
+            // Checked again on the key press: enablement is only as fresh
+            // as the last redraw. The pairing is read only here, since it
+            // is a Keychain read.
+            delete: { if keyboardActionsAllowed { act(.delete) } }
+        ))
 #if os(iOS)
         // The mail actions live in the bottom bar; hide the app tab bar
         // while reading so the two don't stack. Only in the stack: in the
@@ -223,8 +240,10 @@ struct EmailDetailView: View {
         ) { result in
             if case .failure(let error) = result {
                 Log.mail.error("Attachment save failed: \(error.localizedDescription)")
+                showReaderNotice(String(localized: "Couldn't save the attachment. \(error.localizedDescription)"))
             }
         }
+        .toast(message: readerNotice)
         .alert(
             "Can't quote this message yet",
             isPresented: Binding(
@@ -248,14 +267,18 @@ struct EmailDetailView: View {
             // fetched body when the row arrived without one.
             await loadBodyIfNeeded()
             await prepareEncryptedRead()
-            await inboxViewModel.markRead(email)
+            do throws(ReaderFailure) {
+                try await inboxViewModel.markRead(email)
+            } catch {
+                showReaderNotice(error.message)
+            }
             attachments = await listing.value ?? []
             // After the chips: a slow or hostile invite must not hold up the
             // attachment list. A client-protected message's listing is its
             // PGP/MIME transport, never an invite.
             if pgpState != .clientProtected {
                 await inviteCard.load(listing: attachments) { part in
-                    await inboxViewModel.attachmentData(part, of: email)
+                    try? await inboxViewModel.attachmentData(part, of: email)
                 }
             }
         }
@@ -342,6 +365,23 @@ struct EmailDetailView: View {
         .disabled(isActing)
     }
 
+    /// The Message menu's view of this reader (`MessageCommands.resolve`).
+    /// Reply stays enabled where the toolbar's is dimmed, for the same
+    /// reason: pressing it explains why it is unavailable.
+    private var messageCommands: MessageCommands {
+        let movable = !isActing
+        return MessageCommands(
+            reply: { replyOrExplain { compose(.reply(to: shown)) } },
+            replyAll: { replyOrExplain { compose(.replyAll(to: shown, ownAddress: ownAddress)) } },
+            forward: preparingForward ? nil : { replyOrExplain { forward() } },
+            archive: movable ? { act(.archive) } : nil,
+            junk: movable ? { act(.spam) } : nil,
+            delete: movable ? { act(.delete) } : nil,
+            // Opening the message already marked it read.
+            markRead: nil
+        )
+    }
+
     /// Runs a moving action now — the reader's actions are not undoable —
     /// and leaves the screen only once the relay confirmed this message. A
     /// rejection keeps the reader open and says why.
@@ -382,7 +422,7 @@ struct EmailDetailView: View {
                                 .lineLimit(1)
                             Text(attachment.size.formatted(.byteCount(style: .file)))
                                 .font(AppFont.ui(10))
-                                .foregroundStyle(theme.ink.opacity(0.7))
+                                .foregroundStyle(theme.secondaryInk)
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
@@ -472,7 +512,7 @@ struct EmailDetailView: View {
                     if let pendingListing { return await pendingListing.value }
                     return await inboxViewModel.attachmentListing(for: email)
                 },
-                fetch: { attachment in await inboxViewModel.attachmentData(attachment, of: email) },
+                fetch: { attachment in try? await inboxViewModel.attachmentData(attachment, of: email) },
                 open: { compose(draft) }
             )
             preparingForward = false
@@ -481,6 +521,13 @@ struct EmailDetailView: View {
     }
 
     private var isLocked: Bool { SingletonGraph.shared.appLockManager.isLocked }
+
+    /// ⌫ acts only where the Message menu would (`MessageCommands.resolve`):
+    /// a key press reaches a pop-out behind `LockedOverlay`, which covers the
+    /// window but takes no keys.
+    private var keyboardActionsAllowed: Bool {
+        !isLocked && MailAccessGate.isOpen() && SingletonGraph.shared.securePairingStore.isPaired
+    }
 
     /// Our own relay address (the pairing's sub), excluded from Reply All.
     private var ownAddress: String? {
@@ -494,8 +541,10 @@ struct EmailDetailView: View {
     private func openAttachment(_ attachment: EmailAttachment) {
         downloadingIndex = attachment.index
         Task {
-            if let url = await inboxViewModel.downloadAttachment(attachment, of: email) {
-                quickLookURL = url
+            do throws(ReaderFailure) {
+                quickLookURL = try await inboxViewModel.downloadAttachment(attachment, of: email)
+            } catch {
+                showReaderNotice(error.message)
             }
             downloadingIndex = nil
         }
@@ -505,10 +554,24 @@ struct EmailDetailView: View {
     private func saveAttachment(_ attachment: EmailAttachment) {
         downloadingIndex = attachment.index
         Task {
-            if let data = await inboxViewModel.attachmentData(attachment, of: email) {
+            do throws(ReaderFailure) {
+                let data = try await inboxViewModel.attachmentData(attachment, of: email)
                 attachmentExport = AttachmentDocument(name: attachment.name, data: data)
+            } catch {
+                showReaderNotice(error.message)
             }
             downloadingIndex = nil
+        }
+    }
+
+    /// Shows `message` on the reader's toast for a few seconds.
+    private func showReaderNotice(_ message: String) {
+        readerNotice = message
+        readerNoticeTask?.cancel()
+        readerNoticeTask = Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            readerNotice = nil
         }
     }
 
@@ -675,7 +738,7 @@ struct EmailDetailView: View {
                                 .lineLimit(1)
                             Text(part.data.count.formatted(.byteCount(style: .file)))
                                 .font(AppFont.ui(10))
-                                .foregroundStyle(theme.ink.opacity(0.7))
+                                .foregroundStyle(theme.secondaryInk)
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
@@ -719,14 +782,14 @@ struct EmailDetailView: View {
                         .foregroundStyle(theme.inkStrong)
                     Text(email.senderEmail)
                         .font(AppFont.mono(12))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                     recipientLines
                 }
                 Spacer()
                 if Email.isKnownDate(email.receivedAt) {
                     Text(email.receivedAt, format: .dateTime.day().month().hour().minute())
                         .font(AppFont.ui(12))
-                        .foregroundStyle(theme.ink.opacity(0.7))
+                        .foregroundStyle(theme.secondaryInk)
                 }
             }
 
@@ -754,14 +817,14 @@ struct EmailDetailView: View {
         if let to = lines.to {
             Text("To: \(to)")
                 .font(AppFont.ui(12))
-                .foregroundStyle(theme.ink.opacity(0.8))
+                .foregroundStyle(theme.secondaryInk)
                 .lineLimit(3)
                 .textSelection(.enabled)
         }
         if let cc = lines.cc {
             Text("Cc: \(cc)")
                 .font(AppFont.ui(12))
-                .foregroundStyle(theme.ink.opacity(0.8))
+                .foregroundStyle(theme.secondaryInk)
                 .lineLimit(3)
                 .textSelection(.enabled)
         }
@@ -852,7 +915,7 @@ struct EmailDetailView: View {
                     word-break: break-word !important;
                     white-space: normal !important;
                 }
-                a { color: \(cssHex(theme.accent)); }
+                a { color: \(cssHex(theme.link)); text-decoration: underline; }
                 img { max-width: 100%; height: auto; }
                 table { width: 100% !important; table-layout: fixed; }
                 td, th { overflow-wrap: anywhere; word-break: break-word; }
@@ -899,7 +962,7 @@ struct EmailDetailView: View {
     private var pgpBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: pgpState == .decryptFailed ? "exclamationmark.triangle.fill" : "lock.fill")
-                .foregroundStyle(theme.ink.opacity(0.7))
+                .foregroundStyle(theme.secondaryInk)
             Text(pgpBannerText)
                 .font(AppFont.ui(12))
                 .foregroundStyle(theme.ink)
@@ -934,6 +997,36 @@ struct EmailDetailView: View {
     }
 }
 
+/// Publishes the reader to the Message menu, and takes ⌫.
+private struct ReaderCommandHandling: ViewModifier {
+    let commands: MessageCommands
+    let isPopOut: Bool
+    let canDelete: Bool
+    let delete: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .focusedSceneValue(\.readerMessageCommands, commands)
+#if os(macOS)
+            // ⌫ in a pop-out. Never in the main window, where a bare ⌫
+            // shortcut would fire while typing in the search field; there the
+            // list's `onDeleteCommand` (undoable) takes it, or this one when
+            // the reader holds focus.
+            .onDeleteCommand { if canDelete { delete() } }
+            .background {
+                if isPopOut {
+                    Button("Delete") { delete() }
+                        .keyboardShortcut(.delete, modifiers: [])
+                        .disabled(!canDelete)
+                        .opacity(0)
+                        .frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
+                }
+            }
+#endif
+    }
+}
+
 /// Wraps downloaded attachment bytes for `fileExporter`. The generic `.data`
 /// content type keeps the attachment's own filename extension authoritative.
 private struct AttachmentDocument: FileDocument {
@@ -963,19 +1056,32 @@ private struct AttachmentDocument: FileDocument {
 /// Sender-controlled HTML is untrusted input, the same way it is in any mail
 /// client: JavaScript execution is disabled unconditionally (mainstream mail
 /// clients — Apple Mail, Thunderbird, Outlook — do the same in their message
-/// view), remote resources (images, stylesheets, anything with a network
-/// fetch of its own) are blocked by default, matching those clients'
+/// view), remote resources are blocked by default, matching those clients'
 /// "load remote content" opt-in, and navigation out of the message is
 /// default-deny (see `navigationPolicy`) so the block can't be walked around
 /// with a redirect. Together: a message can't silently beacon home or probe
 /// the local network the moment it's opened.
+///
+/// The block is two layers, and the rule list is the one that counts:
+/// `loadsSubresources = false` covers what WebKit calls a subresource, and
+/// `RemoteContentBlocker` refuses every other load a document can make on its
+/// own — preconnect, prefetch, `<a ping>`, CSS fonts and imports, posters.
+/// The list is installed before the first load and removed only for the
+/// message whose banner was pressed (`remoteContentAllowedFor`).
 struct EmailBodyWebView: View {
     let html: String
 
     @Environment(\.theme) private var theme
     @Environment(\.openURL) private var openURL
     @State private var page: WebPage?
-    @State private var allowsRemoteContent = false
+    /// The document the user allowed remote content for. Keyed by the HTML
+    /// itself, so a different message (or a re-render) starts blocked again
+    /// rather than inheriting one message's opt-in.
+    @State private var remoteContentAllowedFor: String?
+    /// The rule list could not be compiled; the message is not rendered.
+    @State private var blockerUnavailable = false
+
+    private var allowsRemoteContent: Bool { remoteContentAllowedFor == html }
 
     private struct LoadKey: Equatable {
         let html: String
@@ -990,7 +1096,13 @@ struct EmailBodyWebView: View {
                     .padding(.vertical, 10)
             }
             Group {
-                if let page {
+                if blockerUnavailable {
+                    Text("This message can't be shown safely: remote content couldn't be blocked.")
+                        .font(AppFont.ui(13))
+                        .foregroundStyle(theme.ink)
+                        .padding()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else if let page {
                     WebView(page)
                         .webViewBackForwardNavigationGestures(.disabled)
                 } else {
@@ -1001,26 +1113,55 @@ struct EmailBodyWebView: View {
         }
         .task(id: LoadKey(html: html, allowsRemoteContent: allowsRemoteContent)) {
             // Rebuilt (not reused) whenever `allowsRemoteContent` changes —
-            // `loadsSubresources` is fixed at configuration time, so opting
-            // in to remote content requires a fresh WebPage.
-            let page = WebPage(
-                configuration: Self.makeConfiguration(allowsRemoteContent: allowsRemoteContent),
-                navigationDecider: LinksOpenExternally(openURL: openURL)
-            )
-            self.page = page
-            page.load(html: html)
+            // `loadsSubresources` and the rule list are fixed at configuration
+            // time, so opting in to remote content requires a fresh WebPage.
+            page = nil
+            do {
+                let page = try await Self.makePage(
+                    allowsRemoteContent: allowsRemoteContent,
+                    openURL: openURL
+                )
+                guard !Task.isCancelled else { return }
+                blockerUnavailable = false
+                self.page = page
+                _ = page.load(html: html)
+            } catch {
+                // Fail closed: without the list a message could beacon past
+                // `loadsSubresources`, so it is not rendered at all.
+                Log.mail.error("Remote content blocker unavailable: \(error.localizedDescription)")
+                blockerUnavailable = true
+            }
         }
+    }
+
+    /// The reader's page: hardened configuration, and the default-deny
+    /// navigation decider. Async because the rule list compiles once per
+    /// process before the first message renders. Shared by the view and its
+    /// tests, so the tests exercise exactly what the reader runs; `testing`
+    /// only lets a test add a URL scheme handler to count what is fetched.
+    static func makePage(
+        allowsRemoteContent: Bool,
+        openURL: OpenURLAction,
+        testing: (inout WebPage.Configuration) -> Void = { _ in }
+    ) async throws -> WebPage {
+        let blocker = allowsRemoteContent ? nil : try await RemoteContentBlocker.ruleList()
+        var configuration = makeConfiguration(allowsRemoteContent: allowsRemoteContent, blocker: blocker)
+        testing(&configuration)
+        return WebPage(
+            configuration: configuration,
+            navigationDecider: LinksOpenExternally(openURL: openURL)
+        )
     }
 
     private var remoteContentBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: "shield.lefthalf.filled")
-                .foregroundStyle(theme.ink.opacity(0.7))
+                .foregroundStyle(theme.secondaryInk)
             Text("Remote images and content are blocked.")
                 .font(AppFont.ui(12))
                 .foregroundStyle(theme.ink)
             Spacer(minLength: 8)
-            Button("Load Remote Content") { allowsRemoteContent = true }
+            Button("Load Remote Content") { remoteContentAllowedFor = html }
                 .font(AppFont.ui(12, weight: .medium))
                 .buttonStyle(.borderless)
         }
@@ -1030,11 +1171,20 @@ struct EmailBodyWebView: View {
     }
 
     /// Pure so the hardening it applies (JS off unconditionally, remote
-    /// content gated) is directly testable without touching WebKit itself.
-    static func makeConfiguration(allowsRemoteContent: Bool) -> WebPage.Configuration {
+    /// content gated) is directly testable. `blocker` is
+    /// `RemoteContentBlocker`'s list; it is installed whenever remote content
+    /// is not allowed, and a caller that blocks without one is refused.
+    static func makeConfiguration(
+        allowsRemoteContent: Bool,
+        blocker: WKContentRuleList?
+    ) -> WebPage.Configuration {
+        precondition(allowsRemoteContent || blocker != nil, "Blocking remote content needs the rule list")
         var configuration = WebPage.Configuration()
         configuration.defaultNavigationPreferences.allowsContentJavaScript = false
         configuration.loadsSubresources = allowsRemoteContent
+        if !allowsRemoteContent, let blocker {
+            configuration.userContentController.add(blocker)
+        }
         // A mail reader has no reason to keep website state. The default store
         // is the persistent one, so once the user loaded remote content for a
         // single message, WebKit's on-disk cache retained a record of which

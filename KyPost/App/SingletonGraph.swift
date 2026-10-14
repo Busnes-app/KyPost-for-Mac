@@ -341,7 +341,8 @@ final class SingletonGraph {
 
     lazy var inboxViewModel = InboxViewModel(
         mailRepository: mailRepository,
-        keywordRepository: keywordRepository
+        keywordRepository: keywordRepository,
+        windowGate: { MailAccessGate.isOpen() }
     )
     lazy var contactsViewModel = ContactsViewModel(repository: contactSyncRepository, settingsStore: contactsSettingsStore)
 

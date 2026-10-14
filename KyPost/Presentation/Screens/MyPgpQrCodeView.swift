@@ -85,7 +85,7 @@ struct MyPgpQrCodeView: View {
             } else {
                 Image(systemName: "qrcode")
                     .font(.system(size: 44))
-                    .foregroundStyle(theme.ink.opacity(0.5))
+                    .foregroundStyle(theme.secondaryInk)
                 Text("Couldn't render the QR code.")
                     .font(AppFont.ui(14))
                     .foregroundStyle(theme.ink)
@@ -101,7 +101,7 @@ struct MyPgpQrCodeView: View {
             if let seconds = viewModel.secondsRemaining {
                 Text(seconds > 0 ? "Expires in \(seconds)s" : "Expired — refreshing…")
                     .font(AppFont.mono(12))
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                    .foregroundStyle(theme.secondaryInk)
                     .monospacedDigit()
             }
 
@@ -119,7 +119,7 @@ struct MyPgpQrCodeView: View {
         case .thisDevice(let fingerprint):
             Text("Your fingerprint, from the key on this device")
                 .font(AppFont.ui(12))
-                .foregroundStyle(theme.ink.opacity(0.7))
+                .foregroundStyle(theme.secondaryInk)
             fingerprintText(fingerprint)
         case .serverReported(let fingerprint):
             Text("Fingerprint reported by the server, not checked on this device. They can't verify this code in person.")

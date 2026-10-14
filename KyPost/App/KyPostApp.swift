@@ -244,7 +244,7 @@ private struct StartupGatePlaceholder: View {
             ProgressView()
             Text("Checking this Mac…")
                 .font(AppFont.ui(13))
-                .foregroundStyle(theme.ink.opacity(0.8))
+                .foregroundStyle(theme.secondaryInk)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.bg)

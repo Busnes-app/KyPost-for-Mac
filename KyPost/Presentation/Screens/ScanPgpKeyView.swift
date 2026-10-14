@@ -315,13 +315,13 @@ private struct ContactKeyPicker: View {
                                 if !contact.primaryEmail.isEmpty {
                                     Text(contact.primaryEmail)
                                         .font(AppFont.mono(11))
-                                        .foregroundStyle(theme.ink.opacity(0.8))
+                                        .foregroundStyle(theme.secondaryInk)
                                 }
                             }
                             Spacer()
                             if contact.pgpKey != nil {
                                 Image(systemName: "lock.shield")
-                                    .foregroundStyle(theme.ink.opacity(0.6))
+                                    .foregroundStyle(theme.secondaryInk)
                             }
                         }
                     }

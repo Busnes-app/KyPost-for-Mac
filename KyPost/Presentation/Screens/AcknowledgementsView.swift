@@ -29,10 +29,10 @@ struct AcknowledgementsView: View {
                                     .foregroundStyle(theme.inkStrong)
                                 Text(item.detail)
                                     .font(AppFont.ui(12))
-                                    .foregroundStyle(theme.ink.opacity(0.8))
+                                    .foregroundStyle(theme.secondaryInk)
                                 Text(item.license)
                                     .font(AppFont.mono(11))
-                                    .foregroundStyle(theme.ink.opacity(0.8))
+                                    .foregroundStyle(theme.secondaryInk)
                             }
                             .padding(.vertical, 2)
                         }
@@ -67,7 +67,7 @@ private struct AcknowledgementDetailView: View {
                 Text(item.licenseText)
                     .font(AppFont.mono(11))
                     .textSelection(.enabled)
-                    .foregroundStyle(theme.ink.opacity(0.9))
+                    .foregroundStyle(theme.secondaryInk)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(20)

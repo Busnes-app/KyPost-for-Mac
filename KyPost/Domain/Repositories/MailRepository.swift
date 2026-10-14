@@ -207,6 +207,13 @@ final class MailRepository {
         try await emailDAO.getFolder(folder: folder, limit: limit)
     }
 
+    /// The cached row for one message, in or out of the window; nil when
+    /// this device holds none. What a reader window falls back to once the
+    /// main list no longer shows its message.
+    func cachedEmail(_ key: MailRowKey) async throws -> Email? {
+        try await emailDAO.getEmail(folder: key.folder, serverId: key.serverId)
+    }
+
     /// How many results one search asks for.
     static let searchLimit = 50
 

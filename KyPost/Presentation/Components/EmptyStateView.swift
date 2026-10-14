@@ -19,11 +19,11 @@ struct EmptyStateView: View {
             if let systemImage {
                 Image(systemName: systemImage)
                     .font(.system(size: 28))
-                    .foregroundStyle(theme.ink.opacity(0.6))
+                    .foregroundStyle(theme.secondaryInk)
             }
             Text(message)
                 .font(AppFont.ui(14))
-                .foregroundStyle(theme.ink.opacity(0.75))
+                .foregroundStyle(theme.secondaryInk)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)

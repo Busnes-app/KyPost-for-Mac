@@ -460,20 +460,43 @@ private func makeOutgoing(
 
 @MainActor
 @Suite struct EmailBodyWebViewConfigurationTests {
-    @Test func javaScriptIsAlwaysDisabledRegardlessOfRemoteContentSetting() {
+    @Test func javaScriptIsAlwaysDisabledRegardlessOfRemoteContentSetting() async throws {
+        let blocker = try await RemoteContentBlocker.ruleList()
         #expect(
-            EmailBodyWebView.makeConfiguration(allowsRemoteContent: false)
+            EmailBodyWebView.makeConfiguration(allowsRemoteContent: false, blocker: blocker)
                 .defaultNavigationPreferences.allowsContentJavaScript == false
         )
         #expect(
-            EmailBodyWebView.makeConfiguration(allowsRemoteContent: true)
+            EmailBodyWebView.makeConfiguration(allowsRemoteContent: true, blocker: nil)
                 .defaultNavigationPreferences.allowsContentJavaScript == false
         )
     }
 
-    @Test func remoteContentIsBlockedByDefaultAndOnlyLoadsWhenExplicitlyAllowed() {
-        #expect(EmailBodyWebView.makeConfiguration(allowsRemoteContent: false).loadsSubresources == false)
-        #expect(EmailBodyWebView.makeConfiguration(allowsRemoteContent: true).loadsSubresources == true)
+    @Test func remoteContentIsBlockedByDefaultAndOnlyLoadsWhenExplicitlyAllowed() async throws {
+        let blocker = try await RemoteContentBlocker.ruleList()
+        #expect(
+            EmailBodyWebView.makeConfiguration(allowsRemoteContent: false, blocker: blocker)
+                .loadsSubresources == false
+        )
+        #expect(
+            EmailBodyWebView.makeConfiguration(allowsRemoteContent: true, blocker: nil)
+                .loadsSubresources == true
+        )
+    }
+
+    /// The flag alone is not the guarantee (`RemoteContentBlockingTests`
+    /// proves the behaviour). This pins the rule list's shape: block all,
+    /// then exempt only what the app itself puts in the document.
+    @Test func ruleListBlocksEverythingButDataAndAbout() throws {
+        let rules = try #require(
+            JSONSerialization.jsonObject(with: Data(RemoteContentBlocker.encodedRules.utf8))
+                as? [[String: [String: String]]]
+        )
+        #expect(rules.count == 3)
+        #expect(rules.first?["trigger"]?["url-filter"] == ".*")
+        #expect(rules.first?["action"]?["type"] == "block")
+        #expect(Set(rules.dropFirst().compactMap { $0["trigger"]?["url-filter"] }) == ["^data:", "^about:"])
+        #expect(rules.dropFirst().allSatisfy { $0["action"]?["type"] == "ignore-previous-rules" })
     }
 }
 

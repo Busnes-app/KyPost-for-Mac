@@ -441,6 +441,7 @@ struct MacRootView: View {
         )
         .undoBar(inboxViewModel)
         .relabelsAtMidnight()
+        .focusedSceneValue(\.listMessageCommands, listMessageCommands)
         // Switching to Contacts or closing the window leaves the list, which
         // confirms whatever is held for Undo.
         .onDisappear { inboxViewModel.commitHeldActions() }
@@ -523,7 +524,7 @@ struct MacRootView: View {
                                 .foregroundStyle(theme.inkStrong)
                             Text(contact.primaryEmail)
                                 .font(AppFont.mono(11))
-                                .foregroundStyle(theme.ink.opacity(0.8))
+                                .foregroundStyle(theme.secondaryInk)
                         }
                     }
                     .tag(contact)
@@ -595,7 +596,7 @@ struct MacRootView: View {
                     .toolbar {
                         ToolbarItem {
                             Button {
-                                openWindow(id: "email", value: email.id)
+                                openInNewWindows([email])
                             } label: {
                                 Label("Open in New Window", systemImage: "macwindow.badge.plus")
                             }
@@ -687,7 +688,58 @@ struct MacRootView: View {
 
     private func openInNewWindows(_ emails: Set<Email>) {
         for email in emails {
+            // The window resolves its row itself; this keeps a search result
+            // or a row of another folder findable after the list moves on.
+            inboxViewModel.rememberForWindow(email)
             openWindow(id: "email", value: email.id)
+        }
+    }
+
+    /// The Message menu's view of the list (`MessageCommands.resolve`). Moves
+    /// go through `runMailAction`, held for Undo like the toolbar's.
+    /// Composing from the list needs one selected message whose body is
+    /// already here and that may be quoted; otherwise it is left to a reader.
+    private var listMessageCommands: MessageCommands {
+        guard !selectedEmails.isEmpty else { return .none }
+        let selection = selectedEmails
+        var commands = MessageCommands(
+            archive: { runMailAction(on: selection) { inboxViewModel.archive(serverIds: $0) } },
+            junk: { runMailAction(on: selection) { inboxViewModel.markJunk(serverIds: $0) } },
+            delete: { deleteEmails(selection) },
+            markRead: selection.allSatisfy(\.read) ? nil : {
+                Task { await inboxViewModel.markRead(serverIds: selection.map(\.serverId)) }
+            }
+        )
+        if let email = singleSelectedEmail, mayComposeFromList(email) {
+            commands.reply = { openWindow(id: "compose", value: ComposeDraft.reply(to: email)) }
+            commands.replyAll = {
+                let own = (try? SingletonGraph.shared.securePairingStore.loadPairing())?.sub
+                openWindow(id: "compose", value: ComposeDraft.replyAll(to: email, ownAddress: own))
+            }
+            commands.forward = { forwardFromList(email) }
+        }
+        return commands
+    }
+
+    private func mayComposeFromList(_ email: Email) -> Bool {
+        let state = pgpMessageState(
+            pgpEncrypted: email.pgpEncrypted,
+            pgpDecryptError: email.pgpDecryptError,
+            body: email.body
+        )
+        return mayReplyOrForward(state) && !MailRepository.needsBodyFetch(email)
+    }
+
+    /// Forward from the list, carrying the attachments as the reader does.
+    private func forwardFromList(_ email: Email) {
+        let draft = ComposeDraft.forward(email)
+        Task {
+            await runForward(
+                draftID: draft.id,
+                listing: { await inboxViewModel.attachmentListing(for: email) },
+                fetch: { try? await inboxViewModel.attachmentData($0, of: email) },
+                open: { openWindow(id: "compose", value: draft) }
+            )
         }
     }
 
@@ -748,23 +800,71 @@ private extension View {
 
 /// Content of a popped-out email window (KyPostApp "email" WindowGroup).
 /// Keyed by (folder, id): the id alone names a message only within a folder.
+///
+/// The window resolves its own row once (`InboxViewModel.resolveEmail`) and
+/// keeps it: the main list empties on every folder switch and search, and a
+/// window that re-read it went blank. A restored window finds its row in the
+/// cache; the reader fetches a missing body itself.
+///
+/// Mail shows only behind the same gates as the main window
+/// (`MailAccessGate`: not before the startup wipe check, not after an
+/// abandoned wipe), and only for the account it was resolved under: when
+/// either changes the reader is removed, which drops its plaintext
+/// (`EmailDetailView.onDisappear`), and the row is resolved again.
 struct EmailWindowView: View {
     @Environment(\.theme) private var theme
 
     let key: MailRowKey?
 
+    @State private var email: Email?
+    @State private var resolved = false
+
     private var inboxViewModel: InboxViewModel { SingletonGraph.shared.inboxViewModel }
 
+    private struct Resolution: Equatable {
+        let key: MailRowKey?
+        let account: Int
+        let gateOpen: Bool
+    }
+
     var body: some View {
-        if let key, let email = inboxViewModel.email(for: key) {
-            EmailDetailView(email: email, inboxViewModel: inboxViewModel)
-        } else {
-            EmptyStateView(
-                message: "This email is no longer available.",
-                systemImage: "envelope"
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(theme.bg)
+        let resolution = Resolution(
+            key: key,
+            account: inboxViewModel.accountGeneration,
+            gateOpen: MailAccessGate.isOpen()
+        )
+        Group {
+            if !resolution.gateOpen {
+                EmptyStateView(
+                    message: "Open the main KyPost window to continue.",
+                    systemImage: "lock"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(theme.bg)
+            } else if let email {
+                EmailDetailView(email: email, inboxViewModel: inboxViewModel, isPopOut: true)
+            } else if !resolved {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(theme.bg)
+            } else {
+                EmptyStateView(
+                    message: "This email is no longer available.",
+                    systemImage: "envelope"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(theme.bg)
+            }
+        }
+        .task(id: resolution) {
+            resolved = false
+            email = nil
+            guard let key = resolution.key, resolution.gateOpen else { return }
+            let found = await inboxViewModel.resolveEmail(for: key)
+            // An answer for an account forgotten meanwhile is not shown.
+            guard !Task.isCancelled, inboxViewModel.accountGeneration == resolution.account else { return }
+            email = found
+            resolved = true
         }
     }
 }

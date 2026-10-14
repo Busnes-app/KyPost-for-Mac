@@ -47,7 +47,7 @@ struct AboutView: View {
                         .foregroundStyle(theme.inkStrong)
                     Text("Version ") + Text(version) + Text("  ·  Copyright © 2026 Busnes.app")
                         .font(AppFont.ui(12))
-                        .foregroundStyle(theme.ink.opacity(0.75))
+                        .foregroundStyle(theme.secondaryInk)
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -56,7 +56,7 @@ struct AboutView: View {
                         .foregroundStyle(theme.inkStrong)
                     Text("If KyPost is useful to you, you can support its continued development with a one-off tip.")
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
 
                     ForEach(tipJar.products, id: \.id) { product in
                         Button {
@@ -72,7 +72,7 @@ struct AboutView: View {
                                         .foregroundStyle(theme.inkStrong)
                                     Text("One-off tip")
                                         .font(AppFont.ui(12))
-                                        .foregroundStyle(theme.ink.opacity(0.7))
+                                        .foregroundStyle(theme.secondaryInk)
                                 }
                                 Spacer()
                                 Text(product.displayPrice)
@@ -91,11 +91,11 @@ struct AboutView: View {
                     if let status = tipJar.statusMessage {
                         Text(status)
                             .font(AppFont.ui(13))
-                            .foregroundStyle(theme.ink.opacity(0.75))
+                            .foregroundStyle(theme.secondaryInk)
                     }
                     Text("Payments are processed securely by Apple.")
                         .font(AppFont.ui(12))
-                        .foregroundStyle(theme.ink.opacity(0.75))
+                        .foregroundStyle(theme.secondaryInk)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
@@ -114,7 +114,7 @@ struct AboutView: View {
                         Text(Self.mitLicense)
                             .font(AppFont.mono(10))
                             .textSelection(.enabled)
-                            .foregroundStyle(theme.ink.opacity(0.85))
+                            .foregroundStyle(theme.secondaryInk)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(height: 170)
@@ -152,13 +152,13 @@ struct AboutView: View {
             Section("KyPost") {
                 LabeledContent("Version", value: version)
                 Text("Copyright © 2026 Busnes.app")
-                    .foregroundStyle(theme.ink.opacity(0.8))
+                    .foregroundStyle(theme.secondaryInk)
             }
             .listRowBackground(theme.panel)
 
             Section {
                 Text("If KyPost is useful to you, you can support its continued development with a one-off tip.")
-                    .foregroundStyle(theme.ink.opacity(0.8))
+                    .foregroundStyle(theme.secondaryInk)
 
                 ForEach(tipJar.products, id: \.id) { product in
                     Button {
@@ -176,7 +176,7 @@ struct AboutView: View {
                 if let status = tipJar.statusMessage {
                     Text(status)
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                 }
             } header: {
                 Text("Tip Jar")
@@ -197,7 +197,7 @@ struct AboutView: View {
                 Text(Self.mitLicense)
                     .font(AppFont.mono(11))
                     .textSelection(.enabled)
-                    .foregroundStyle(theme.ink.opacity(0.9))
+                    .foregroundStyle(theme.secondaryInk)
             }
             .listRowBackground(theme.panel)
         }

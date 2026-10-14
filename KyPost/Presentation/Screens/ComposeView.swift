@@ -417,7 +417,7 @@ struct ComposeView: View {
         case .clientHeld:
             HStack(spacing: 8) {
                 Image(systemName: "lock.fill")
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                    .foregroundStyle(theme.secondaryInk)
                 Text("This account's PGP key is held only by your browser, so signing and encryption happen there.")
                     .font(AppFont.ui(12))
                     .foregroundStyle(theme.ink)
@@ -473,7 +473,7 @@ struct ComposeView: View {
         GridRow {
             Text(label)
                 .font(AppFont.ui(12, weight: .medium))
-                .foregroundStyle(theme.ink.opacity(0.7))
+                .foregroundStyle(theme.secondaryInk)
                 .gridColumnAlignment(.trailing)
             field()
                 .foregroundStyle(theme.inkStrong)
@@ -511,7 +511,7 @@ struct ComposeView: View {
                     Image(systemName: "text.book.closed")
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(theme.ink.opacity(0.7))
+                .foregroundStyle(theme.secondaryInk)
                 .help("Browse contacts")
                 .accessibilityLabel("Browse contacts")
             }
@@ -613,13 +613,13 @@ struct ComposeView: View {
                                 .lineLimit(1)
                             Text(attachment.data.count.formatted(.byteCount(style: .file)))
                                 .font(AppFont.ui(10))
-                                .foregroundStyle(theme.ink.opacity(0.7))
+                                .foregroundStyle(theme.secondaryInk)
                         }
                         Button {
                             viewModel.removeAttachment(attachment)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(theme.ink.opacity(0.6))
+                                .foregroundStyle(theme.secondaryInk)
                         }
                         .buttonStyle(.plain)
                         .help("Remove attachment")
