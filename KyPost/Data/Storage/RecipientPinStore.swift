@@ -16,9 +16,16 @@
 //  Sync never writes here otherwise, so a relay rewriting or deleting the
 //  contact does not move the pin.
 //
-//  Public keys are not secrets, but which addresses this user verified is
-//  their address book: memory-only under Hostile Location Protection, swept
-//  by the security wipe, cleared on unpair.
+//  It also keeps the **first-seen signer history** (`SignerKeyHistory`): per
+//  sender address, the fingerprint of the first key this device saw make a
+//  valid signature for it. That is what "same key as last time" and "key
+//  changed" are computed from, on the device — never from the relay. Its only
+//  writer is the reader, and only for a key that names the address itself.
+//  A pin outranks it.
+//
+//  Public keys are not secrets, but which addresses this user verified, and
+//  who has written to them, is their address book: both are memory-only under
+//  Hostile Location Protection, swept by the security wipe, cleared on unpair.
 //
 
 import Foundation
@@ -30,13 +37,30 @@ nonisolated struct RecipientPin: Codable, Equatable, Sendable {
     var fingerprint: String
 }
 
-final class RecipientPinStore: @unchecked Sendable {
+/// The first key this device saw sign for an address.
+nonisolated struct FirstSeenSigner: Codable, Equatable, Sendable {
+    var fingerprint: String
+    var firstSeen: Date
+}
+
+/// The on-device signer history the reader computes continuity from.
+protocol SignerKeyHistory: Sendable {
+    func firstSeenFingerprint(for address: String) -> String?
+    /// Records `fingerprint` for `address` unless one is already recorded.
+    /// History is never overwritten: a different key later is `keyChanged`,
+    /// and only a QR pin supersedes it.
+    func recordFirstSeen(_ fingerprint: String, for address: String)
+}
+
+final class RecipientPinStore: @unchecked Sendable, SignerKeyHistory {
     private static let key = "contacts.recipientPins"
+    private static let historyKey = "contacts.signerFirstSeen"
 
     private let defaults: UserDefaults
     private let hostileLocation: HostileLocationProtectionStore
     private let lock = NSLock()
     private var memoryPins: [String: RecipientPin] = [:]
+    private var memoryHistory: [String: FirstSeenSigner] = [:]
 
     init(defaults: UserDefaults, hostileLocation: HostileLocationProtectionStore) {
         self.defaults = defaults
@@ -91,16 +115,49 @@ final class RecipientPinStore: @unchecked Sendable {
     func clear() {
         lock.lock(); defer { lock.unlock() }
         memoryPins = [:]
+        memoryHistory = [:]
         defaults.removeObject(forKey: Self.key)
+        defaults.removeObject(forKey: Self.historyKey)
     }
 
-    /// Erases the on-disk copy and keeps the in-memory one. Under Hostile
+    /// Erases the on-disk copies and keeps the in-memory ones. Under Hostile
     /// Location Protection reads switch to memory but nothing else removes
     /// what was written before, so this runs when the mode is turned on and
     /// at every launch while it is on (`AppEnvironment.eraseHostileLocationDefaults`).
     func clearPersisted() {
         lock.lock(); defer { lock.unlock() }
         defaults.removeObject(forKey: Self.key)
+        defaults.removeObject(forKey: Self.historyKey)
+    }
+
+    // MARK: - First-seen signer history
+
+    func firstSeenFingerprint(for address: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return historyLocked()[Self.normalized(address)]?.fingerprint
+    }
+
+    func recordFirstSeen(_ fingerprint: String, for address: String) {
+        let target = Self.normalized(address)
+        let value = fingerprint.uppercased()
+        guard !target.isEmpty, !value.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        var history = historyLocked()
+        guard history[target] == nil else { return }
+        history[target] = FirstSeenSigner(fingerprint: value, firstSeen: Date())
+        if hostileLocation.enabled {
+            memoryHistory = history
+        } else if let data = try? JSONEncoder().encode(history) {
+            defaults.set(data, forKey: Self.historyKey)
+        }
+    }
+
+    private func historyLocked() -> [String: FirstSeenSigner] {
+        if hostileLocation.enabled { return memoryHistory }
+        guard let data = defaults.data(forKey: Self.historyKey),
+              let history = try? JSONDecoder().decode([String: FirstSeenSigner].self, from: data)
+        else { return [:] }
+        return history
     }
 
     /// What the reader and sender consume: each pin resolved once to intact,

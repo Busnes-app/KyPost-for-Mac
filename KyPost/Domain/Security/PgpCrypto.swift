@@ -78,6 +78,14 @@ protocol PgpDecrypting: Sendable {
     /// Returns nil for a key that does not parse. An unparseable key must only
     /// ever shrink the candidate set, never grant a pass.
     func fingerprint(ofArmoredPublicKey key: String) -> String?
+
+    /// The email addresses of the key's own User IDs, as the library accepts
+    /// them (identities carrying a valid self-signature), lowercased. Empty
+    /// for a key that does not parse.
+    ///
+    /// What the key says about itself, for display and to flag a mismatch —
+    /// **never a binding**: anyone can self-sign any User ID.
+    func userIDAddresses(ofArmoredPublicKey key: String) -> [String]
 }
 
 extension PgpDecrypting {
@@ -198,6 +206,8 @@ struct UnavailablePgpCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspecting, Pgp
     }
 
     func fingerprint(ofArmoredPublicKey key: String) -> String? { nil }
+
+    func userIDAddresses(ofArmoredPublicKey key: String) -> [String] { [] }
 
     func encryptAndSign(
         plaintext: Data,

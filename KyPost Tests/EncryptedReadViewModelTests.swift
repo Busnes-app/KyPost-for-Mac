@@ -42,6 +42,8 @@ private struct StubCrypto: PgpDecrypting {
         RawSignature()
     }
     func fingerprint(ofArmoredPublicKey key: String) -> String? { fingerprints[key] }
+    var userIDs: [String: [String]] = [:]
+    func userIDAddresses(ofArmoredPublicKey key: String) -> [String] { userIDs[key] ?? [] }
 }
 
 @MainActor
@@ -58,7 +60,7 @@ private func model(
             opener: StubOpener(outcome: opener),
             payloads: StubPayloads(result: payload),
             crypto: crypto,
-            pins: { .none },
+            pins: { .none }, history: MemorySignerHistory(),
             session: EnrollmentSession()
         ),
         mailbox: "INBOX",
@@ -162,7 +164,7 @@ private func model(
                     resolvedSender: "bob@example.com"
                 ))),
                 crypto: crypto,
-                pins: { pins.value },
+                pins: { pins.value }, history: MemorySignerHistory(),
                 session: EnrollmentSession()
             ),
             mailbox: "INBOX",
@@ -176,5 +178,37 @@ private func model(
         pins.value = RecipientPinSnapshot(states: ["bob@example.com": .revoked])
         await subject.decrypt()
         #expect(subject.signature == .keyChanged)
+    }
+
+    /// A hostile relay resolves the sender as Bob and offers Eve's key with no
+    /// conflict. The line must not present Bob as a confirmed identity: it
+    /// says the signer is not confirmed, names what the key says, and flags
+    /// that the message shows Bob.
+    @Test func aRelayVouchedKeyIsNotShownAsTheResolvedSender() async {
+        var crypto = StubCrypto()
+        crypto.signature = RawSignature(present: true, valid: true, signerFingerprint: "FPR-EVE")
+        crypto.fingerprints = ["relay-key": "FPR-EVE"]
+        crypto.userIDs = ["relay-key": ["eve@evil.example"]]
+        let subject = EncryptedReadViewModel(
+            reader: EncryptedMessageReader(
+                opener: StubOpener(outcome: .opened(privateKey: Data("KEY".utf8))),
+                payloads: StubPayloads(result: .success(PgpPayload(
+                    encryptedPayload: "CIPHERTEXT",
+                    signerKeys: [SignerKey(addresses: ["bob@example.com"], publicKey: "relay-key")],
+                    resolvedSender: "bob@example.com"
+                ))),
+                crypto: crypto,
+                pins: { .none }, history: MemorySignerHistory(),
+                session: EnrollmentSession()
+            ),
+            mailbox: "INBOX",
+            messageId: "1",
+            sender: "bob@example.com"
+        )
+        await subject.decrypt()
+        #expect(subject.signature == .signerNotConfirmed)
+        #expect(subject.signatureLine == "Signed — signer not confirmed on this device — key for eve@evil.example")
+        #expect(subject.signatureLine?.contains("bob@example.com") == false)
+        #expect(subject.signatureIdentityWarning?.contains("eve@evil.example") == true)
     }
 }

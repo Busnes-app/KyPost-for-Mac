@@ -218,7 +218,7 @@ import Testing
     }
 }
 
-// MARK: - Signature trust model (Phase 6)
+// MARK: - Signature trust model (Phase 6; trust decided on this device)
 
 @Suite struct PgpSignatureStateTests {
     /// Stands in for the OpenPGP entity-fingerprint read the crypto core
@@ -236,135 +236,157 @@ import Testing
         RawSignature(present: present, valid: valid, signerFingerprint: fingerprint)
     }
 
+    private func state(
+        _ signature: RawSignature,
+        keys: [SignerKey] = [SignerKey(publicKey: "k")],
+        trust: LocalSignerTrust = .firstSeen(nil),
+        table: [String: String] = ["k": "FPR1"]
+    ) -> PgpSignatureState {
+        signatureState(signature: signature, signerKeys: keys, trust: trust, fingerprint: fingerprints(table))
+    }
+
     @Test func anUnsignedMessageSaysNothing() {
-        #expect(signatureState(
-            signature: signature(present: false),
-            signerKeys: [SignerKey(publicKey: "k")],
-            fingerprint: fingerprints(["k": "FPR1"])
-        ) == .none)
+        #expect(state(signature(present: false)) == .none)
+        #expect(state(signature(present: false), trust: .pinUnusable) == .none)
     }
 
     /// Not an accusation: an ordinary correspondent not yet in the address
     /// book, a rotated key, and a forgery are locally indistinguishable.
     @Test func noBoundKeyIsUnknownRatherThanInvalid() {
-        #expect(signatureState(
-            signature: signature(), signerKeys: [], fingerprint: fingerprints([:])
-        ) == .signerUnknown)
-
+        #expect(state(signature(), keys: [], table: [:]) == .signerUnknown)
         // Bound keys exist, but none of them made this signature.
-        #expect(signatureState(
-            signature: signature(fingerprint: "FPRZ"),
-            signerKeys: [SignerKey(publicKey: "k")],
-            fingerprint: fingerprints(["k": "FPR1"])
-        ) == .signerUnknown)
+        #expect(state(signature(fingerprint: "FPRZ")) == .signerUnknown)
     }
 
-    /// The one alarm worth raising, and it outranks a good key for the same
-    /// sender — reporting the survivor as verified would hide exactly the
-    /// event worth reporting.
-    @Test func aConflictOutranksAGoodKeyForTheSameSender() {
-        #expect(signatureState(
-            signature: signature(),
-            signerKeys: [
-                SignerKey(publicKey: "k", verified: true),
-                SignerKey(publicKey: "", conflict: true),
-            ],
-            fingerprint: fingerprints(["k": "FPR1"])
-        ) == .keyChanged)
+    // MARK: Local history — the transitions
+
+    /// A key only the relay vouches for, never seen here: neither identity
+    /// nor continuity.
+    @Test func aFirstSightingIsNotConfirmedOnThisDevice() {
+        #expect(state(signature(), trust: .firstSeen(nil)) == .signerNotConfirmed)
     }
 
-    /// Checked before validity, too: a changed key is the more important
-    /// thing to say than a signature that fails against it.
-    @Test func aConflictOutranksAnInvalidSignature() {
-        #expect(signatureState(
-            signature: signature(valid: false),
-            signerKeys: [SignerKey(publicKey: "", conflict: true)],
-            fingerprint: fingerprints([:])
-        ) == .keyChanged)
+    @Test func theSameKeyAsFirstSeenIsContinuity() {
+        #expect(state(signature(), trust: .firstSeen("FPR1")) == .verifiedSeenBefore)
+        #expect(state(signature(fingerprint: "fpr1"), trust: .firstSeen("FPR1")) == .verifiedSeenBefore)
+    }
+
+    /// Computed from this device's history, not from any relay `conflict`.
+    @Test func aDifferentKeyFromFirstSeenIsAKeyChange() {
+        #expect(state(signature(), trust: .firstSeen("FPR-OLD")) == .keyChanged)
     }
 
     @Test func aSignatureThatDoesNotVerifyIsInvalid() {
-        #expect(signatureState(
-            signature: signature(valid: false),
-            signerKeys: [SignerKey(publicKey: "k")],
-            fingerprint: fingerprints(["k": "FPR1"])
-        ) == .invalid)
+        #expect(state(signature(valid: false)) == .invalid)
+        #expect(state(signature(valid: false), trust: .firstSeen("FPR-OLD")) == .invalid)
     }
 
-    /// Continuity, not identity. Most keys arrive by Autocrypt harvest, so a
-    /// flat "verified" would overclaim for nearly all of them.
-    @Test func anUnconfirmedBoundKeyClaimsContinuityOnly() {
-        #expect(signatureState(
-            signature: signature(),
-            signerKeys: [SignerKey(publicKey: "k", verified: false)],
-            fingerprint: fingerprints(["k": "FPR1"])
-        ) == .verifiedSeenBefore)
+    // MARK: Pins — the only identity
+
+    @Test func onlyAKeyPinnedOnThisDeviceClaimsIdentity() {
+        #expect(state(signature(), trust: .pinned(fingerprint: "FPR1")) == .verifiedConfirmed)
     }
 
-    @Test func onlyAnOutOfBandConfirmationClaimsIdentity() {
-        #expect(signatureState(
-            signature: signature(),
-            signerKeys: [SignerKey(publicKey: "k", verified: true)],
-            fingerprint: fingerprints(["k": "FPR1"])
+    @Test func aPinnedSenderSignedByAnotherKeyIsAKeyChange() {
+        #expect(state(signature(), trust: .pinned(fingerprint: "FPR-PINNED")) == .keyChanged)
+    }
+
+    @Test func aRevokedOrBrokenPinIsAKeyChange() {
+        #expect(state(signature(), trust: .pinUnusable) == .keyChanged)
+    }
+
+    /// The pin is authoritative: the relay's conflict flag does not move it.
+    @Test func aPinIgnoresTheRelaysConflict() {
+        #expect(state(
+            signature(),
+            keys: [SignerKey(publicKey: "k"), SignerKey(conflict: true)],
+            trust: .pinned(fingerprint: "FPR1")
         ) == .verifiedConfirmed)
     }
 
-    /// A message signed by a signing subkey still resolves to the bound key.
-    ///
-    /// This is the case that made attribution entity-level. The signature's
-    /// own issuer id is the subkey's and matches nothing a public key reports
-    /// about itself, so matching on it rejected every normally signed
-    /// message. The entity fingerprint is the same whichever component signed.
+    // MARK: The relay cannot raise trust
+
+    /// The relay's `conflict` only ever lowers the verdict. It outranks a good
+    /// key and an invalid signature, because reporting the survivor as fine
+    /// would hide exactly the event worth reporting.
+    @Test func theRelaysConflictCanOnlyWarn() {
+        let keys = [SignerKey(publicKey: "k"), SignerKey(conflict: true)]
+        #expect(state(signature(), keys: keys, trust: .firstSeen("FPR1")) == .keyChanged)
+        #expect(state(signature(), keys: keys, trust: .firstSeen(nil)) == .keyChanged)
+        #expect(state(signature(valid: false), keys: [SignerKey(conflict: true)], table: [:]) == .keyChanged)
+    }
+
+    /// A hostile relay omitting `conflict` cannot hide a change this device saw.
+    @Test func omittingConflictDoesNotHideALocalKeyChange() {
+        #expect(state(signature(fingerprint: "FPR-EVE"), trust: .firstSeen("FPR1"),
+                      table: ["k": "FPR-EVE"]) == .keyChanged)
+    }
+
+    /// A message signed by a signing subkey still resolves to its key: the
+    /// entity fingerprint is the same whichever component signed.
     @Test func aSubkeySignatureStillMatchesItsBoundKey() {
-        #expect(signatureState(
-            signature: RawSignature(
-                present: true,
-                valid: true,
-                signerKeyID: "SUBKEY-ISSUER-ID",
-                signerFingerprint: "FPR1"
-            ),
-            signerKeys: [SignerKey(publicKey: "k", verified: true)],
-            fingerprint: fingerprints(["k": "FPR1"])
+        #expect(state(
+            RawSignature(present: true, valid: true, signerKeyID: "SUBKEY-ISSUER-ID", signerFingerprint: "FPR1"),
+            trust: .pinned(fingerprint: "FPR1")
         ) == .verifiedConfirmed)
     }
 
     /// Fingerprints are hex and the case is the producer's choice.
     @Test func fingerprintMatchingIgnoresCase() {
-        #expect(signatureState(
-            signature: signature(fingerprint: "abcdef01"),
-            signerKeys: [SignerKey(publicKey: "k", verified: true)],
-            fingerprint: fingerprints(["k": "ABCDEF01"])
+        #expect(state(
+            signature(fingerprint: "abcdef01"),
+            trust: .pinned(fingerprint: "ABCDEF01"),
+            table: ["k": "ABCDEF01"]
         ) == .verifiedConfirmed)
     }
 
     /// Two absences must not agree with each other.
-    ///
-    /// An unparseable bound key yields no fingerprint and a signature with no
-    /// attribution yields none either. If empty compared equal to empty, that
-    /// pair would produce a verified badge built from nothing at all.
     @Test func anAbsentFingerprintNeverMatchesAnAbsentOne() {
-        #expect(signatureState(
-            signature: signature(fingerprint: ""),
-            signerKeys: [SignerKey(publicKey: "unparseable", verified: true)],
-            fingerprint: fingerprints(["unparseable": ""])
-        ) == .signerUnknown)
-
-        // And the same when the extractor reports nil rather than empty.
-        #expect(signatureState(
-            signature: signature(fingerprint: ""),
-            signerKeys: [SignerKey(publicKey: "unparseable", verified: true)],
-            fingerprint: fingerprints([:])
-        ) == .signerUnknown)
+        #expect(state(signature(fingerprint: ""), keys: [SignerKey(publicKey: "u")],
+                      trust: .pinned(fingerprint: ""), table: ["u": ""]) == .signerUnknown)
+        #expect(state(signature(fingerprint: ""), keys: [SignerKey(publicKey: "u")],
+                      trust: .firstSeen(""), table: [:]) == .signerUnknown)
     }
 
-    /// An unparseable bound key must only ever shrink the candidate set, never
-    /// grant a pass.
+    /// An unparseable bound key must only ever shrink the candidate set.
     @Test func anUnparseableKeyGrantsNothing() {
-        #expect(signatureState(
-            signature: signature(),
-            signerKeys: [SignerKey(publicKey: "garbage", verified: true)],
-            fingerprint: fingerprints([:])
-        ) == .signerUnknown)
+        #expect(state(signature(), keys: [SignerKey(publicKey: "garbage")],
+                      trust: .pinned(fingerprint: "FPR1"), table: [:]) == .signerUnknown)
+    }
+}
+
+@Suite struct SignatureIdentityTests {
+    /// The resolved sender is an identity only beside a key pinned here.
+    @Test func onlyAPinnedKeyIsShownUnderTheResolvedSender() {
+        let confirmed = SignatureVerdict(state: .verifiedConfirmed, resolvedSender: "bob@x.example")
+        #expect(signatureIdentity(confirmed) == "bob@x.example")
+
+        let notConfirmed = SignatureVerdict(
+            state: .signerNotConfirmed, resolvedSender: "bob@x.example", keyAddresses: ["eve@evil.example"]
+        )
+        #expect(signatureIdentity(notConfirmed) == "key for eve@evil.example")
+        #expect(signatureIdentity(SignatureVerdict(state: .verifiedSeenBefore, resolvedSender: "bob@x.example")) == nil)
+    }
+
+    @Test func aFromTheKeyDoesNotNameIsFlagged() {
+        let verdict = SignatureVerdict(
+            state: .verifiedSeenBefore, resolvedSender: "bob@x.example", keyAddresses: ["eve@evil.example"]
+        )
+        #expect(signatureIdentityMismatch(verdict, displayedFrom: "bob@x.example")?
+            .contains("eve@evil.example") == true)
+        #expect(signatureIdentityMismatch(verdict, displayedFrom: "Eve@Evil.example") == nil)
+    }
+
+    @Test func aConfirmedKeyIsBoundToItsPinnedAddress() {
+        let verdict = SignatureVerdict(state: .verifiedConfirmed, resolvedSender: "bob@x.example")
+        #expect(signatureIdentityMismatch(verdict, displayedFrom: "bob@x.example") == nil)
+        #expect(signatureIdentityMismatch(verdict, displayedFrom: "alice@y.example") != nil)
+    }
+
+    @Test func noWarningWithoutAnAttributedKey() {
+        #expect(signatureIdentityMismatch(SignatureVerdict(state: .signerUnknown), displayedFrom: "a@b.example") == nil)
+        #expect(signatureIdentityMismatch(SignatureVerdict(state: .keyChanged), displayedFrom: "a@b.example") == nil)
+        #expect(signatureIdentityMismatch(SignatureVerdict(state: .unsigned), displayedFrom: "a@b.example") == nil)
     }
 }
 
@@ -395,6 +417,9 @@ import Testing
     /// unsaved key must not read as an accusation.
     @Test func theLabelsDoNotOverclaim() {
         #expect(signatureLabel(.verifiedConfirmed)?.contains("confirmed") == true)
+        #expect(signatureLabel(.signerNotConfirmed)?.contains("not confirmed on this device") == true)
+        #expect(!signatureIsAlarming(.signerNotConfirmed))
+        #expect(signatureRowSymbol(.signerNotConfirmed) == nil)
         #expect(signatureLabel(.verifiedSeenBefore)?.contains("same key") == true)
         #expect(signatureLabel(.verifiedSeenBefore)?.lowercased().contains("verified") == false)
         #expect(signatureLabel(.none) == nil)

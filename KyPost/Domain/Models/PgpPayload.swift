@@ -123,7 +123,7 @@ nonisolated struct DecryptedAttachment: Equatable, Sendable, Identifiable,
 /// Separate cases rather than one error string because the UI shows a
 /// different sentence, and sometimes a different button, for each.
 nonisolated enum ReadOutcome: Equatable, Sendable {
-    case decrypted(body: DecryptedBody, signature: PgpSignatureState, resolvedSender: String)
+    case decrypted(body: DecryptedBody, verdict: SignatureVerdict)
 
     /// The key is not held and this attempt was not allowed to prompt. The
     /// screen goes on offering Decrypt.

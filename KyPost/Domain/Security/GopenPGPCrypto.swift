@@ -175,6 +175,24 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         return value.isEmpty ? nil : value
     }
 
+    func userIDAddresses(ofArmoredPublicKey key: String) -> [String] {
+        // The ring's identities are the ones the library kept on reading the
+        // key — a User ID without a valid self-signature is not among them.
+        guard let ring = try? keyRing(fromArmored: [key]),
+              ring.countEntities() > 0,
+              let json = ring.getIdentitiesJson(),
+              let identities = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]]
+        else { return [] }
+        var seen = Set<String>()
+        return identities.compactMap { identity in
+            // Go's default JSON field name is `Email`; accept either case.
+            let raw = (identity["Email"] ?? identity["email"]) as? String ?? ""
+            let email = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !email.isEmpty, seen.insert(email).inserted else { return nil }
+            return email
+        }
+    }
+
     // MARK: - Writing
 
     func encryptAndSign(
