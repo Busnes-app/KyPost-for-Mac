@@ -386,8 +386,14 @@ Domain.
 - About and Support are shared across iOS Settings and the macOS About window.
   macOS exposes one standard About KyPost app-menu item; it does not duplicate
   the surface as a Preferences tab. `AboutView` owns the version, 2026
-  Busnes.app copyright, privacy-policy link, embedded MIT license, and StoreKit
-  2 donation presentation. `TipJarStore` uses `CupOJoe4Mail` for one-off
+  Busnes.app copyright, privacy-policy link, embedded MIT license, the
+  Acknowledgements link (`AcknowledgementsView`: pushed on iOS, a sheet in
+  the macOS About window), and the StoreKit 2 Tip Jar. The user-facing name
+  is **Tip Jar**, never "Donate": App Review reads "donate" as a charitable
+  donation, which it allows only for approved nonprofits, while a tip to the
+  developer through In-App Purchase is ordinary. The tip section shows one status line,
+  `TipJarStore.statusMessage`; do not render `errorMessage` beside it.
+  `TipJarStore` uses `CupOJoe4Mail` for one-off
   purchases only; prices come from App Store Connect and must not be hardcoded.
   Do not offer recurring support without an ongoing customer benefit.
   `start()` keeps the `Transaction.updates` listener and drains
@@ -426,7 +432,8 @@ Recorded so they aren't re-litigated as bugs:
   window, `OlderMailTests.swift` for older mail, delta overflow and bodies on
   open, `MailIdentityTests.swift` for the (folder, id) key,
   `MailSearchTests.swift` for search, `WideLayoutTests.swift` for the iOS
-  stack/split decision, what a switch keeps, and its Undo rule).
+  stack/split decision, what a switch keeps, and its Undo rule,
+  `TipJarStoreTests` for the tip transactions and status line).
 - Pass `debounceInterval: .zero` to `ComposeViewModel` in tests, and poll for
   the result rather than sleeping a fixed span — the search lands a scheduling
   hop later even at zero, so a fixed sleep goes flaky under load.
