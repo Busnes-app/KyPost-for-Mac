@@ -57,15 +57,15 @@ jobs:
       - name: Select Xcode
         run: .github/scripts/select-xcode.sh
 
-      - name: Pick a simulator and start booting it
+      - name: Pick a simulator
         # Resolved from what the image actually has rather than pinned to a
         # device name. The runner images add and retire devices between
         # refreshes, and a missing name fails as "Unable to find a destination",
         # which reads like a project fault rather than an image change.
         #
-        # The boot starts here, in the background, so it overlaps the build.
-        # Left to `xcodebuild test`, a cold boot on a fresh runner sat silent
-        # for about 4.5 minutes between the last link and the first test.
+        # Not booted early to overlap the build. Tried: on these 3-core runners
+        # the boot competes with the compiler, and the build went from 2.6 to
+        # 8.5 and then 11 minutes, more than the boot it hid.
         run: |
           set -euo pipefail
           UDID=$(xcrun simctl list devices available --json \
@@ -77,30 +77,6 @@ jobs:
           fi
           xcrun simctl list devices available | grep "$UDID" || true
           echo "SIMULATOR_UDID=$UDID" >> "$GITHUB_ENV"
-          nohup xcrun simctl boot "$UDID" > "$RUNNER_TEMP/simctl-boot.log" 2>&1 &
-
-      - name: Build for testing
-        # Built for the generic simulator, not the booting device by id: with
-        # the id, xcodebuild sat idle for 3 minutes waiting on the boot before
-        # it compiled anything. ARCHS=arm64 because a generic destination has
-        # no active arch and would otherwise build x86_64 as well; the runners
-        # and their simulators are arm64.
-        #
-        # Do NOT add CODE_SIGNING_ALLOWED=NO here as an "it's only a simulator"
-        # tidy-up. That strips the entitlements rather than the certificate,
-        # and puts 178 tests straight back onto -34018.
-        run: |
-          .github/scripts/run-xcodebuild.sh build-for-testing \
-            -scheme KyPost \
-            -destination 'generic/platform=iOS Simulator' \
-            ARCHS=arm64
-
-      - name: Wait for the simulator
-        # `-b` boots it if the background boot failed to start, so this step
-        # cannot leave the tests without a device.
-        run: |
-          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
-          cat "$RUNNER_TEMP/simctl-boot.log" || true
 
       - name: Test
         # Unit tests only: the UI target drives a real app instance, is flaky
@@ -109,8 +85,12 @@ jobs:
         # No pretty-printer in the pipeline. `| xcpretty` swallowed the real
         # exit status behind a tool that is not guaranteed on the image, and a
         # formatter is not worth a build step that can fail for its own reasons.
+        #
+        # Do NOT add CODE_SIGNING_ALLOWED=NO here as an "it's only a simulator"
+        # tidy-up. That strips the entitlements rather than the certificate,
+        # and puts 178 tests straight back onto -34018.
         run: |
-          .github/scripts/run-xcodebuild.sh test-without-building \
+          .github/scripts/run-xcodebuild.sh test \
             -scheme KyPost \
             -destination "platform=iOS Simulator,id=${SIMULATOR_UDID}" \
             -only-testing:"KyPost Tests"
