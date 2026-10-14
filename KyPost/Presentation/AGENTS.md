@@ -227,10 +227,14 @@ Domain.
   server never saw the plaintext, so `pgpSigned`/`pgpVerified` are not a
   verdict about anything. A client-protected message automatically decrypts
   when its key is already held; otherwise it shows Decrypt, whose deliberate
-  press prompts to unlock the key. Cancelling leaves Decrypt available. The
-  reader has no webmail fallback. PGP explanation and controls disappear once
-  plaintext is visible — the signature line, a dropped-attachment notice and
-  the decrypted files then show beside the body instead — and the body has
+  press opens the key — prompting only if no presence check has happened
+  since the app last locked (`PresenceContext`). Cancelling leaves Decrypt
+  available. The reader has no webmail fallback. PGP explanation and controls
+  disappear once plaintext is visible — the signature line
+  (`EncryptedReadViewModel.signatureLine`, identity from `signatureIdentity`),
+  the identity-mismatch warning (`signatureIdentityWarning`, danger colour), a
+  dropped-attachment notice and the decrypted files then show beside the body
+  instead — and the body has
   layout priority so it owns the remaining scrollable space without imposing
   an infinite-height content constraint on its macOS window. The reader navigation bar does not repeat
   the sender, and client-protected PGP/MIME transport parts are not presented

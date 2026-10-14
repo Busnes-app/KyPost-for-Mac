@@ -140,10 +140,26 @@ is minted by the server at registration and returned exactly once.
   recipient's key id appears in a packet another can read.
 - The decrypted body is never persisted — not to SwiftData, not to the cached body field,
   not into a scene value that state restoration would archive.
-- **A signature verdict is not a flat "verified".** Six states, and the line that matters
-  is identity (confirmed out of band) versus continuity (same key as last time). Most
-  keys arrive by Autocrypt harvest, so a flat "verified" would overclaim for nearly all
-  of them.
+- **A signature verdict is not a flat "verified".** Nine states: two describe the message
+  (not signed; signature not checked) and seven its sender. The line that matters is
+  identity versus continuity, and **both are decided on this device, never by the
+  relay**:
+  - *You confirmed this key* — only when the signing key is the one you pinned for that
+    address on this device by scanning its QR code.
+  - *Same key as last time* — the key matches the first key this device itself saw sign
+    for that address. That history is kept per address, in memory only under Hostile
+    Location Protection, and cleared on unpair and by the wipe. It is recorded only from
+    a valid signature by a key whose own User IDs name the address.
+  - *Signer not confirmed on this device* — a valid signature by a key only the relay
+    vouches for, with no pin and no history here.
+  - *This sender's key has changed* — the signing key differs from the pinned or
+    first-seen key, the pin was revoked, or the relay reports a change. The relay's
+    report can only add this warning; it never upgrades a verdict, and the relay's
+    `verified` flag is not read at all.
+  - *Signed by a key you haven't saved* and *Signature doesn't match* complete the set.
+  The server's resolved sender is shown as an identity only beside a key you pinned;
+  otherwise the reader shows the address the signing key names, and warns when the
+  message's From is not one of them.
 - **Encrypted mail is excluded from push payloads by the server**, regardless of the
   content-preview setting, because push travels through a relay and on to APNs in
   cleartext at every hop.
@@ -157,13 +173,32 @@ is minted by the server at registration and returned exactly once.
 - The sealed envelope that makes on-device decryption possible is accepted **only while
   Hostile Location Protection is off**, and is destroyed when it is turned on. It is a
   deliberate, user-chosen posture change, not a default.
-- The envelope is unwrapped under a Secure Enclave key that requires the device
-  credential. A Mac with no passcode cannot enrol at all — the envelope's protection *is*
-  the lock screen, so degrading it is not on offer.
+- The envelope is unwrapped under a Secure Enclave P-256 key created with
+  `.privateKeyUsage` and `.userPresence` (device credential or biometry),
+  `WhenUnlockedThisDeviceOnly`. A device with no passcode cannot enrol at all — the
+  envelope's protection *is* the lock screen — and a device without a Secure Enclave is
+  refused rather than given a software key.
+- **The private key is never stored in the clear.** Before it reaches the Keychain it is
+  sealed to that same Secure Enclave key (ECIES: ephemeral P-256 agreement, X9.63
+  SHA-256 KDF, AES-GCM), header included, so the Keychain item holds ciphertext. Opening
+  it is a Secure Enclave operation under the key's presence check; nothing else can.
+  Fingerprint, generation and kind stay readable without a prompt, because the
+  enrollment report needs them.
+- **The presence prompt appears at most once per app unlock.** A successful Face ID /
+  Touch ID / passcode unlock of the app hands its authenticated context to the vault, so
+  opening encrypted mail does not ask again. With the app lock off, or after a PIN
+  unlock, the first decrypt prompts once and that context is reused. Every lock
+  trigger — locking, iOS backgrounding, the macOS screen lock, even inside a grace
+  period — and every vault teardown invalidates it, and the next decrypt prompts again.
+- Installs from before the seal held the key in the clear. The first presence-checked
+  open seals it, proves the seal opens, and replaces the plaintext item in the same
+  Keychain item; plaintext and sealed copies never coexist. Until that first open after
+  updating, the plaintext item remains.
 - The unsealed key is held in memory only, is zeroed on every session boundary — app
-  lock, backgrounding, memory pressure, wipe, unpair — and a security wipe destroys the
-  envelope. If it cannot, the wipe reports itself incomplete and the app fails closed;
-  see **App lock** above.
+  lock, backgrounding, memory pressure, wipe, unpair — and a security wipe, Hostile
+  Location Protection and the stranded-lock reset destroy both the sealed record and the
+  Secure Enclave key. If the wipe cannot, it reports itself incomplete and the app fails
+  closed; see **App lock** above.
 
 ### Keychain items from before the identifier rename
 
