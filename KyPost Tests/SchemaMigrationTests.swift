@@ -170,6 +170,67 @@ import Testing
         #expect(AppDatabase.openFailureDisposition(for: opaque, storeURL: url) == .keep)
     }
 
+    // MARK: - A kept store and leaving the account
+
+    private func storeWithMail(at url: URL) throws {
+        _ = try {
+            let database = try AppDatabase(url: url)
+            let context = ModelContext(database.container)
+            context.insert(EmailEntity(from: Email(
+                serverId: "a-1", folder: "INBOX", senderName: "A", senderEmail: "a@x",
+                subject: "Account A's mail", body: "A's body", keywords: [],
+                receivedAt: Self.created, read: false, starred: false
+            )))
+            try context.save()
+        }()
+    }
+
+    /// Account A's store was kept while the session ran in memory; replacing
+    /// A with B cleared only the in-memory copy. Reopening the file must not
+    /// show A's mail to B.
+    @MainActor
+    @Test func leavingTheAccountErasesAKeptStoreBeforeItReopens() async throws {
+        let (directory, url) = try scratchStore()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        try storeWithMail(at: url)
+
+        let complete = await AccountTeardown(
+            erasePreservedStore: { AppDatabase.erasePreservedStore(defaults: defaults, at: url) }
+        ).run()
+
+        #expect(complete)
+        #expect(AppDatabase.storeMayOpen(defaults: defaults, at: url))
+        let reopened = try AppDatabase(url: url)
+        #expect(try ModelContext(reopened.container).fetch(FetchDescriptor<EmailEntity>()).isEmpty)
+    }
+
+    /// The file could not be deleted at teardown (a read-only directory): it
+    /// stays shut until it can be, then is erased before it opens.
+    @MainActor
+    @Test func aKeptStoreThatCannotBeErasedYetStaysShut() async throws {
+        let (directory, url) = try scratchStore()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        try storeWithMail(at: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory.path)
+
+        await AccountTeardown(
+            erasePreservedStore: { AppDatabase.erasePreservedStore(defaults: defaults, at: url) }
+        ).run()
+
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(!AppDatabase.storeMayOpen(defaults: defaults, at: url))
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        #expect(AppDatabase.storeMayOpen(defaults: defaults, at: url))
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(AppDatabase.storeMayOpen(defaults: defaults, at: url), "the mark is cleared once erased")
+    }
+
     @Test func noFileMeansNothingToDiscard() throws {
         let (directory, url) = try scratchStore()
         defer { try? FileManager.default.removeItem(at: directory) }

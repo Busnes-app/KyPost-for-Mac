@@ -67,7 +67,8 @@ and must do so before `appLockManager.lockAfterGrace()` (a grace period
 does not extend the undo window) — see the root "Inbox list actions"
 contract.
 
-**Leaving an account is one list, `AccountTeardown`** (enrollment vault,
+**Leaving an account is one list, `AccountTeardown`** (a store file kept
+under an in-memory session, enrollment vault,
 session and pending reports; notification history and pull cursor; recipient
 pins; mail signature; cached mail and cursors; the inbox's held actions and
 rows). `SettingsViewModel.unpair` runs it after clearing the pairing, and a
@@ -103,7 +104,12 @@ and re-ran `requestAuthorization` on every toggle.
 it might still read. A `ModelContainer` that will not open is deleted (and
 the contact cursor reset) only when `AppDatabase.openFailureDisposition` says
 this build can never read it; otherwise the file is kept and the session runs
-in memory. Only an invalid *schema* is fatal. The store holds unsynced
+in memory. Such a graph has `preservesDiskStore` set, and its
+`AccountTeardown` erases the kept file too (`AppDatabase.erasePreservedStore`):
+the steps clear only the in-memory copy, and the file would reopen with the
+left account's mail. A delete that fails leaves `store.pendingErase` set, and
+`makeLaunchGraph` erases the file before opening it (`storeMayOpen`), or runs
+in memory if it still cannot. Only an invalid *schema* is fatal. The store holds unsynced
 contacts and the rows Apple Contacts cards are linked to, so it is not
 disposable (root "The local store"). Every site that deletes the store files
 also resets `contactCursorStore`.

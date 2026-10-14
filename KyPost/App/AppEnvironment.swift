@@ -70,6 +70,13 @@ final class AppEnvironment {
     static let shared = AppEnvironment(graph: makeLaunchGraph())
 
     private static func makeLaunchGraph() -> SingletonGraph {
+        let defaults = SingletonGraph.launchUserDefaults
+        // A kept store whose account was left while this ran in memory is
+        // erased before anything opens it; if it cannot be, it stays shut.
+        guard AppDatabase.storeMayOpen(defaults: defaults) else {
+            Log.storage.error("A left account's store could not be erased; running in memory")
+            return makeFallbackGraph(preservingStore: true)
+        }
         do {
             return try SingletonGraph()
         } catch {
@@ -78,7 +85,7 @@ final class AppEnvironment {
                 Log.storage.error("Local store unreadable by this build, recreating it: \(error.localizedDescription)")
                 try? AppDatabase.deleteStoreFiles()
                 // The cursor describes rows the deleted file held.
-                ContactCursorStore(defaults: SingletonGraph.launchUserDefaults).reset()
+                ContactCursorStore(defaults: defaults).reset()
                 do {
                     return try SingletonGraph()
                 } catch {
@@ -86,14 +93,24 @@ final class AppEnvironment {
                         "Could not recreate the local store, running without one: \(error.localizedDescription)"
                     )
                 }
+                return makeFallbackGraph(preservingStore: false)
             case .keep:
                 Log.storage.error(
                     "Local store would not open; keeping it and running in memory: \(error.localizedDescription)"
                 )
+                return makeFallbackGraph(preservingStore: true)
             }
         }
+    }
+
+    /// An in-memory session. `preservingStore`: a store file is kept on disk
+    /// that this session never opened, so leaving the account must erase it
+    /// too (`SingletonGraph.preservesDiskStore`, `AccountTeardown`).
+    private static func makeFallbackGraph(preservingStore: Bool) -> SingletonGraph {
         do {
-            return try SingletonGraph(database: AppDatabase(inMemory: true))
+            let graph = try SingletonGraph(database: AppDatabase(inMemory: true))
+            graph.preservesDiskStore = preservingStore
+            return graph
         } catch {
             // An in-memory SwiftData container failing means the schema itself
             // is invalid — a programmer error no user action can resolve.

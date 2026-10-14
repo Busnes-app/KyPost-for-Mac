@@ -84,6 +84,38 @@ final class AppDatabase: Sendable {
         return stored == current ? .keep : .discard
     }
 
+    // MARK: - A kept store and leaving the account
+
+    /// Set while a store kept by `openFailureDisposition` (`.keep`) still
+    /// holds an account the user has since left. That session ran in memory,
+    /// so the account teardown erased only the in-memory copy; the file holds
+    /// the old account's mail, bodies and contacts, and must not open again.
+    static let pendingEraseKey = "store.pendingErase"
+
+    /// Account teardown on a session running in memory over a kept store:
+    /// mark the file first (a crash or a failed delete leaves the mark, and
+    /// the next launch erases it before opening), then delete it now — this
+    /// process does not have it open.
+    @discardableResult
+    static func erasePreservedStore(defaults: UserDefaults, at url: URL = storeURL) -> Bool {
+        defaults.set(true, forKey: pendingEraseKey)
+        do {
+            try deleteStoreFiles(at: url)
+        } catch {
+            return false
+        }
+        defaults.removeObject(forKey: pendingEraseKey)
+        return true
+    }
+
+    /// Whether the store at `url` may be opened. With an erase pending it is
+    /// deleted first; if that fails the answer is no, and the session runs in
+    /// memory rather than show a left account's data.
+    static func storeMayOpen(defaults: UserDefaults, at url: URL = storeURL) -> Bool {
+        guard defaults.bool(forKey: pendingEraseKey) else { return true }
+        return erasePreservedStore(defaults: defaults, at: url)
+    }
+
     /// The model version hashes a store written by this build carries, read
     /// from a scratch store. Nil when even that cannot be built (a full disk).
     private static func currentVersionHashes() -> [String: Data]? {

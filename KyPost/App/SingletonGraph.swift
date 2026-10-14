@@ -411,8 +411,17 @@ final class SingletonGraph {
 
     /// The account teardown over this graph's stores, for a pairing that
     /// replaces the account (unpair builds the same list from its own).
+    /// Set by `AppEnvironment` when this graph runs in memory over a store
+    /// file it kept but could not open. Leaving the account then erases that
+    /// file too, or it would reopen with the left account's data.
+    var preservesDiskStore = false
+
     func makeAccountTeardown() -> AccountTeardown {
-        AccountTeardown(
+        let defaults = userDefaults
+        return AccountTeardown(
+            erasePreservedStore: preservesDiskStore
+                ? { AppDatabase.erasePreservedStore(defaults: defaults) }
+                : nil,
             enrollmentVault: enrollmentVault,
             pushRepository: pushRepository,
             recipientPinStore: recipientPinStore,
