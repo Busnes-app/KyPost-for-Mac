@@ -13,11 +13,6 @@ enum Config {
     nonisolated static let deepLinkScheme = "kypost"
     static let pairingHost = "native-pair"
 
-    // Desktop pairing (Desktop Pairing guide): kypost://desktop-pair?code=…&srv=…
-    static let desktopPairingHost = "desktop-pair"
-    /// Pairing codes are 32 characters (16 random bytes, hex-encoded).
-    static let desktopPairingCodeLength = 32
-
     static let defaultFolder = "INBOX"
 
     /// Foreground refresh cadence for keyword tabs and pull-mode polling (spec §2, §3).

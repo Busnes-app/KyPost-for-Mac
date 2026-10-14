@@ -273,13 +273,20 @@ enum MailOutcome: Equatable, Sendable {
     /// Relay 502 — an upstream IMAP/SMTP failure. Safe to retry with backoff,
     /// unlike the other failures here.
     case upstreamFailure(String)
+    /// A send whose outcome is unknown: the request may have reached the
+    /// relay and the message gone out, but no answer said so — a timeout, a
+    /// dropped connection, any 5xx, or a 2xx that would not decode. Never
+    /// retried on the user's behalf; compose says to check Sent first, and a
+    /// deliberate retry reuses the same `Idempotency-Key`.
+    case mayHaveBeenSent(String)
 
     /// A short reason for a user-facing sentence, or "" when there is none.
     var reason: String {
         switch self {
         case .success, .sentWithWarning: ""
         case .invalid(let message), .failure(let message),
-             .notConfigured(let message), .upstreamFailure(let message):
+             .notConfigured(let message), .upstreamFailure(let message),
+             .mayHaveBeenSent(let message):
             message
         case .unauthorized: "the server rejected this device's credentials"
         case .notPaired: "this device isn't paired"
@@ -288,6 +295,23 @@ enum MailOutcome: Equatable, Sendable {
         case .rateLimited(let retryAfter):
             retryAfter.map { "too many attempts — try again in \(NetworkError.formatRetryAfter($0))" }
                 ?? "too many attempts — try again later"
+        }
+    }
+
+    /// A send that failed this way may still have gone out: the request
+    /// could have reached the relay, which answers only after SMTP accepted
+    /// the message. Transport errors include ones that never left the device
+    /// (offline); `NetworkError` cannot tell them apart, and the careful
+    /// reading costs one look at Sent.
+    static func sendOutcomeUnknown(_ error: Error) -> Bool {
+        switch error {
+        case NetworkError.transport, NetworkError.decoding, NetworkError.serviceUnavailable,
+             NetworkError.responseTooLarge:
+            true
+        case NetworkError.server(let statusCode):
+            (500..<600).contains(statusCode)
+        default:
+            false
         }
     }
 
@@ -343,7 +367,8 @@ enum MailOutcome: Equatable, Sendable {
             String(localized: "Not authorized — re-pair the device or check credentials.")
         case .notPaired:
             String(localized: "Pair this device first.")
-        case .invalid(let message), .failure(let message), .upstreamFailure(let message):
+        case .invalid(let message), .failure(let message), .upstreamFailure(let message),
+             .mayHaveBeenSent(let message):
             message
         case .clientSideNeeded, .keylessRecipients:
             // Neither is reachable outside the send path.
@@ -377,6 +402,8 @@ enum MailOutcome: Equatable, Sendable {
         case .responseTooLarge: "The server sent more data than this app will accept."
         case .certificateMismatch: error.errorDescription
             ?? "The server's security certificate changed — re-pair the device."
+        case .pinUnreadable: error.errorDescription
+            ?? "KyPost couldn't read this server's certificate pin — try again."
         case .server(statusCode: 502): "Couldn't reach the mail server — try again shortly."
         case .server(let statusCode): "The server returned an error (status \(statusCode))."
         case .transport(let description): description

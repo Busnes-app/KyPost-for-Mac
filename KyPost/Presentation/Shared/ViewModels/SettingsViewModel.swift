@@ -2,7 +2,7 @@
 //  SettingsViewModel.swift
 //  KyPost
 //
-//  Settings state: relay pairing status, desktop session, notifications,
+//  Settings state: relay pairing status, notifications,
 //  keyword visibility. Mail flows exclusively through the paired relay.
 //
 
@@ -31,6 +31,7 @@ nonisolated struct PairingDisplay: Equatable, Sendable {
 final class SettingsViewModel {
     private let securePairingStore: SecurePairingStore
     private let pushSettingsStore: PushSettingsStore
+    /// Only to erase a desktop session token an older build left (unpair).
     private let desktopSessionStore: DesktopSessionStore
     private let mailRepository: MailRepository
     private let keywordRepository: KeywordRepository
@@ -78,6 +79,9 @@ final class SettingsViewModel {
     /// this view model — the inbox's held list actions, rows on screen, and
     /// in-flight refreshes (`InboxViewModel.forgetAccount`).
     private let onUnpaired: (() -> Void)?
+    /// `SingletonGraph.erasePreservedStoreStep`: a store file kept under an
+    /// in-memory session belongs to the account being left too.
+    private let erasePreservedStore: (() -> Bool)?
     /// What Settings → Connection shows instead of the stored pairing. Set
     /// only by the DEBUG screenshot graph (`SingletonGraph.pairingDisplayOverride`);
     /// display text and nothing else — `isPaired`, unpair, Fix Notifications
@@ -95,6 +99,7 @@ final class SettingsViewModel {
         deviceRegistrationService: DeviceRegistrationService,
         deregisterDeviceUseCase: DeregisterDeviceUseCase,
         pushNotificationDispatcher: PushNotificationDispatcher,
+        erasePreservedStore: (() -> Bool)?,
         enrollmentVault: EnrollmentVault? = nil,
         appLockManager: AppLockManager? = nil,
         pushRepository: PushRepository? = nil,
@@ -113,6 +118,7 @@ final class SettingsViewModel {
         self.deviceRegistrationService = deviceRegistrationService
         self.deregisterDeviceUseCase = deregisterDeviceUseCase
         self.pushNotificationDispatcher = pushNotificationDispatcher
+        self.erasePreservedStore = erasePreservedStore
         self.enrollmentVault = enrollmentVault
         self.appLockManager = appLockManager
         self.pushRepository = pushRepository
@@ -168,10 +174,13 @@ final class SettingsViewModel {
         _ = await deregisterDeviceUseCase()
         // A sign-on still in flight would otherwise re-pair right after this.
         AppEnvironment.postSessionReset()
+        // A desktop session token an older build stored goes with it.
         let pairingCleared = (try? securePairingStore.clear()) != nil
+            && (try? desktopSessionStore.clear()) != nil
         // Everything else the account left on this device — the same list a
         // pairing to another account runs.
         let tornDown = await AccountTeardown(
+            erasePreservedStore: erasePreservedStore,
             enrollmentVault: enrollmentVault,
             pushRepository: pushRepository,
             recipientPinStore: recipientPinStore,
@@ -265,20 +274,6 @@ final class SettingsViewModel {
             try? await Task.sleep(for: .milliseconds(250))
         }
         return pushSettingsStore.lastDeviceToken
-    }
-
-    // MARK: - Desktop pairing (Desktop Pairing guide)
-
-    /// Active desktop session, if any; expired sessions read as nil.
-    var desktopSession: DesktopSession? {
-        desktopSessionStore.activeSession()
-    }
-
-    /// "Forget This Computer" (guide checklist): clears the stored session token.
-    func forgetDesktopPairing() async {
-        guard await confirmDestructive(String(localized: "Forget this computer")) else { return }
-        try? desktopSessionStore.clear()
-        statusMessage = "Desktop pairing removed"
     }
 
     // MARK: - Apple Contacts export

@@ -664,7 +664,7 @@ final class InboxViewModel {
             guard requested == folder else { return true }
             loadedFolder = nil
             connectionNotice = nil
-            errorMessage = "Pair this device (Settings → Connection) to load mail."
+            errorMessage = PairingInstructions.inbox
         } catch {
             guard generation == accountGeneration else { return false }
             guard requested == folder else { return true }
@@ -722,7 +722,7 @@ final class InboxViewModel {
             delayedRefreshErrorTask?.cancel()
             delayedRefreshErrorTask = nil
             connectionNotice = nil
-            errorMessage = "Pair this device (Settings → Connection) to load mail."
+            errorMessage = PairingInstructions.inbox
         } catch {
             // The delayed task reports the persistent failure at 90 seconds.
         }

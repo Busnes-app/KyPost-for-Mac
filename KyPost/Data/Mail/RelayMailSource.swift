@@ -621,14 +621,25 @@ final class RelayMailSource: MailSource {
         )
     }
 
+    /// The send's idle timeout with attachments on board. The relay answers
+    /// only after SMTP accepted the message (and the Sent copy was saved), so
+    /// a large message can sit silent past the session's 60 s after its last
+    /// byte went up — and a timeout there is a send whose outcome is unknown.
+    static let sendWithAttachmentsTimeout: TimeInterval = 180
+
     @discardableResult
     func send(email: OutgoingEmail) async throws -> String {
+        var headers = auth.headerFields
+        if let key = email.idempotencyKey, !key.isEmpty {
+            headers["Idempotency-Key"] = key
+        }
         do {
             let response = try await httpClient.post(
                 RelaySendResponse.self,
                 url: try endpoint("api/mail/send"),
-                headers: auth.headerFields,
-                jsonBody: RelaySendRequest(from: email)
+                headers: headers,
+                jsonBody: RelaySendRequest(from: email),
+                timeout: email.attachments.isEmpty ? nil : Self.sendWithAttachmentsTimeout
             )
             return response.warning ?? ""
         } catch NetworkError.conflict(let body) {

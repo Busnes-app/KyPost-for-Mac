@@ -35,12 +35,12 @@ struct ScanPgpKeyView: View {
                 case .fetching:
                     ProgressView("Fetching key…")
                         .frame(maxHeight: .infinity)
-                case .confirming(let key):
-                    confirmContent(key: key)
-                case .pickingContact(let key):
+                case .confirming(let key, let inPerson):
+                    confirmContent(key: key, inPerson: inPerson)
+                case .pickingContact(let key, _):
                     ContactKeyPicker(key: key, viewModel: viewModel)
-                case .saved(let name):
-                    savedContent(name: name)
+                case .saved(let name, let inPerson):
+                    savedContent(name: name, inPerson: inPerson)
                 case .failed(let message, let canRescan):
                     failedContent(message: message, canRescan: canRescan)
                 }
@@ -139,18 +139,24 @@ struct ScanPgpKeyView: View {
 
     // MARK: - Confirm fingerprint
 
-    private func confirmContent(key: PgpQrKeyResponse) -> some View {
+    private func confirmContent(key: PgpQrKeyResponse, inPerson: Bool) -> some View {
         VStack(spacing: 14) {
-            Image(systemName: "person.badge.shield.checkmark")
+            Image(systemName: inPerson ? "person.badge.shield.checkmark" : "exclamationmark.shield")
                 .font(.system(size: 38))
-                .foregroundStyle(theme.accent)
+                .foregroundStyle(inPerson ? theme.accent : SemanticColors.warning)
             Text(key.name)
                 .font(AppFont.ui(19, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
-            Text("Check this fingerprint matches the one on their screen before you save it.")
-                .font(AppFont.ui(14))
-                .foregroundStyle(theme.ink)
-                .multilineTextAlignment(.center)
+            Group {
+                if inPerson {
+                    Text("Check this fingerprint matches the one on their screen before you save it.")
+                } else {
+                    Text("This key couldn't be verified in person: their code doesn't carry a fingerprint from their own device. You can save it, but it won't be marked as verified.")
+                }
+            }
+            .font(AppFont.ui(14))
+            .foregroundStyle(theme.ink)
+            .multilineTextAlignment(.center)
             Text(Self.groupedFingerprint(key.fingerprint))
                 .font(AppFont.mono(14))
                 .foregroundStyle(theme.inkStrong)
@@ -163,12 +169,21 @@ struct ScanPgpKeyView: View {
                         .strokeBorder(theme.line, lineWidth: 1)
                 )
             HStack(spacing: 12) {
-                Button("Doesn't Match") { viewModel.rescan() }
-                    .buttonStyle(SecondaryButtonStyle())
-                Button("It Matches") {
-                    Task { await viewModel.confirmFingerprint() }
+                if inPerson {
+                    Button("Doesn't Match") { viewModel.rescan() }
+                        .buttonStyle(SecondaryButtonStyle())
+                    Button("It Matches") {
+                        Task { await viewModel.confirmFingerprint() }
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                } else {
+                    Button("Cancel") { viewModel.rescan() }
+                        .buttonStyle(SecondaryButtonStyle())
+                    Button("Save Unverified") {
+                        Task { await viewModel.confirmFingerprint() }
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
                 }
-                .buttonStyle(PrimaryButtonStyle())
             }
         }
         .frame(maxHeight: .infinity)
@@ -190,7 +205,7 @@ struct ScanPgpKeyView: View {
 
     // MARK: - Terminal states
 
-    private func savedContent(name: String) -> some View {
+    private func savedContent(name: String, inPerson: Bool) -> some View {
         VStack(spacing: 12) {
             Image(systemName: "checkmark.seal.fill")
                 .font(.system(size: 44))
@@ -199,6 +214,11 @@ struct ScanPgpKeyView: View {
                 .font(AppFont.ui(19, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
                 .multilineTextAlignment(.center)
+            if !inPerson {
+                Text("Not verified in person.")
+                    .font(AppFont.ui(14, weight: .semibold))
+                    .foregroundStyle(theme.ink)
+            }
             Text("It syncs to the server on the next sync.")
                 .font(AppFont.ui(14))
                 .foregroundStyle(theme.ink)
@@ -275,7 +295,7 @@ private struct ContactKeyPicker: View {
 
             List {
                 Button {
-                    Task { await viewModel.attach(to: nil, key: key) }
+                    Task { await viewModel.attach(to: nil) }
                 } label: {
                     Label("Create New Contact “\(key.name)”", systemImage: "person.crop.circle.badge.plus")
                         .font(AppFont.ui(14))
@@ -322,7 +342,7 @@ private struct ContactKeyPicker: View {
             presenting: replacing
         ) { contact in
             Button("Replace Key", role: .destructive) {
-                Task { await viewModel.attach(to: contact, key: key) }
+                Task { await viewModel.attach(to: contact) }
             }
             Button("Cancel", role: .cancel) { replacing = nil }
         } message: { contact in
@@ -336,7 +356,7 @@ private struct ContactKeyPicker: View {
         if let existing = contact.pgpKey, existing != key.publicKey {
             replacing = contact
         } else {
-            Task { await viewModel.attach(to: contact, key: key) }
+            Task { await viewModel.attach(to: contact) }
         }
     }
 }

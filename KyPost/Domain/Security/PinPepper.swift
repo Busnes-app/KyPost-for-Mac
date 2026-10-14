@@ -68,13 +68,20 @@ nonisolated struct DevicePinPepper: PinPepper {
     /// Injected so a test can force the software path on a machine that has an
     /// enclave, and vice versa.
     private let secureEnclaveAvailable: @Sendable () -> Bool
+    /// Mints the enclave key and returns its opaque handle. Injected so a test
+    /// can make it fail on a machine whose enclave would not.
+    private let makeEnclaveKey: @Sendable () throws -> Data
 
     init(
         keychain: KeychainStorage,
-        secureEnclaveAvailable: @escaping @Sendable () -> Bool = { SecureEnclave.isAvailable }
+        secureEnclaveAvailable: @escaping @Sendable () -> Bool = { SecureEnclave.isAvailable },
+        makeEnclaveKey: @escaping @Sendable () throws -> Data = {
+            try SecureEnclave.P256.KeyAgreement.PrivateKey().dataRepresentation
+        }
     ) {
         self.keychain = keychain
         self.secureEnclaveAvailable = secureEnclaveAvailable
+        self.makeEnclaveKey = makeEnclaveKey
     }
 
     func ensureExists() throws {
@@ -82,8 +89,19 @@ nonisolated struct DevicePinPepper: PinPepper {
             return
         }
         let stored: String
-        if secureEnclaveAvailable(), let key = try? SecureEnclave.P256.KeyAgreement.PrivateKey() {
-            stored = Self.secureEnclavePrefix + key.dataRepresentation.base64EncodedString()
+        if secureEnclaveAvailable() {
+            // An enclave that is there but refuses a key is an error, never a
+            // reason to fall back: the software pepper can be copied off the
+            // disk with the Keychain, which is the one thing the enclave is
+            // here to prevent, and a silent downgrade would be permanent —
+            // the prefix pins this install to whichever backing it got.
+            let key: Data
+            do {
+                key = try makeEnclaveKey()
+            } catch {
+                throw PepperUnavailable(detail: "the Secure Enclave refused to create a key (\(error))")
+            }
+            stored = Self.secureEnclavePrefix + key.base64EncodedString()
         } else {
             // No enclave on this machine. A random key in the device-only
             // Keychain is weaker — it can be read by anything that can read the

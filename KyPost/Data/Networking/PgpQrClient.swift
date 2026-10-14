@@ -97,17 +97,60 @@ final class PgpQrClient: Sendable {
     /// the `/api/pgp/qr/key` path, and a non-empty `t`. The host is deliberately
     /// not pinned to the paired server: the whole point is scanning someone
     /// else's code, and they may be on a different llama-labels instance.
-    static func keyURL(fromScannedPayload payload: String) -> URL? {
+    ///
+    /// The `#fp=` fragment is split off here and never sent to the server.
+    static func scannedKeyCode(fromPayload payload: String) -> ScannedKeyCode? {
         let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
         guard
-            let components = URLComponents(string: trimmed),
+            var components = URLComponents(string: trimmed),
             components.scheme?.lowercased() == "https",
             components.host?.isEmpty == false,
             components.path.hasSuffix("/api/pgp/qr/key"),
             let token = components.queryItems?.first(where: { $0.name == "t" })?.value,
-            !token.isEmpty,
-            let url = components.url
+            !token.isEmpty
         else { return nil }
-        return url
+        let shown: ShownFingerprint
+        switch components.percentEncodedFragment {
+        case nil:
+            shown = .absent
+        case let fragment?:
+            let value = fragment.hasPrefix("fp=") ? String(fragment.dropFirst(3)) : ""
+            shown = isV4Fingerprint(value) ? .fingerprint(value) : .malformed
+        }
+        components.fragment = nil
+        guard let url = components.url else { return nil }
+        return ScannedKeyCode(url: url, shownFingerprint: shown)
     }
+
+    /// The string to render as this device's QR code: the server's pickup URL,
+    /// plus `#fp=` only when `fingerprint` is a v4 fingerprint this device
+    /// computed from its own key. Any fragment the server put on the URL is
+    /// dropped, so the server can never supply `fp` itself.
+    static func qrPayload(pickupURL: String, fingerprint: String?) -> String? {
+        guard var components = URLComponents(string: pickupURL) else { return nil }
+        components.fragment = fingerprint.flatMap { isV4Fingerprint($0) ? "fp=\($0)" : nil }
+        return components.string
+    }
+
+    /// Exactly 40 uppercase hex characters.
+    static func isV4Fingerprint(_ value: String) -> Bool {
+        value.utf8.count == 40
+            && value.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x41...0x46).contains($0) }
+    }
+}
+
+/// A validated key-pickup code.
+nonisolated struct ScannedKeyCode: Equatable, Sendable {
+    /// The pickup URL, without its fragment.
+    var url: URL
+    var shownFingerprint: ShownFingerprint
+}
+
+/// The fingerprint the showing device put in its code (`#fp=`).
+nonisolated enum ShownFingerprint: Equatable, Sendable {
+    /// No fragment: the showing device holds no key of its own.
+    case absent
+    /// A fragment that is not `fp=` and 40 uppercase hex characters.
+    case malformed
+    case fingerprint(String)
 }

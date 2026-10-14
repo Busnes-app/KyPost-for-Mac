@@ -35,20 +35,50 @@ final class MyPgpQrViewModel {
         case failed(String)
     }
 
+    /// The fingerprint shown beside the code, and where it came from.
+    enum OwnFingerprint: Equatable {
+        /// Computed from this device's own key; the code carries it as `#fp=`.
+        case thisDevice(String)
+        /// The server's word only; the code carries no `#fp=`.
+        case serverReported(String)
+    }
+
     /// Refresh this long before expiry, so a code on screen is always
     /// scannable rather than expiring in someone's camera.
     private static let refreshLeadTime: TimeInterval = 10
 
     private let client: PgpQrClient
     private let pairingStore: SecurePairingStore
+    private let bootstrapClient: PgpSendClient
+    private let session: EnrollmentSession
+    private let crypto: any PgpEncrypting
+    private let opener: any VaultOpening
+    private let deviceIsEnrolled: () -> Bool
 
     private(set) var state: State = .loading
+    private(set) var fingerprint: OwnFingerprint?
+    /// Enrolled, but the key is not unlocked: unlocking lets the code carry
+    /// this device's own fingerprint.
+    private(set) var canUnlockKey = false
     /// Drives the countdown; updated by `observeExpiry()` while visible.
     private(set) var now = Date()
 
-    init(client: PgpQrClient, pairingStore: SecurePairingStore) {
+    init(
+        client: PgpQrClient,
+        pairingStore: SecurePairingStore,
+        bootstrapClient: PgpSendClient,
+        session: EnrollmentSession,
+        crypto: any PgpEncrypting,
+        opener: any VaultOpening,
+        deviceIsEnrolled: @escaping () -> Bool
+    ) {
         self.client = client
         self.pairingStore = pairingStore
+        self.bootstrapClient = bootstrapClient
+        self.session = session
+        self.crypto = crypto
+        self.opener = opener
+        self.deviceIsEnrolled = deviceIsEnrolled
     }
 
     /// Whole seconds until the shown code expires, or nil when none is shown.
@@ -63,17 +93,27 @@ final class MyPgpQrViewModel {
             return
         }
         state = .loading
+        let auth = RelayAuth(pairing: pairing)
+        let local = ownFingerprint()
         do {
-            let response = try await client.fetchToken(
-                serverUrl: pairing.srv,
-                auth: RelayAuth(pairing: pairing)
-            )
+            let response = try await client.fetchToken(serverUrl: pairing.srv, auth: auth)
             guard let expiresAt = response.expiresAtDate else {
                 state = .failed("The server sent an expiry date this app couldn't read.")
                 return
             }
+            guard let payload = PgpQrClient.qrPayload(pickupURL: response.url, fingerprint: local) else {
+                state = .failed("The server sent a code this app couldn't read.")
+                return
+            }
+            if let local {
+                fingerprint = .thisDevice(local)
+            } else {
+                fingerprint = await serverFingerprint(srv: pairing.srv, auth: auth)
+                    .map(OwnFingerprint.serverReported)
+            }
+            canUnlockKey = local == nil && deviceIsEnrolled()
             now = Date()
-            state = .showing(urlString: response.url, expiresAt: expiresAt)
+            state = .showing(urlString: payload, expiresAt: expiresAt)
         } catch NetworkError.unauthorized {
             state = .pairingRejected
         } catch NetworkError.serviceUnavailable {
@@ -83,6 +123,39 @@ final class MyPgpQrViewModel {
         } catch {
             state = .failed(error.localizedDescription)
         }
+    }
+
+    /// Opens this device's key (a presence prompt), then re-mints the code
+    /// with its fingerprint.
+    func unlockKey() async {
+        switch await opener.open() {
+        case .opened(let material):
+            session.install(material)
+            await refresh()
+        case .cancelled:
+            return
+        case .notEnrolled:
+            canUnlockKey = false
+        case .noSecureLockScreen:
+            state = .failed("Couldn't unlock this device's key: no device passcode is set.")
+        case .failed(let message):
+            state = .failed("Couldn't unlock this device's key: \(message).")
+        }
+    }
+
+    /// The primary fingerprint of the key this device signs with, computed
+    /// from the key itself — never from anything the server sent.
+    private func ownFingerprint() -> String? {
+        session.withKey { key in
+            guard let key, let publicKey = try? crypto.ownPublicKey(privateKey: key) else { return nil }
+            return PgpFingerprint.compute(fromArmored: publicKey)
+        }
+    }
+
+    private func serverFingerprint(srv: String, auth: RelayAuth) async -> String? {
+        guard let publicKey = try? await bootstrapClient.fetchBootstrap(serverUrl: srv, auth: auth).publicKey
+        else { return nil }
+        return PgpFingerprint.compute(fromArmored: publicKey)
     }
 
     /// Ticks the countdown and re-mints shortly before expiry. The view drives
@@ -113,9 +186,11 @@ final class ScanPgpKeyViewModel {
         case scanning
         case fetching
         /// Fetched; showing the fingerprint for the two people to compare.
-        case confirming(PgpQrKeyResponse)
-        case pickingContact(PgpQrKeyResponse)
-        case saved(String)
+        /// `inPerson` is true only when the code carried the showing device's
+        /// own fingerprint and the fetched key matched it.
+        case confirming(PgpQrKeyResponse, inPerson: Bool)
+        case pickingContact(PgpQrKeyResponse, inPerson: Bool)
+        case saved(name: String, inPerson: Bool)
         /// `canRescan` is false for failures rescanning cannot fix (503).
         case failed(message: String, canRescan: Bool)
     }
@@ -134,16 +209,20 @@ final class ScanPgpKeyViewModel {
     }
 
     func handleScannedPayload(_ payload: String) async {
-        guard let url = PgpQrClient.keyURL(fromScannedPayload: payload) else {
+        guard let code = PgpQrClient.scannedKeyCode(fromPayload: payload) else {
             state = .failed(
                 message: "That doesn't look like a KyPost key code.",
                 canRescan: true
             )
             return
         }
+        if code.shownFingerprint == .malformed {
+            state = .failed(message: Self.notTheShownKey, canRescan: true)
+            return
+        }
         state = .fetching
         do {
-            let key = try await client.fetchKey(from: url)
+            let key = try await client.fetchKey(from: code.url)
             // Never display or store the relay's fingerprint string — compute
             // it from the key bytes, and treat a mismatch with the relay's
             // claim as the attack it would be (PgpFingerprint's header).
@@ -164,7 +243,14 @@ final class ScanPgpKeyViewModel {
             }
             var verified = key
             verified.fingerprint = computed
-            state = .confirming(verified)
+            switch code.shownFingerprint {
+            case .fingerprint(let shown) where shown == computed:
+                state = .confirming(verified, inPerson: true)
+            case .absent:
+                state = .confirming(verified, inPerson: false)
+            case .fingerprint, .malformed:
+                state = .failed(message: Self.notTheShownKey, canRescan: true)
+            }
         } catch NetworkError.unauthorized {
             // /key has no auth middleware, so this is the 403 branch: the
             // pairing token was expired or forged, never a credentials problem.
@@ -196,11 +282,11 @@ final class ScanPgpKeyViewModel {
         await handleScannedPayload(pastedLink)
     }
 
-    /// Fingerprint confirmed in person — move on to choosing whose key it is.
+    /// Move on to choosing whose key it is.
     func confirmFingerprint() async {
-        guard case .confirming(let key) = state else { return }
+        guard case .confirming(let key, let inPerson) = state else { return }
         contacts = (try? await repository.contacts()) ?? []
-        state = .pickingContact(key)
+        state = .pickingContact(key, inPerson: inPerson)
     }
 
     func rescan() {
@@ -208,10 +294,12 @@ final class ScanPgpKeyViewModel {
         state = .scanning
     }
 
-    /// Attaches `key` to `contact`, or to a new contact named after the key's
-    /// owner when nil. Saving marks the contact for sync, so the key reaches
-    /// the server on the next push rather than needing its own endpoint.
-    func attach(to contact: Contact?, key: PgpQrKeyResponse) async {
+    /// Attaches the key being picked for to `contact`, or to a new contact
+    /// named after the key's owner when nil. Saving marks the contact for
+    /// sync, so the key reaches the server on the next push rather than
+    /// needing its own endpoint.
+    func attach(to contact: Contact?) async {
+        guard case .pickingContact(let key, let inPerson) = state else { return }
         var target = contact ?? Contact(
             name: key.name,
             createdAt: Date(),
@@ -219,10 +307,10 @@ final class ScanPgpKeyViewModel {
         )
         target.pgpKey = key.publicKey
         do {
-            // The fingerprint was confirmed in person: this key becomes the
-            // pin for the contact's addresses.
-            try await repository.saveContact(target, verifiedInPerson: true)
-            state = .saved(target.name)
+            // Only a key matching the fingerprint the other device computed
+            // itself becomes the pin for the contact's addresses.
+            try await repository.saveContact(target, verifiedInPerson: inPerson)
+            state = .saved(name: target.name, inPerson: inPerson)
         } catch {
             state = .failed(
                 message: "Couldn't save the key: \(error.localizedDescription)",
@@ -230,4 +318,7 @@ final class ScanPgpKeyViewModel {
             )
         }
     }
+
+    static let notTheShownKey =
+        "This key doesn't match the code they showed. Nothing was saved — ask them to show a fresh code."
 }

@@ -1,0 +1,58 @@
+[
+  {
+    "name": "GopenPGP",
+    "detail": "OpenPGP for KyPost's encryption and signatures, by Proton AG.",
+    "license": "MIT",
+    "url": "https://github.com/ProtonMail/gopenpgp",
+    "licenseFile": "GopenPGP-LICENSE"
+  },
+  {
+    "name": "go-crypto",
+    "detail": "Proton's OpenPGP implementation, which GopenPGP is built on.",
+    "license": "BSD-3-Clause",
+    "url": "https://github.com/ProtonMail/go-crypto",
+    "licenseFile": "ProtonMail-go-crypto-LICENSE"
+  },
+  {
+    "name": "go-mime",
+    "detail": "MIME decoding used by GopenPGP, by Proton AG.",
+    "license": "MIT",
+    "url": "https://github.com/ProtonMail/go-mime",
+    "licenseFile": "ProtonMail-go-mime-LICENSE"
+  },
+  {
+    "name": "CIRCL",
+    "detail": "Cloudflare's elliptic-curve and post-quantum cryptography, used by go-crypto.",
+    "license": "BSD-3-Clause",
+    "url": "https://github.com/cloudflare/circl",
+    "licenseFile": "Cloudflare-CIRCL-LICENSE"
+  },
+  {
+    "name": "The Go standard library and runtime",
+    "detail": "Compiled into the GopenPGP framework.",
+    "license": "BSD-3-Clause",
+    "url": "https://go.dev",
+    "licenseFile": "Go-LICENSE"
+  },
+  {
+    "name": "Go supplementary modules",
+    "detail": "golang.org/x/crypto, x/sys, x/text and x/mobile, compiled into the GopenPGP framework.",
+    "license": "BSD-3-Clause",
+    "url": "https://cs.opensource.google/go/x",
+    "licenseFile": "Go-LICENSE"
+  },
+  {
+    "name": "Space Grotesk",
+    "detail": "Interface typeface.",
+    "license": "OFL-1.1",
+    "url": "https://github.com/floriankarsten/space-grotesk",
+    "licenseFile": "SpaceGrotesk-OFL"
+  },
+  {
+    "name": "IBM Plex Mono",
+    "detail": "Monospaced typeface.",
+    "license": "OFL-1.1",
+    "url": "https://github.com/IBM/plex",
+    "licenseFile": "IBMPlexMono-OFL"
+  }
+]

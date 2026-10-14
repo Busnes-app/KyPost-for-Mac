@@ -5,7 +5,8 @@
 //  Contact CRUD + sync against the backend, mirroring the Android reference
 //  ContactSyncRepository.kt: pull when no local changes are queued, push
 //  otherwise; reconcile server-assigned uids for local creates; handle
-//  tooOld by discarding the cursor + cache for a full re-pull.
+//  tooOld by discarding the cursor and the synced rows, keeping unsynced
+//  work, and re-pulling at once.
 //
 
 import Foundation
@@ -101,13 +102,18 @@ final class ContactSyncRepository {
         } else {
             verifiedKeyStore?.forget(uid: dirty.uid)
         }
-        if verifiedInPerson, let key = dirty.pgpKey, !key.isEmpty {
-            recipientPins?.pin(addresses: dirty.emails.map(\.value), publicKey: key)
+        var pinRefused = false
+        if verifiedInPerson, let key = dirty.pgpKey, !key.isEmpty, let recipientPins {
+            pinRefused = !recipientPins.pin(addresses: dirty.emails.map(\.value), publicKey: key)
+                && recipientPins.persistedPinsUnreadable
         } else {
             recordRevocations(for: dirty.emails.map(\.value), syncedKey: dirty.pgpKey)
         }
         await systemContactsExporter?.exportUpsert(dirty)
         await refreshPendingSummary()
+        // After the save: the contact is kept either way, but the user must
+        // hear that the verification itself was not recorded.
+        if pinRefused { throw RecipientPinStoreError.unreadable }
     }
 
     /// The one thing a non-QR copy of a key may do to a pin: revoke it. For
@@ -237,12 +243,29 @@ final class ContactSyncRepository {
         return ContactPendingSummary(count: pending.count + tombstones, oldestQueuedAt: oldest)
     }
 
-    private func performSync() async throws -> ContactSyncSummary {
+    /// - Parameter afterTooOld: this pass is the re-pull a `tooOld` answer
+    ///   asked for; a second `tooOld` is not retried again.
+    private func performSync(afterTooOld: Bool = false) async throws -> ContactSyncSummary {
         guard let pairing = try securePairingStore.loadPairing() else {
             throw ContactSyncError.notPaired
         }
         let auth = RelayAuth(pairing: pairing)
+        // A cursor describes rows this device holds (MailRepository's
+        // `hasRows` rule). With the table empty — the store deleted, a new
+        // in-memory session — a delta would leave the address book empty
+        // until a `tooOld`, so start again from 0.
+        if cursorStore.lastCursor > 0, try await !contactDAO.hasRows() {
+            cursorStore.reset()
+        }
         let cursor = cursorStore.lastCursor
+        // Server writes below are stamped with this, not their arrival time,
+        // so `ContactDAO.upsert` keeps an edit made while the request was in
+        // flight (newer than this) instead of overwriting it.
+        let syncStart = Date()
+
+        if cursorStore.createsInFlight {
+            try await reconcileUnansweredCreates(serverUrl: pairing.srv, auth: auth, since: cursor)
+        }
 
         let pending = try await contactDAO.listPendingSync()
         // The server silently drops any non-delete change with an empty fn
@@ -271,13 +294,20 @@ final class ContactSyncRepository {
         }
 
         if response.tooOld == true {
-            // Cursor predates the server's history window: full re-pull next
-            // sync. ponytail: unsynced local edits are wiped here — Android
-            // keeps them in a separate change queue that survives the wipe.
+            // The cursor predates the server's history window: drop what the
+            // server already has and re-pull from 0. Unsynced work is not the
+            // server's to discard — needsSync rows (creates, edits, nameless
+            // contacts) stay with their localIds and the delete queue stays,
+            // and the re-pull below sends them again on top of the fresh copy.
+            // A push that got `tooOld` was still applied server-side, so its
+            // creates are reconciled by the re-pull's pre-push pull
+            // (`createsInFlight`, left set by `push`) rather than re-created.
             cursorStore.reset()
-            pendingDeletesStore.clear()
-            try await contactDAO.clearAll()
-            return ContactSyncSummary(pushed: changes.count, applied: 0, newCursor: 0)
+            try await contactDAO.clearSynced()
+            guard !afterTooOld else {
+                return ContactSyncSummary(pushed: changes.count, applied: 0, newCursor: 0)
+            }
+            return try await performSync(afterTooOld: true)
         }
 
         let changed = response.changed ?? []
@@ -286,7 +316,7 @@ final class ContactSyncRepository {
         var applied = 0
         for dto in changed {
             guard let uid = dto.uid, !uid.isEmpty else { continue }
-            try await applyServerContact(uid: uid, dto: dto)
+            try await applyServerContact(uid: uid, dto: dto, syncStart: syncStart)
             applied += 1
         }
         for dto in deleted {
@@ -301,7 +331,9 @@ final class ContactSyncRepository {
         try await contactDAO.clearNeedsSync(
             pushed: pushable.filter { $0.uid != nil }
         )
-        pendingDeletesStore.clear()
+        // Only what this request carried: a delete queued while it was in
+        // flight goes out with the next sync.
+        pendingDeletesStore.remove(tombstones)
         cursorStore.advance(to: response.cursor)
 
         // Groups before the export so a card's group membership is resolvable
@@ -314,10 +346,12 @@ final class ContactSyncRepository {
         // make it onto the cards in the same pass.
         await fetchMissingPhotos(serverUrl: pairing.srv, auth: auth)
 
-        // tooOld returns early above on purpose: links survive the wipe and
-        // this reconcile re-links re-pulled contacts by uid instead of
+        // tooOld re-syncs above before reaching here: links survive the wipe
+        // and this reconcile re-links re-pulled contacts by uid instead of
         // deleting and recreating their system cards.
-        await systemContactsExporter?.reconcileAll()
+        if let exportSummary = await systemContactsExporter?.reconcileAll() {
+            health.recordWithheldCardDeletes(exportSummary.withheldDeletes)
+        }
 
         return ContactSyncSummary(
             pushed: changes.count,
@@ -351,6 +385,10 @@ final class ContactSyncRepository {
     ) async throws -> ContactSyncPullResponse {
         var unreconciled = pendingCreates
         var last: ContactSyncPullResponse?
+        // Set before the request and cleared only once every page answered:
+        // a timeout or a dropped connection after the relay committed a page
+        // leaves its creates on the server with no uid here.
+        cursorStore.createsInFlight = !pendingCreates.isEmpty
 
         for start in stride(from: 0, to: changes.count, by: Self.maxChangesPerPush) {
             let page = Array(changes[start..<min(start + Self.maxChangesPerPush, changes.count)])
@@ -361,29 +399,68 @@ final class ContactSyncRepository {
                 changes: page
             )
             last = response
-            // tooOld means the cursor predates the server's history window and
-            // the caller is about to discard the local cache entirely, so
-            // there is nothing left to reconcile against and no point sending
-            // the remaining pages into a delta that will be thrown away.
-            if response.tooOld == true { break }
+            // tooOld means the cursor predates the server's history window: it
+            // carries no delta to reconcile against, and the remaining pages
+            // go out with the caller's re-pull instead. The relay applied this
+            // page all the same, so `createsInFlight` stays set and the re-pull
+            // reconciles its creates before pushing them again.
+            if response.tooOld == true { return response }
 
-            if !unreconciled.isEmpty {
-                let assignments = ContactSyncReconciliation.reconcile(
-                    localPending: unreconciled,
-                    responseChanged: response.changed ?? []
-                )
-                for assignment in assignments {
-                    try await contactDAO.assignUid(localId: assignment.localId, uid: assignment.uid)
-                }
-                let assigned = Set(assignments.map(\.localId))
-                unreconciled.removeAll { assigned.contains($0.localId) }
-            }
+            try await assignUids(
+                to: &unreconciled,
+                from: response.changed ?? []
+            )
         }
 
+        cursorStore.createsInFlight = false
         // `changes` is non-empty at the only call site, so the loop always
         // runs at least once.
         guard let last else { throw ContactSyncError.notPaired }
         return last
+    }
+
+    /// Attaches server uids to the creates `changed` accounts for and drops
+    /// them from `unreconciled`.
+    private func assignUids(to unreconciled: inout [Contact], from changed: [ContactDTO]) async throws {
+        guard !unreconciled.isEmpty else { return }
+        let assignments = ContactSyncReconciliation.reconcile(
+            localPending: unreconciled,
+            responseChanged: changed
+        )
+        let pushedAt = Dictionary(
+            unreconciled.map { ($0.localId, $0.updatedAt) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for assignment in assignments {
+            try await contactDAO.assignUid(
+                localId: assignment.localId,
+                uid: assignment.uid,
+                pushedUpdatedAt: pushedAt[assignment.localId]
+            )
+        }
+        let assigned = Set(assignments.map(\.localId))
+        unreconciled.removeAll { assigned.contains($0.localId) }
+    }
+
+    /// The previous push carrying creates never answered, so the relay may
+    /// already hold some of them. Pull what changed since the cursor that
+    /// push was based on and give every pending create the server already
+    /// has its uid, so the push that follows does not create it a second
+    /// time. A `tooOld` answer is left to the sync's own `tooOld` handling,
+    /// whose re-pull from 0 comes back here.
+    private func reconcileUnansweredCreates(serverUrl: String, auth: RelayAuth, since cursor: Int) async throws {
+        var creates = try await contactDAO.listPendingSync().filter {
+            $0.uid == nil && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !creates.isEmpty else {
+            cursorStore.createsInFlight = false
+            return
+        }
+        let response = try await client.pull(serverUrl: serverUrl, auth: auth, since: cursor)
+        guard response.tooOld != true else { return }
+        try await assignUids(to: &creates, from: response.changed ?? [])
+        // Every create is accounted for: no push may follow to clear it.
+        if creates.isEmpty { cursorStore.createsInFlight = false }
     }
 
     // MARK: - Dedupe
@@ -509,7 +586,8 @@ final class ContactSyncRepository {
             customFields: contact.customFields.map {
                 ContactCustomFieldDTO(label: $0.label, value: $0.value)
             },
-            pronouns: contact.pronouns.nilIfEmpty
+            pronouns: contact.pronouns.nilIfEmpty,
+            clientRef: contact.uid == nil ? ContactSyncReconciliation.clientRef(for: contact) : nil
         )
     }
 
@@ -518,8 +596,13 @@ final class ContactSyncRepository {
     /// the existing value (that would resurrect fields cleared elsewhere).
     /// Only fields the server never sends (avatarUrl, local bookkeeping)
     /// keep their existing values.
-    private func applyServerContact(uid: String, dto: ContactDTO) async throws {
-        let now = Date()
+    ///
+    /// Stamped `syncStart`, the moment before the request went out, never
+    /// the arrival time: `ContactDAO.upsert` skips a server write over a
+    /// `needsSync` row edited after it, and a write stamped "now" was always
+    /// newer than any edit made while the request was in flight, so the edit
+    /// was overwritten and marked synced unsent.
+    private func applyServerContact(uid: String, dto: ContactDTO, syncStart: Date) async throws {
         let existing = try await contactDAO.getContact(uid: uid)
         var contact = Contact(
             localId: existing?.localId ?? UUID(),
@@ -527,8 +610,8 @@ final class ContactSyncRepository {
             rev: dto.rev ?? existing?.rev ?? 0,
             name: dto.fn ?? "",
             avatarUrl: existing?.avatarUrl,
-            createdAt: existing?.createdAt ?? now,
-            updatedAt: now,
+            createdAt: existing?.createdAt ?? syncStart,
+            updatedAt: syncStart,
             needsSync: false
         )
         contact.givenName = dto.givenName ?? ""

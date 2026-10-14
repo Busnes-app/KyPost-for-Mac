@@ -3,13 +3,17 @@
 //  KyPost
 //
 //  Reconciles locally-created contacts with server-assigned uids after a sync
-//  (spec §4, Android ContactSyncReconciliation.kt). There is no correlation ID
-//  in v1: matching is by content only — fn, org, and the full email/phone
-//  value lists — claiming the first unclaimed exact match per pending create,
-//  like the Android reference. There is deliberately NO positional fallback:
-//  a push response carries every change since baseCursor (other devices'
-//  edits included), so pairing leftovers by order stamps an unrelated
-//  contact's uid onto a local create and duplicates that contact locally.
+//  (spec §4, Android ContactSyncReconciliation.kt). Each create carries its
+//  localId as `clientRef`; a response entry echoing a pending create's
+//  `clientRef` is that create, exactly. The relay does not echo it yet, so the
+//  fallback is content — fn, org, and the full email/phone value lists —
+//  claiming the first unclaimed exact match per pending create, like the
+//  Android reference. An entry echoing a *different* `clientRef` belongs to
+//  another create and is never a content match. There is deliberately NO
+//  positional fallback: a push response carries every change since
+//  baseCursor (other devices' edits included), so pairing leftovers by order
+//  stamps an unrelated contact's uid onto a local create and duplicates that
+//  contact locally.
 //
 
 import Foundation
@@ -27,24 +31,43 @@ enum ContactSyncReconciliation {
         localPending: [Contact],
         responseChanged: [ContactDTO]
     ) -> [Assignment] {
+        let creates = localPending.filter { $0.uid == nil }
+        let candidates = responseChanged.indices.filter {
+            responseChanged[$0].uid?.isEmpty == false && responseChanged[$0].deleted != true
+        }
         var assignments: [Assignment] = []
         var claimed = Set<Int>()
+        var assigned = Set<UUID>()
 
-        for contact in localPending where contact.uid == nil {
-            let match = responseChanged.indices.first { index in
+        // Exact matches first, so a content match can never take an entry
+        // that names its create.
+        for contact in creates {
+            let ref = clientRef(for: contact)
+            guard let match = candidates.first(where: {
+                !claimed.contains($0) && responseChanged[$0].clientRef == ref
+            }) else { continue }
+            claimed.insert(match)
+            assigned.insert(contact.localId)
+            assignments.append(Assignment(localId: contact.localId, uid: responseChanged[match].uid!))
+        }
+
+        for contact in creates where !assigned.contains(contact.localId) {
+            let match = candidates.first { index in
                 guard !claimed.contains(index) else { return false }
                 let candidate = responseChanged[index]
-                return candidate.uid?.isEmpty == false
-                    && candidate.deleted != true
-                    && contentMatches(contact, candidate)
+                let refersElsewhere = !(candidate.clientRef ?? "").isEmpty
+                return !refersElsewhere && contentMatches(contact, candidate)
             }
             guard let match else { continue }
             claimed.insert(match)
-            assignments.append(
-                Assignment(localId: contact.localId, uid: responseChanged[match].uid!)
-            )
+            assignments.append(Assignment(localId: contact.localId, uid: responseChanged[match].uid!))
         }
         return assignments
+    }
+
+    /// The correlation id a create carries on the wire.
+    static func clientRef(for contact: Contact) -> String {
+        contact.localId.uuidString.lowercased()
     }
 
     /// Exact equality on the fields a create round-trips verbatim (Android
