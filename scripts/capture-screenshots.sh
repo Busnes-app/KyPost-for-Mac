@@ -11,10 +11,12 @@
 # or `simctl io screenshot`, because those need TCC grants a CI machine will
 # not have, and because the run has to navigate the app anyway.
 #
-# Usage: capture-screenshots.sh [ios|ipad|macos|all] [output-dir]
+# Usage: capture-screenshots.sh [ios|ipad|macos|all|duo-outer|duo-inner] [output-dir]
 #   output-dir defaults to ./Distribution/Screenshots
 #   ios writes <output-dir>/iOS (6.9" iPhone), ipad <output-dir>/iPad
-#   (13" iPad), macos <output-dir>/macOS; all does every one.
+#   (13" iPad), macos <output-dir>/macOS; all does those three.
+#   duo-outer / duo-inner write <output-dir>/iPhone Duo outer|inner; fold or
+#   unfold the iPhone Duo simulator by hand first (see duo_device).
 #
 # macOS additionally needs UI automation enabled, once per machine:
 #   sudo DevToolsSecurity -enable
@@ -66,6 +68,24 @@ ipads = [entry for runtime, entries in reversed(devices.items())
          if "iOS" in runtime for entry in entries]
 print(next((entry["udid"] for name in names for entry in ipads
             if entry["name"] == name), ""))
+'
+}
+
+# iPhone Duo (iOS 27.1 runtime, Xcode 27.1 or later). The listing wants the
+# outer display (1398 x 2034) and the inner one (2007 x 2853). The fold pose
+# cannot be scripted: fold or unfold the device in Xcode's device window
+# first, then run `duo-outer` or `duo-inner` to match. A booted Duo is
+# preferred: that is the one whose pose was just set.
+duo_device() {
+    xcrun simctl list devices available --json \
+        | /usr/bin/python3 -c '
+import json, sys
+devices = json.load(sys.stdin)["devices"]
+duos = [entry for runtime, entries in reversed(devices.items())
+        if "iOS" in runtime for entry in entries
+        if entry["name"] == "iPhone Duo"]
+duos.sort(key=lambda entry: entry["state"] != "Booted")
+print(duos[0]["udid"] if duos else "")
 '
 }
 
@@ -153,6 +173,17 @@ if [[ "$platform" == "ipad" || "$platform" == "all" ]]; then
     [[ -n "$device" ]] || { echo "no 13-inch iPad simulator available" >&2; exit 1; }
     prepare_simulator "$device"
     run ipad "platform=iOS Simulator,id=$device" "$outdir/iPad" ios
+fi
+
+if [[ "$platform" == "duo-outer" || "$platform" == "duo-inner" ]]; then
+    device="$(duo_device)"
+    [[ -n "$device" ]] || { echo "no iPhone Duo simulator (needs the iOS 27.1 runtime)" >&2; exit 1; }
+    prepare_simulator "$device"
+    if [[ "$platform" == "duo-outer" ]]; then
+        run duo-outer "platform=iOS Simulator,id=$device" "$outdir/iPhone Duo outer" ios
+    else
+        run duo-inner "platform=iOS Simulator,id=$device" "$outdir/iPhone Duo inner" ios
+    fi
 fi
 
 if [[ "$platform" == "macos" || "$platform" == "all" ]]; then

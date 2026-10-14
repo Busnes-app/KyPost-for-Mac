@@ -465,22 +465,85 @@ enum DemoContent {
         contact.emails = [ContactLabeledValue(label: "work", value: email)]
         contact.phones = [ContactLabeledValue(label: "mobile", value: phone)]
         if hasKey {
-            contact.pgpKey = demoPublicKeyBlock
+            contact.pgpKey = demoPublicKeys[email]
         }
         return contact
     }
 
-    /// Not a key — a placeholder with a key's shape, so anything that only
-    /// checks "is a key present" behaves as it would with a real one. Nothing
-    /// in the demo path ever asks GopenPGP to parse it.
-    private static let demoPublicKeyBlock = """
-        -----BEGIN PGP PUBLIC KEY BLOCK-----
+    /// Real Ed25519 public keys for the invented contacts, generated once
+    /// with go-crypto for the screenshots (the private halves were
+    /// discarded), so the contact card shows a fingerprint instead of
+    /// "Unreadable key". Keyed by the contact's email.
+    private static let demoPublicKeys: [String: String] = [
+        "avery.lang@kypost.example": """
+            -----BEGIN PGP PUBLIC KEY BLOCK-----
 
-        ZGVtb25zdHJhdGlvbiBwbGFjZWhvbGRlciAtLSBub3QgYSByZWFsIE9wZW5QR1Ag
-        a2V5LiBTY3JlZW5zaG90IGZpeHR1cmUgb25seS4=
-        =dEmO
-        -----END PGP PUBLIC KEY BLOCK-----
-        """
+            xjMEam2/LBYJKwYBBAHaRw8BAQdAIKenMek5OlvHxpOxn2tHj4jyReHAzN7e2F2b
+            yNkCqrzNJkF2ZXJ5IExhbmcgPGF2ZXJ5LmxhbmdAa3lwb3N0LmV4YW1wbGU+wr0E
+            ExYIAG8FgmptvywCCwcJEGIu9JIQciZlNRQAAAAAABwAEHNhbHRAbm90YXRpb25z
+            Lm9wZW5wZ3Bqcy5vcmdARGh/8Gg7rASPdd+r9VUHAhUIAhYAAhkBApsDAh4BFiEE
+            PVgghOzwwuRUFZXHYi70khByJmUAABjPAP4t5XEYQO+hTCd3KHrozJ0fDDuccwqn
+            pqBH+7sXvsz4BAD+O1jdr91cmka4FwWHfOcn9pxKKJTHKrWjdAtoFfzlMA7OOARq
+            bb8sEgorBgEEAZdVAQUBAQdAyuzYtQWPRXnmNg8gRm71TsJcA7qoldJU2AKXJ+rW
+            WTsDAQoJwq4EGBYIAGAFgmptvywJEGIu9JIQciZlNRQAAAAAABwAEHNhbHRAbm90
+            YXRpb25zLm9wZW5wZ3Bqcy5vcmcXjXmzx3DdsZHvragjTharApsMFiEEPVgghOzw
+            wuRUFZXHYi70khByJmUAAI/UAP9Sy75H+UICxd/euWGb1SMElIkmoartsL1+pEYc
+            ahVWAAEAjiUKwOb944qC6IvZ3gzPpLkz/S0jE4I9pESr+TkFIwA=
+            =tdC7
+            -----END PGP PUBLIC KEY BLOCK-----
+            """,
+        "devon@northgatelabs.example": """
+            -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+            xjMEam2/LBYJKwYBBAHaRw8BAQdANCfoPqFm02r2/d2oN3rMLgkTZLLCLYJjnH+0
+            dp3YzgrNKkRldm9uIE9rYWZvciA8ZGV2b25Abm9ydGhnYXRlbGFicy5leGFtcGxl
+            PsK9BBMWCABvBYJqbb8sAgsHCRC3tYtf0/7UrzUUAAAAAAAcABBzYWx0QG5vdGF0
+            aW9ucy5vcGVucGdwanMub3JnlGhKZWCBCa5TlP4uWTbg2wIVCAIWAAIZAQKbAwIe
+            ARYhBEkf0bbobgWlwTxkWbe1i1/T/tSvAACCDwD+IGeqgFFHDALEPeNXhAatQCKy
+            8YlInW57O2czJ7hf14wBAO9qrkRZwaVS/Gt/xjBuszLjGASgy1Hbg/6CNzfM3z4E
+            zjgEam2/LBIKKwYBBAGXVQEFAQEHQILsCOFqyRvmE3teadovHzcbTR+cle2EDGUe
+            K8X2CIYZAwEKCcKuBBgWCABgBYJqbb8sCRC3tYtf0/7UrzUUAAAAAAAcABBzYWx0
+            QG5vdGF0aW9ucy5vcGVucGdwanMub3JnUDwXsd/1tp1SmIEM5nU9ygKbDBYhBEkf
+            0bbobgWlwTxkWbe1i1/T/tSvAAAOOgEA+UznvvNEuMeNazJ7wzptoHk00fYqOtq5
+            NkTaTrxe10kBAKIbwu/ybMGWHzqhvX0LPjX47xzJW+xu2H28JWhtkp8O
+            =4IpG
+            -----END PGP PUBLIC KEY BLOCK-----
+            """,
+        "ines@atlasrelay.example": """
+            -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+            xjMEam2/LBYJKwYBBAHaRw8BAQdAqrVzr2uYRLG6XSyC7/Oqd0zpLvlUxUbpu60y
+            /UBr9dnNJEluZXMgVmFyZ2EgPGluZXNAYXRsYXNyZWxheS5leGFtcGxlPsK9BBMW
+            CABvBYJqbb8sAgsHCRCmfRzZPTU8HTUUAAAAAAAcABBzYWx0QG5vdGF0aW9ucy5v
+            cGVucGdwanMub3JnKtusbobtaKvS2iKHtqHvNwIVCAIWAAIZAQKbAwIeARYhBPSZ
+            YUUPqMiDvV3KAaZ9HNk9NTwdAAC9/wD+JCXB2Cdx/AtSKnzdy76XFWCIDMZ83Ltj
+            udC/Q4W3cm0BAOX1vyP7ojk3QSDP8m+t80I24ghgMgN+UOPdfRfR9jcKzjgEam2/
+            LBIKKwYBBAGXVQEFAQEHQEsSS0bfksaOK3TZ6jX3Dbb+jNWpz92wBOUEBJlTM5Y8
+            AwEKCcKuBBgWCABgBYJqbb8sCRCmfRzZPTU8HTUUAAAAAAAcABBzYWx0QG5vdGF0
+            aW9ucy5vcGVucGdwanMub3JnbwEP5ZBy7eVp+JRz1e/+IwKbDBYhBPSZYUUPqMiD
+            vV3KAaZ9HNk9NTwdAADk6QD7B92uR1OMtImlLAiVtO5lHUCdLEmtQ3GeatJUf102
+            CbIBAPnb/lDqRrhRGUw/+HBNhAoOVfuWNzPBTz/HNlI8OooN
+            =qAXI
+            -----END PGP PUBLIC KEY BLOCK-----
+            """,
+        "priya@northgatelabs.example": """
+            -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+            xjMEam2/LBYJKwYBBAHaRw8BAQdADh9LLCywpAcj5ZVphwM2sWnFD4UWW2Qcx7Tz
+            8kylkwDNLFByaXlhIFJhZ2hhdmFuIDxwcml5YUBub3J0aGdhdGVsYWJzLmV4YW1w
+            bGU+wr0EExYIAG8FgmptvywCCwcJEIsdFKTOgPmqNRQAAAAAABwAEHNhbHRAbm90
+            YXRpb25zLm9wZW5wZ3Bqcy5vcmcc+Ngy2X0trhBK78E9wFnOAhUIAhYAAhkBApsD
+            Ah4BFiEEe3iHNVhTS2/3sgARix0UpM6A+aoAAMMnAP0eeVAp/rBVqXLaCOP3J0yx
+            cyS7t3ZX7jtAieCl4TeKDAD+MwmZJUkBfGavMG+wYKEUePa4CbEN3gwG8HSMlT4z
+            lw/OOARqbb8sEgorBgEEAZdVAQUBAQdAY9r1mhi21v48jAVl708xnSwD7u5Scx2o
+            JE+JHqSxYh8DAQoJwq4EGBYIAGAFgmptvywJEIsdFKTOgPmqNRQAAAAAABwAEHNh
+            bHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmefcBp4b1GDB/byQJX2iL52ApsMFiEE
+            e3iHNVhTS2/3sgARix0UpM6A+aoAALPQAP9VpML53wlS952apauu6KUeuR67QaOz
+            iwn/K5OCcX6tLgD/Uan2pGZnbgWfO7Bl+GqmP+RwruE7ssK6aG7GPHn3UQw=
+            =jV5c
+            -----END PGP PUBLIC KEY BLOCK-----
+            """,
+    ]
 
     /// Loads the demo address book. Emails arrive through DemoMailSource on
     /// the normal refresh path, so only contacts need planting.

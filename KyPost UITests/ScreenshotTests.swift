@@ -28,6 +28,10 @@ final class ScreenshotTests: XCTestCase {
             "Set KYPOST_SCREENSHOTS=1 (scripts/capture-screenshots.sh) to capture."
         )
         continueAfterFailure = true
+        // One test walks every screen. On a loaded machine (or the iPhone
+        // Duo's slower simulator) that outlasts the default 10-minute
+        // allowance, and a timeout kills the run before anything exports.
+        executionTimeAllowance = 30 * 60
     }
 
     // MARK: - Capture
@@ -53,8 +57,13 @@ final class ScreenshotTests: XCTestCase {
         screenshot = window.screenshot()
 #else
         // The Simulator's screen holds only the app under test, and the
-        // listing wants the status bar the window excludes.
-        screenshot = XCUIScreen.main.screenshot()
+        // listing wants the status bar the window excludes. On the iPhone
+        // Duo `XCUIScreen.main` is the outer display, dark while unfolded:
+        // take whichever screen is lit (a dark one compresses to almost
+        // nothing).
+        screenshot = XCUIScreen.screens.map { $0.screenshot() }
+            .max { $0.pngRepresentation.count < $1.pngRepresentation.count }
+            ?? XCUIScreen.main.screenshot()
 #endif
         let attachment = XCTAttachment(screenshot: screenshot)
         attachment.name = name
@@ -136,8 +145,9 @@ final class ScreenshotTests: XCTestCase {
 #if os(iOS)
 
     /// A root tab. The iPhone's tab bar is a `tabBars` element; iPadOS draws
-    /// the same `TabView` as a floating bar at the top, which may surface as
-    /// plain buttons instead, so fall back to a button with that exact label.
+    /// the same `TabView` as a floating bar at the top, and the folded iPhone
+    /// Duo as part of a side rail, both of which surface as plain buttons
+    /// instead, so fall back to a button with that exact label.
     private func tab(_ app: XCUIApplication, _ name: String) -> XCUIElement {
         let barButton = app.tabBars.buttons[name]
         return barButton.waitForExistence(timeout: 2) ? barButton : app.buttons[name].firstMatch
@@ -156,11 +166,33 @@ final class ScreenshotTests: XCTestCase {
 
     private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
 
+    /// Back to the list after reading — in the stack only. A wide window
+    /// shows the reader beside the list (`ShellLayout.split`), where the
+    /// navigation bar's first button is the sidebar or folder control.
+    private func backToListIfCovered(_ app: XCUIApplication) {
+        guard !app.buttons["Compose"].isHittable else { return }
+        tapIfPresent(back(app))
+    }
+
+    /// The pushed screen's back button. Ordinarily the navigation bar's first
+    /// button; on the folded iPhone Duo, iOS 27 moves the bar's items into a
+    /// side rail where no navigation bar exists and back is the
+    /// `BackButton` identifier instead.
+    private func back(_ app: XCUIApplication) -> XCUIElement {
+        let barButton = app.navigationBars.buttons.element(boundBy: 0)
+        return barButton.waitForExistence(timeout: 2) ? barButton : app.buttons["BackButton"].firstMatch
+    }
+
     @MainActor
     func testCaptureScreenshots() throws {
         let app = launchDemo()
 
-        // 1. Your inbox, at a glance
+        // 1. Your inbox, at a glance. The 13-inch iPad shows list and reader
+        // side by side (`ShellLayout.split`); an empty "Select an email" pane
+        // reads as unfinished, so open a message beside the list first.
+        if isPad {
+            tapIfPresent(row(in: app, containing: "Key rotation"))
+        }
         capture(app, "01-inbox")
 
         // 2. Organize mail with custom tabs — the keyword chips above the list.
@@ -177,14 +209,14 @@ final class ScreenshotTests: XCTestCase {
         // the shot silently becomes a different screen.
         if tapIfPresent(row(in: app, containing: "Your ticket")) {
             capture(app, "03-read-message")
-            tapIfPresent(app.navigationBars.buttons.element(boundBy: 0))
+            backToListIfCovered(app)
         }
 
         // 5. Know how every message was protected — the encrypted, signed and
         // verified message at the top of the list.
         if tapIfPresent(row(in: app, containing: "Q3 rollout")) {
             capture(app, "05-message-protection")
-            tapIfPresent(app.navigationBars.buttons.element(boundBy: 0))
+            backToListIfCovered(app)
         }
 
         // 4. Compose with encryption and signing
@@ -202,6 +234,10 @@ final class ScreenshotTests: XCTestCase {
 
         // 6. Keep contacts synchronized
         if tapIfPresent(tab(app, "Contacts")) {
+            // Same reason as the inbox: fill the split's detail pane.
+            if isPad {
+                tapIfPresent(row(in: app, containing: "Devon Okafor"))
+            }
             capture(app, "06-contacts")
         }
 
@@ -209,6 +245,9 @@ final class ScreenshotTests: XCTestCase {
         if tapIfPresent(tab(app, "Settings")) {
             capture(app, "07-settings")
             if tapIfPresent(row(in: app, containing: "Theme")) {
+                // The push is still sliding in after `tapIfPresent`'s
+                // second on the iPhone Duo.
+                settle()
                 capture(app, "08-themes")
             }
         }
@@ -296,6 +335,10 @@ final class ScreenshotTests: XCTestCase {
 
     // MARK: - Compose
 
+    private func hasKeyboardFocus(_ element: XCUIElement) -> Bool {
+        (element.value(forKey: "hasKeyboardFocus") as? Bool) ?? false
+    }
+
     /// An empty compose window says nothing about composing. Fills enough that
     /// the Encrypt/Sign controls sit above real content.
     private func fillCompose(_ app: XCUIApplication) {
@@ -318,9 +361,17 @@ final class ScreenshotTests: XCTestCase {
                 settle()
             }
         }
+        // On the folded iPhone Duo the first tap on the body can land while
+        // the subject still holds focus; typing then fails the whole run.
+        // Tap until the editor owns the keyboard, and skip the body if never.
         let editor = app.textViews.firstMatch
         if editor.exists {
-            editor.tap()
+            for _ in 0..<3 where !hasKeyboardFocus(editor) {
+                editor.tap()
+                settle(0.5)
+            }
+        }
+        if editor.exists, hasKeyboardFocus(editor) {
             editor.typeText(
                 "Read your new fingerprint back to me on the call and I'll pin it. "
                 + "Sending this one encrypted and signed."
@@ -336,12 +387,23 @@ final class ScreenshotTests: XCTestCase {
         for name in ["Encrypt", "Sign"] {
             let container = app.switches[name]
             guard container.waitForExistence(timeout: 3) else { continue }
-            guard (container.value as? String) != "1" else { continue }
-            let control = container.switches.firstMatch
-            let target = control.exists ? control : container
-            guard target.isHittable else { continue }
-            target.tap()
-            settle()
+            // Verified after each try: one tap can land while the previous
+            // switch is still animating and toggle nothing.
+            for _ in 0..<3 where (container.value as? String) != "1" {
+                let control = container.switches.firstMatch
+                if control.exists, !control.isHittable {
+                    // The folded iPhone Duo's side rail is a window-sized
+                    // toolbar over the compose sheet, so XCUITest calls the
+                    // switch unhittable though it is in plain view. Tap the
+                    // inner switch's own centre, which is still not the gap.
+                    control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                } else {
+                    let target = control.exists ? control : container
+                    guard target.isHittable else { break }
+                    target.tap()
+                }
+                settle()
+            }
         }
     }
 }

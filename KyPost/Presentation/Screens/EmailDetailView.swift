@@ -22,9 +22,15 @@ struct EmailDetailView: View {
 #if os(macOS)
     @Environment(\.openWindow) private var openWindow
 #endif
+    @Environment(\.shellLayout) private var shellLayout
+    @Environment(\.presentCompose) private var presentCompose
 
     let email: Email
     let inboxViewModel: InboxViewModel
+    /// Closes the reader once an action moved the message. The iOS shell
+    /// passes one so the stack pops and the split's detail empties alike;
+    /// without it the reader dismisses itself (macOS pop-out windows).
+    var onClose: (() -> Void)?
 
     /// Fetched lazily on open — the inbox listing has no attachment info.
     @State private var attachments: [EmailAttachment] = []
@@ -163,7 +169,9 @@ struct EmailDetailView: View {
             // Android EmailDetailActivity's action row. On iOS they live in
             // the bottom bar — the navigation bar can't fit seven buttons.
 #if os(iOS)
-            ToolbarItemGroup(placement: .bottomBar) {
+            // In the split the bottom of the window belongs to the floating
+            // tab bar on iPhone, so the actions join the reader's top bar.
+            ToolbarItemGroup(placement: shellLayout == .split ? .primaryAction : .bottomBar) {
                 mailActionButtons
             }
 #else
@@ -174,8 +182,9 @@ struct EmailDetailView: View {
         }
 #if os(iOS)
         // The mail actions live in the bottom bar; hide the app tab bar
-        // while reading so the two don't stack.
-        .toolbarVisibility(.hidden, for: .tabBar)
+        // while reading so the two don't stack. Only in the stack: in the
+        // split the list beside the reader still needs its tabs.
+        .toolbarVisibility(shellLayout == .stack ? .hidden : .automatic, for: .tabBar)
         .sheet(item: $composeDraft) { draft in
             ComposeView(draft: draft).environment(\.theme, theme)
         }
@@ -344,6 +353,8 @@ struct EmailDetailView: View {
             isActing = false
             if let failure {
                 actionFailure = failure
+            } else if let onClose {
+                onClose()
             } else {
                 dismiss()
             }
@@ -406,7 +417,13 @@ struct EmailDetailView: View {
 #if os(macOS)
         openWindow(id: "compose", value: draft)
 #else
-        composeDraft = draft
+        // The shell's sheet when there is one: it sits above the stack/split
+        // switch, so a rotation or a fold cannot take the draft with it.
+        if let presentCompose {
+            presentCompose(draft)
+        } else {
+            composeDraft = draft
+        }
 #endif
     }
 

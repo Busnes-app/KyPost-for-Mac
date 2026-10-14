@@ -92,7 +92,8 @@ final class InboxViewModel {
     /// Bumped by `forgetAccount`. A refresh or page captures it when it
     /// starts and neither paints nor updates any state if it comes back to a
     /// different one — its rows and answers belong to the account forgotten.
-    private var accountGeneration = 0
+    /// Readable so the iOS shell can close what it shows for that account.
+    private(set) var accountGeneration = 0
 
     /// The submitted search on screen, trimmed; nil when not searching. It
     /// lives only here — never logged, persisted, or restored with the scene.
@@ -735,10 +736,13 @@ final class InboxViewModel {
     /// Stops work owned by the visible Inbox tab. SwiftUI retains this view
     /// model while Settings is selected, so delayed tasks must not publish a
     /// stale toast behind that tab and reveal it when Inbox returns. Leaving
-    /// the screen also confirms whatever is held for Undo.
-    func leaveInbox() {
+    /// the screen also confirms whatever is held for Undo — unless the list
+    /// only went away because the window changed shape (an iOS stack/split
+    /// switch, `InboxListPresence.Departure.relaid`): then held actions stay
+    /// on their own timer, which still commits them.
+    func leaveInbox(commitsHeldActions: Bool = true) {
         stopAutoRefresh()
-        commitHeldActions()
+        if commitsHeldActions { commitHeldActions() }
         delayedRefreshErrorTask?.cancel()
         delayedRefreshErrorTask = nil
         initialRefreshRetryTask?.cancel()

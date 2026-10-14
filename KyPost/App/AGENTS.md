@@ -276,8 +276,13 @@ launched with `-KyPostDemo`. It exists so App Store screenshots can be taken
 without photographing the developer's own mail, and without a pairing or a
 network. `scripts/capture-screenshots.sh` drives it through
 `KyPost UITests/ScreenshotTests`: `ios` (6.9" iPhone → `iOS/`), `ipad` (13"
-iPad, preferring iPad Pro 13-inch (M5) → `iPad/`), `macos`, or `all`. Both
-simulators get the 9:41 status bar and share one derived-data build.
+iPad, preferring iPad Pro 13-inch (M5) → `iPad/`), `macos`, or `all`, plus
+`duo-outer` / `duo-inner` (the iPhone Duo simulator, iOS 27.1 runtime →
+`iPhone Duo outer/`, 1398 × 2034, or `iPhone Duo inner/`, 2007 × 2853; not
+part of `all`). The Duo's fold pose **cannot be scripted**: fold or unfold it
+by hand in Xcode's device window, then run the matching platform. The script
+prefers a booted Duo, since that is the one whose pose was just set. Every
+simulator gets the 9:41 status bar and they share one derived-data build.
 
 Four seams carry it, and each one defaults to the real path:
 
@@ -322,7 +327,15 @@ Rules:
   through `tab(_:_:)` (iPadOS draws the `TabView` as a floating top bar),
   keyword chips through `keywordChip(_:_:)` (a row's label carries its own
   tags, so a label match can land on a message), and iPad hides its
-  half-screen keyboard before the compose shot.
+  half-screen keyboard before the compose shot. The 13-inch iPad splits
+  (`ShellLayout`), so after a reading shot the flow goes back only when the
+  reader covers the list (`backToListIfCovered`, through `back(_:)`).
+- On the folded iPhone Duo, iOS 27 moves the status bar, navigation bar,
+  toolbar and tab bar into a system side rail. Its items stay in the app's
+  own accessibility tree, but as plain buttons: there is no `tabBars` or
+  `navigationBars` element, and back is the `BackButton` identifier. That is
+  why `tab(_:_:)` and `back(_:)` fall back to `app.buttons`; query by label
+  or identifier, never by bar.
 - `-KyPostDemoScreen mfa` exists because MFA approval arrives by push and has
   no navigable route. Add a case there rather than a new launch argument.
 - The fixtures are invented. Keep them invented, and keep the addresses on
