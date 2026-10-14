@@ -14,25 +14,42 @@ import Testing
 private final class PinAttemptHarness {
     let store: AppLockStore
     let pepper: FakePinPepper
-    let manager: AppLockManager
+    private(set) var manager: AppLockManager
     /// The lockout deadline is written on a monotonic clock, so the tests own
     /// one rather than sleeping through a thirty-minute rung.
     let clock = Box<Int64>(0)
+    /// The boot session the manager sees. Changing it is a reboot.
+    let boot = Box<String?>("boot-1")
+    /// Makes every lockout write fail, as a Keychain that will not take one.
+    let failLockoutWrites = Box(false)
     let wipeCalls = Box(0)
     var wipeResult: WipeResult = .complete
 
-    init(pin: String? = "83910472", wireWipe: Bool = true) throws {
-        store = makeLockStore()
+    init(
+        pin: String? = "83910472",
+        wireWipe: Bool = true,
+        authenticator: any DeviceAuthenticating = StubAlwaysAuthenticator()
+    ) throws {
+        let failLockoutWrites = self.failLockoutWrites
+        store = AppLockStore(
+            keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)"),
+            defaults: UserDefaults(suiteName: "tests.\(UUID().uuidString)")!,
+            beforeLockoutWrite: {
+                if failLockoutWrites.value { throw KeychainStorage.KeychainError(status: errSecInteractionNotAllowed) }
+            }
+        )
         // Before the manager is built: it reads the flag at init to decide
         // whether this process starts locked.
         try store.setLockEnabled(true)
         pepper = FakePinPepper()
         let clock = self.clock
+        let boot = self.boot
         manager = AppLockManager(
             store: store,
-            authenticator: StubAlwaysAuthenticator(),
+            authenticator: authenticator,
             pepper: pepper,
-            monotonicMillis: { clock.value }
+            monotonicMillis: { clock.value },
+            bootSessionId: { boot.value }
         )
         if let pin { try manager.setPin(pin) }
         if wireWipe {
@@ -45,6 +62,23 @@ private final class PinAttemptHarness {
 
     func advance(millis: Int64) {
         clock.mutate { $0 += millis }
+    }
+
+    /// A reboot: a new boot session, the monotonic clock restarted at
+    /// `clockAfter`, and a fresh process — a manager with no session state —
+    /// over the same stored record.
+    func reboot(bootId: String?, clockAfter: Int64) {
+        boot.value = bootId
+        clock.value = clockAfter
+        let clock = self.clock
+        let boot = self.boot
+        manager = AppLockManager(
+            store: store,
+            authenticator: StubAlwaysAuthenticator(),
+            pepper: pepper,
+            monotonicMillis: { clock.value },
+            bootSessionId: { boot.value }
+        )
     }
 
     /// Burns `count` wrong attempts, stepping the clock past each lockout so
@@ -248,17 +282,124 @@ private struct StubAlwaysAuthenticator: DeviceAuthenticating {
         #expect(harness.manager.isLocked)
     }
 
-    /// The deadline lives on a monotonic clock that restarts at zero on
-    /// reboot, so a stored deadline can read as the whole of the previous
-    /// uptime. Clamping to the recorded duration fails safe.
-    @Test func aRebootCannotStretchALockoutToTheWholeUptime() async throws {
+    /// Within one boot a stored deadline can never read as more than the delay
+    /// actually imposed.
+    @Test func theRemainingDelayIsClampedToTheDuration() async throws {
         let harness = try PinAttemptHarness()
         await harness.burnWrongAttempts(3)
         #expect(harness.manager.remainingLockoutMillis == 30_000)
 
-        // The stored deadline is far in the future of a clock that just
-        // restarted; the clamp holds it to the delay actually imposed.
-        try harness.store.setLockout(untilMillis: 9_000_000, durationMillis: 30_000)
+        try harness.store.setLockout(untilMillis: 9_000_000, durationMillis: 30_000, bootId: "boot-1")
         #expect(harness.manager.remainingLockoutMillis == 30_000)
     }
+
+    /// The monotonic clock restarts at zero on reboot. Clamping alone froze
+    /// the countdown at the full delay until uptime caught up with the old
+    /// deadline — days. A deadline from another boot restarts as now + its
+    /// duration, and then counts down.
+    @Test func aRebootRestartsTheCountdownInsteadOfFreezingIt() async throws {
+        let harness = try PinAttemptHarness()
+        harness.clock.value = 5_000_000
+        await harness.burnWrongAttempts(3)
+        harness.advance(millis: 10_000)
+        #expect(harness.manager.remainingLockoutMillis == 20_000)
+
+        // Reboot: new boot session, clock back near zero.
+        harness.reboot(bootId: "boot-2", clockAfter: 1_000)
+        #expect(harness.manager.remainingLockoutMillis == 30_000)
+        #expect(harness.store.lockoutBootId == "boot-2")
+
+        harness.advance(millis: 12_000)
+        #expect(harness.manager.remainingLockoutMillis == 18_000)
+        harness.advance(millis: 18_000)
+        #expect(harness.manager.remainingLockoutMillis == 0)
+        #expect(await harness.manager.attemptPinUnlock("83910472") == .success)
+    }
+
+    /// However far the new boot's clock reads past the old deadline, the
+    /// delay is served in full, never skipped.
+    @Test func aRebootNeverShortensTheDelay() async throws {
+        let harness = try PinAttemptHarness()
+        await harness.burnWrongAttempts(3)
+        harness.reboot(bootId: "boot-2", clockAfter: 9_999_999_999)
+        #expect(harness.manager.remainingLockoutMillis == 30_000)
+        #expect(await harness.manager.attemptPinUnlock("83910472") == .rejected(delayMillis: 30_000))
+    }
+
+    /// With no boot identity (the kernel would not say) there is nothing to
+    /// compare, so the clamp alone applies — and the delay still runs out.
+    @Test func withoutABootIdTheClampStillHoldsAndRunsOut() async throws {
+        let harness = try PinAttemptHarness()
+        await harness.burnWrongAttempts(3)
+        harness.reboot(bootId: nil, clockAfter: 500)
+        #expect(harness.manager.remainingLockoutMillis == 29_500)
+        harness.advance(millis: 29_500)
+        #expect(harness.manager.remainingLockoutMillis == 0)
+    }
+
+    /// A rebased deadline that cannot be written back is restarted once, held
+    /// in session, and then runs out — never restarted on every read.
+    @Test func aRebaseThatCannotBeWrittenStillRunsOut() async throws {
+        let harness = try PinAttemptHarness()
+        await harness.burnWrongAttempts(3)
+        harness.failLockoutWrites.value = true
+        harness.reboot(bootId: "boot-2", clockAfter: 1_000)
+        #expect(harness.manager.remainingLockoutMillis == 30_000)
+        harness.advance(millis: 10_000)
+        #expect(harness.manager.remainingLockoutMillis == 20_000)
+        harness.advance(millis: 20_000)
+        #expect(harness.manager.remainingLockoutMillis == 0)
+    }
+
+    /// A lockout that cannot be written to the Keychain is still a lockout for
+    /// the rest of the session — otherwise a failing write is free guesses.
+    @Test func aFailedLockoutWriteStillDelaysTheNextGuess() async throws {
+        let harness = try PinAttemptHarness()
+        harness.failLockoutWrites.value = true
+        #expect(await harness.burnWrongAttempts(3) == .rejected(delayMillis: 30_000))
+        #expect(harness.store.lockoutDurationMillis == 0)
+
+        #expect(harness.manager.remainingLockoutMillis == 30_000)
+        #expect(await harness.manager.attemptPinUnlock("83910472") == .rejected(delayMillis: 30_000))
+        harness.advance(millis: 30_000)
+        #expect(await harness.manager.attemptPinUnlock("83910472") == .success)
+    }
+
+    // MARK: - Device-owner unlock
+
+    /// Touch ID or the login password proves more than the PIN does, so a
+    /// successful one resets the wrong-PIN count and the lockout — stored and
+    /// in session — exactly as a correct PIN would.
+    @Test func aDeviceOwnerUnlockResetsTheWrongPinCount() async throws {
+        let harness = try PinAttemptHarness()
+        await harness.burnWrongAttempts(4)
+        #expect(harness.store.failedAttempts == 4)
+        #expect(harness.manager.remainingLockoutMillis > 0)
+
+        #expect(await harness.manager.requestUnlock())
+        #expect(harness.store.failedAttempts == 0)
+        #expect(harness.manager.remainingLockoutMillis == 0)
+
+        // The session count went too: the next wrong PIN is the first again.
+        harness.manager.lock()
+        #expect(await harness.manager.attemptPinUnlock("00000001") == .rejected(delayMillis: 0))
+        #expect(harness.store.failedAttempts == 1)
+    }
+
+    /// A failed or cancelled prompt resets nothing.
+    @Test func aFailedDeviceOwnerUnlockKeepsTheCount() async throws {
+        let harness = try PinAttemptHarness(authenticator: ScriptedUnlockAuthenticator(.failed))
+        await harness.burnWrongAttempts(2)
+        #expect(await harness.manager.requestUnlock() == false)
+        #expect(harness.store.failedAttempts == 2)
+    }
+}
+
+/// Answers every unlock prompt with one outcome.
+private struct ScriptedUnlockAuthenticator: DeviceAuthenticating {
+    let outcome: DeviceAuthOutcome
+    init(_ outcome: DeviceAuthOutcome) { self.outcome = outcome }
+    func canAuthenticate() -> Bool { true }
+    func authenticate(reason: String) async -> Bool { outcome == .success }
+    func authenticateForUnlock(reason: String) async -> DeviceAuthOutcome { outcome }
 }
