@@ -10,13 +10,20 @@
 //  record out of that sweep — an interruption that erased the evidence a wipe
 //  was started is exactly the state the marker exists to prevent.
 //
+//  **The two markers that gate the app are mirrored into the Keychain.** A
+//  defaults plist is a file any process running as the user can delete, and
+//  deleting it used to be enough to make a half-wiped app open as if nothing
+//  had happened. Either copy saying "a wipe is owed" is believed.
+//
 
 import Foundation
+import os
 
 nonisolated final class WipeStateStore: Sendable {
     /// Every key here begins with this, and the defaults sweep skips the
     /// prefix rather than a list of names — a list goes stale the first time a
-    /// key is added.
+    /// key is added. The Keychain mirror uses the same names; nothing in the
+    /// wipe removes Keychain items under it.
     static let retainedKeyPrefix = "wipe."
 
     private enum Key {
@@ -28,19 +35,38 @@ nonisolated final class WipeStateStore: Sendable {
     }
 
     private let defaults: UserDefaults
+    /// Nil only in tests that exercise the defaults half alone.
+    private let keychain: KeychainStorage?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, keychain: KeychainStorage?) {
         self.defaults = defaults
+        self.keychain = keychain
     }
 
-    /// A wipe started and has not yet finished cleanly.
-    var inProgress: Bool { defaults.bool(forKey: Key.inProgress) }
+    /// A wipe started and has not yet finished cleanly — by either copy.
+    ///
+    /// A Keychain marker with no defaults record is the shape of a deleted
+    /// plist, and also of a reinstall (Keychain items survive both). Either
+    /// way the answer is to run the wipe again, not to block: it destroys
+    /// what a deleted plist was hiding, and after a reinstall it finds little
+    /// left and completes, which clears both copies — so reinstalling stays
+    /// the recovery `ManualRecoveryView` promises.
+    var inProgress: Bool {
+        defaults.bool(forKey: Key.inProgress)
+            || keychainFlag(Key.inProgress) || keychainFlag(Key.abandoned)
+    }
 
     var attempts: Int { defaults.integer(forKey: Key.attempts) }
 
     /// The terminal state: the app has stopped resuming the wipe by itself,
     /// **without** forgetting that data may still be here.
-    var abandoned: Bool { defaults.bool(forKey: Key.abandoned) }
+    ///
+    /// Only while the defaults record of this episode is there too — see
+    /// `inProgress` for what a Keychain-only marker means instead.
+    var abandoned: Bool {
+        guard defaults.bool(forKey: Key.inProgress) else { return false }
+        return defaults.bool(forKey: Key.abandoned) || keychainFlag(Key.abandoned)
+    }
 
     var failedSteps: [String] {
         (defaults.array(forKey: Key.failedSteps) as? [String] ?? []).sorted()
@@ -73,11 +99,13 @@ nonisolated final class WipeStateStore: Sendable {
     @discardableResult
     func begin(hostileLocationEnabled: Bool) -> Bool {
         let posture = hostileLocationEnabled || defaults.bool(forKey: Key.hostileLocationWasEnabled)
-        let resuming = inProgress && !abandoned
+        let resuming = defaults.bool(forKey: Key.inProgress) && !abandoned
         defaults.set(true, forKey: Key.inProgress)
+        setKeychainFlag(Key.inProgress, true)
         defaults.set(posture, forKey: Key.hostileLocationWasEnabled)
         defaults.set(resuming ? attempts + 1 : 1, forKey: Key.attempts)
         defaults.set(false, forKey: Key.abandoned)
+        setKeychainFlag(Key.abandoned, false)
         return posture
     }
 
@@ -86,6 +114,7 @@ nonisolated final class WipeStateStore: Sendable {
     func recordFailure(steps: [String], abandoned: Bool) {
         defaults.set(steps, forKey: Key.failedSteps)
         defaults.set(abandoned, forKey: Key.abandoned)
+        setKeychainFlag(Key.abandoned, abandoned)
     }
 
     /// Ends this wipe — **only ever from the clean-run branch**, because these
@@ -97,10 +126,39 @@ nonisolated final class WipeStateStore: Sendable {
     /// across seven consecutive failing wipes. Resetting only at episode start
     /// keeps "the ceiling bounds one wipe" true even if this method is edited
     /// later.
+    ///
+    /// A Keychain copy that will not go away keeps the marker set, so the
+    /// next launch runs the (idempotent) wipe again rather than forgetting.
     func clear() {
         defaults.removeObject(forKey: Key.inProgress)
         defaults.removeObject(forKey: Key.abandoned)
         defaults.removeObject(forKey: Key.failedSteps)
         defaults.removeObject(forKey: Key.hostileLocationWasEnabled)
+        try? keychain?.remove(Key.inProgress)
+        try? keychain?.remove(Key.abandoned)
+    }
+
+    // MARK: - Keychain mirror
+
+    /// A Keychain that will not answer reads as "no marker", leaving the
+    /// decision to the defaults copy. Reading it as "a wipe is owed" would
+    /// erase the user's data because a Mac login item started before the
+    /// Keychain was ready.
+    private func keychainFlag(_ key: String) -> Bool {
+        (try? keychain?.string(forKey: key)) == "true"
+    }
+
+    /// Best effort: the defaults copy is written regardless, and is still the
+    /// record that resumes the wipe.
+    private func setKeychainFlag(_ key: String, _ value: Bool) {
+        do {
+            if value {
+                try keychain?.set("true", forKey: key)
+            } else {
+                try keychain?.remove(key)
+            }
+        } catch {
+            Log.app.error("Could not mirror the wipe marker \(key, privacy: .public) into the Keychain: \(error)")
+        }
     }
 }

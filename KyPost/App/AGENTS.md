@@ -16,8 +16,9 @@ graph at runtime (`AppEnvironment.rebuild`), so:
   unless that state sits inside a view tree keyed with
   `.id(environment.generation)` — those are torn down and rebuilt on swap.
 - Every scene root in `KyPostApp` carries `.id(environment.generation)`.
-  A new `WindowGroup`/`Settings` scene must too, plus the `LockedOverlay`
-  and `protectedFromCapture()` modifiers its siblings have.
+  A new `WindowGroup`/`Settings` scene must too, plus the
+  `lockCover(theme:)` and `protectedFromCapture()` modifiers its siblings
+  have.
 - `SingletonGraph.shutdown()` must stop any new long-lived task or resource
   a graph child owns (pollers, monitors, auto-refresh loops, and
   `relaySession`, whose delegate-backed `URLSession` holds its delegate and
@@ -53,7 +54,13 @@ router, and `scenePhase == .active` makes it check for KyAuth's response.
 `AppEnvironment.eraseHostileLocationDefaults` runs when Hostile Location
 Protection turns on and at every launch while it is on (`PushLifecycle.onLaunch`).
 A `UserDefaults`-backed store that goes memory-only under the mode erases its
-persisted copy there; switching reads to memory does not remove it.
+persisted copy there; switching reads to memory does not remove it. Stores that
+describe the account (keyword settings, notification and contact cursors,
+pending contact deletes, verified keys, system-contact links) are built on
+`SingletonGraph.hostileMemoryDefaults` (`MemoryOnlyDefaults`) under the mode —
+the graph is rebuilt on every switch, so the choice is made once, at
+construction. A new account-describing store joins that list and the erase.
+`MailCursorStore` and `RecipientPinStore` branch per call instead.
 
 `shutdown()` also **drops** the inbox's held list actions (the undo window),
 its older-mail paging state and the rows it shows, voiding any refresh in
@@ -105,11 +112,14 @@ container; only an invalid *schema* is fatal. Mail lives on the server, so the
 local store is always disposable.
 
 `AppEnvironment.resetAfterFailedUnlock` is the app lock's only escape hatch,
-offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true. It
-erases rather than bypasses: gated secret, pairing, desktop session, both lock
-flags, store, photos, temp attachments, delivered notifications, drafts, the
-mail signature. Keep
-it that way — anything that unlocks *without* erasing is a bypass.
+offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true (and
+again while `wipeNotice` says the last wipe was incomplete). It erases rather
+than bypasses, and it is `performSecurityWipe` — the same steps, resume marker
+and deregister — so the lock comes off only when the wipe reports complete.
+Keep it that way: anything that unlocks *without* erasing is a bypass, and a
+second, shorter step list is how this path once left the PIN hash, pepper,
+counters, tripwire, defaults and exported contacts behind while unlocking.
+`makeWipeSteps` / `makeGraphAfterWipe` exist for tests only.
 
 ## URL schemes
 
@@ -188,7 +198,9 @@ for deciding what to *show* and wrong for deciding to repair: the repair writes
 the device secret back into the plain, non-presence-gated item, and one
 transient `errSecInteractionNotAllowed` at launch used to trigger it
 permanently. Any new caller that acts destructively on this flag uses
-`lockState` and fails closed on `.unreadable`.
+`lockState` and fails closed on `.unreadable`. `AppLockManager` decides
+whether the app starts locked the same way: `.unreadable` is locked (root
+AGENTS.md, "App lock").
 
 `PushLifecycle.runEnrollmentReporter()` restates an enrollment acknowledgement
 that did not land, or a Hostile Location Protection teardown. It runs from
@@ -346,7 +358,8 @@ Rules:
 
 - `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (`AppEnvironmentTests`, `SecurityTests`, `SecurityWipeTests`,
-  `SecurityWipeStepsTests`, `PullHeartbeatTests`).
+  `SecurityWipeStepsTests`, `AppLockResetAndHostileTests`,
+  `PullHeartbeatTests`).
 - The rebuild path is exercised end-to-end by toggling Hostile Location
   Protection in Settings → Security on a paired build.
 

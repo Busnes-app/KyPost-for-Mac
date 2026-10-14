@@ -36,25 +36,33 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
   guesses at the passcode, not at anything of ours. A PIN checked inside the
   app has no such backstop, so KyPost owns the throttle:
   - the first two wrong attempts are free,
-  - the third onward adds a growing wait — 30s, 60s, 5m, 15m, 30m,
+  - the third onward adds a growing wait — 30s, 60s, 5m, 15m, 30m; a
+    restart begins the current wait again rather than skipping it,
   - **ten wrong attempts in a row erase** the pairing and everything KyPost
     has stored on this device. Your mail stays on your server. The number can
     be set to 10, 20 or 30, or Never; allowing more attempts asks you to
     authenticate, and a stored value that does not verify counts as 10.
+    A correct PIN, or unlocking with Touch ID or your password, starts the
+    count over.
 
   If the key protecting the PIN verifier becomes unavailable, KyPost says so
   and counts nothing — a PIN it cannot check is not a wrong PIN, and it must
   not spend your attempts. A wipe that cannot finish says which parts it
-  could not remove, retries at the next launch, and after three failed
-  attempts blocks the app behind a "reinstall to clear this" screen rather
-  than presenting a clean first-run app over data that is still here.
+  could not remove, keeps the app locked, retries at the next launch, and
+  after three failed attempts (the first run and two retries) blocks the app
+  behind a "reinstall to clear this" screen rather than presenting a clean
+  first-run app over data that is still here. "Reset KyPost on This Device"
+  on the lock screen is the same wipe.
 - **Hostile Location Protection** — keeps no mail, contacts, or attachments
-  on the device. All data stays in memory and reloads from your server. The
-  app erases the local cache when you turn this option on. There are two
+  on the device. All data stays in memory and reloads from your server,
+  including sync positions, keyword settings, and the keys you verified. The
+  app erases the local cache when you turn this option on. There are three
   honest limits. An attachment preview writes a file into the sandboxed
   temporary directory of the app while the preview is open, because Quick
   Look needs a file, and the app deletes the file on dismissal. The erase of
-  the store is a plain delete, not a forensic overwrite.
+  the store is a plain delete, not a forensic overwrite. And cards already
+  exported to Contacts stay there, and KyPost forgets which ones it made, so
+  use Remove Exported Contacts before you turn this option on.
 - **Require unlock for notifications and MFA** — moves the relay credential
   behind user presence. Background mail checks and MFA approvals then wait
   until you open and unlock the app. On an iPhone this covers all background

@@ -551,10 +551,27 @@ old sentence edited out.
   advances the wipe counter. Both serialise through one in-flight task: two
   concurrent checks otherwise read the same count, both write `n + 1`, and both
   clear the lockout gate at the same instant.
-- The lockout deadline is on **`CLOCK_MONOTONIC_RAW`**, and clamped to the
-  stored duration. A wall clock is cleared from the Date & Time pane; a
-  monotonic one restarts at zero on reboot, so without the clamp a reboot reads
-  the deadline as the whole previous uptime.
+- The lockout deadline is on **`CLOCK_MONOTONIC_RAW`**, stored with its
+  duration and the boot it was written in (`kern.bootsessionuuid`). A wall
+  clock is cleared from the Date & Time pane; a monotonic one restarts at zero
+  on reboot. A deadline from another boot restarts once as now + duration and
+  is written back (clamping alone froze the countdown for days); within a
+  boot, or with no boot id, it is clamped to the duration. The manager also
+  holds the deadline in memory and gates on the later of the two, so a failed
+  Keychain write is never free guesses.
+- **Whether the app starts locked is decided from `AppLockStore.lockState`,
+  and `.unreadable` is locked.** A Mac login item reads the Keychain before
+  it is ready; reading that as off started the app unlocked and made `lock()`
+  a no-op all session. `refreshLockState` re-reads it (each unlock attempt,
+  and each second the lock screen is up); only an *unresolved* flag that then
+  reads off releases the lock without a prompt.
+- **A device-owner unlock (Touch ID, password) resets the wrong-PIN count and
+  any lockout**, stored and in session, under the same serialisation as the
+  PIN checks. A cancelled prompt (`DeviceAuthOutcome.cancelled`) counts
+  toward nothing; concurrent `requestUnlock` calls share one prompt.
+- **`PinPepper.ensureExists` never downgrades.** With a Secure Enclave present,
+  a failed enclave key throws `PepperUnavailable`; the software pepper is only
+  for machines without one.
 - **The tripwire is armed by `setPin`, not by `setLockEnabled`.** The PIN is
   optional on this platform, so arming it with the toggle would make
   "configured, and the PIN vanished" true immediately and wipe the machine at
@@ -588,10 +605,21 @@ old sentence edited out.
 - **The wipe fails closed.** `WipeResult.complete` is only returned when every
   step ran; a step must not catch its own errors, or the step cannot fail and
   the claim cannot be supported. An incomplete run keeps its marker, resumes at
-  the next launch, and after `SecurityWipe.maxResumes` sets `abandoned` —
-  which stops the retries **without** forgetting. Clearing the marker to
-  express "giving up" is the bug that presented a clean first-run app over data
-  that was never deleted.
+  the next launch, and on its `SecurityWipe.maxAttempts`th (3rd) failed run
+  — the first run plus two resumes — sets `abandoned`, which stops the retries
+  **without** forgetting. Clearing the marker to express "giving up" is the bug
+  that presented a clean first-run app over data that was never deleted.
+- **The lock comes off last, and only after a complete run.** The `appLock`
+  step keeps Require Unlock to Open; `SecurityWipeSteps.releaseLock` (the
+  `release:` step of `SecurityWipe.run`) removes it only when every other step
+  succeeded. An incomplete wipe rebuilds a locked app.
+- **The in-progress and abandoned markers are mirrored into the Keychain**
+  (`WipeStateStore`), and either copy is believed. A Keychain marker with no
+  defaults record (a deleted plist, or a reinstall — Keychain items survive
+  both) resumes the wipe rather than blocking, so reinstalling stays the
+  recovery. An unreadable Keychain reads as no marker.
+- **The failed-unlock reset is this wipe** (`resetAfterFailedUnlock` →
+  `performSecurityWipe`). Never give it a step list of its own.
 - **Order: in-memory plaintext, then local files, then network.** The
   deregister is not a step and is never folded into the result — an unreachable
   relay says nothing about local data, and counting it would keep the resume

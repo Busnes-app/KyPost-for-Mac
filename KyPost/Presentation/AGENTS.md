@@ -36,7 +36,14 @@ Domain.
   per view, so a sheet already on screen stops the `fullScreenCover`
   presenting at all. Either way MFA approval and pairing were reachable on a
   locked app. A new scene root gets `.lockAwareRouting(router)` alongside its
-  `.id(generation)`, `LockedOverlay`, and `protectedFromCapture()`.
+  `.id(generation)`, `lockCover(theme:)`, and `protectedFromCapture()`.
+- **The macOS lock cover covers the chrome, not just the content**
+  (`lockCover(theme:)`, `UnlockView.swift`). While locked it hides the window
+  toolbar (`.toolbar(.hidden, for: .windowToolbar)`), disables the content
+  (which reaches the toolbar items it declares) and hides it from
+  accessibility; the `LockedOverlay` sits outside all three. An overlay alone
+  left toolbar Delete/Archive/Move and the search field working behind it.
+  Never apply `LockedOverlay` on its own.
 - **`PushPairingView` closes itself on iOS when the lock engages.** Settings
   presents it outside the router, so `dismissPresentedRoutes` cannot reach
   it, and "Sign in with KyIdentity" backgrounds the app on purpose. A sign-on
@@ -63,7 +70,12 @@ Domain.
   `LAContext` only when one is not. A system authentication sheet raised over a
   PIN field asks for something the user did not ask for; a PIN exists only
   because they chose it. Removing a PIN is an *off* path and re-authenticates
-  like the rest.
+  like the rest. The automatic prompt goes through
+  `AppLockManager.autoPromptUnlock` — once per lock, and on macOS only from
+  the key window (`controlActiveState`); every window's lock screen shares one
+  in-flight `requestUnlock`, so no window stacks a second Touch ID sheet. A
+  reset that finished incomplete keeps the app locked; the lock screen says so
+  and keeps Reset offered.
 - **Every PIN outcome gets its own sentence, and `verifierUnavailable` is the
   one that matters.** It means the PIN was *not* wrong — telling the user it was
   invites them to burn attempts against a threshold that outcome deliberately

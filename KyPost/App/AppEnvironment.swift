@@ -98,6 +98,14 @@ final class AppEnvironment {
     /// in tests, where no runtime services should start.
     var onRebuild: (() -> Void)?
 
+    /// What a security wipe destroys, and how the graph after it is built.
+    /// The real step list deletes this container's store, so tests substitute
+    /// fakes and a scratch graph; the app never changes either.
+    var makeWipeSteps: (SingletonGraph) -> [WipeStep] = { graph in
+        SecurityWipeSteps.build(graph: graph, defaultsDomain: Bundle.main.bundleIdentifier)
+    }
+    var makeGraphAfterWipe: () throws -> SingletonGraph = { try SingletonGraph() }
+
     init(graph: SingletonGraph) {
         self.graph = graph
     }
@@ -179,8 +187,23 @@ final class AppEnvironment {
     /// in-memory stores would otherwise only stop reading. Run when the mode
     /// is turned on and at every launch while it is on, which also repairs a
     /// toggle interrupted before this ran.
+    ///
+    /// The stores `SingletonGraph` builds on `hostileMemoryDefaults` are
+    /// cleared through throwaway copies over the real defaults, so the erase
+    /// reaches the plist whichever mode the graph was built in.
     static func eraseHostileLocationDefaults(in graph: SingletonGraph) {
         graph.recipientPinStore.clearPersisted()
+        let defaults = graph.userDefaults
+        KeywordSettingsStore(defaults: defaults).clear()
+        NotificationCursorStore(defaults: defaults).reset()
+        ContactCursorStore(defaults: defaults).reset()
+        ContactPendingDeletesStore(defaults: defaults).clear()
+        VerifiedPgpKeyStore(defaults: defaults).clear()
+        // The record of which Contacts cards this app created. Once it is
+        // gone those cards are no longer recognised as the app's, so neither
+        // Remove Exported Contacts nor a wipe can remove them; SECURITY.md
+        // tells the user to remove them before turning the mode on.
+        SystemContactsLinkStore(defaults: defaults).clear()
     }
 
     /// The security wipe, end to end: capture what the network step will need,
@@ -211,9 +234,10 @@ final class AppEnvironment {
         Self.postSessionReset()
 
         let result = await graph.securityWipe.run(
-            steps: SecurityWipeSteps.build(graph: graph, defaultsDomain: Bundle.main.bundleIdentifier),
+            steps: makeWipeSteps(graph),
             hostileLocationEnabled: hostileLocationEnabled,
-            restoreHostileLocation: { hostileStore.enabled = true }
+            restoreHostileLocation: { hostileStore.enabled = true },
+            release: SecurityWipeSteps.releaseLock(graph: graph)
         )
 
         if let pairing, let deviceId = pairing.lastDeviceId, !deviceId.isEmpty,
@@ -237,9 +261,10 @@ final class AppEnvironment {
 
         // Rebuilding is what actually closes the SwiftData container's file
         // descriptors on the store the wipe unlinked, and what brings the app
-        // back up in the unpaired, unlocked state the wipe leaves behind.
+        // back up in the unpaired state the wipe leaves behind — unlocked only
+        // if the wipe completed, because only then did `releaseLock` run.
         do {
-            try rebuild { try SingletonGraph() }
+            try rebuild(makeGraph: makeGraphAfterWipe)
         } catch {
             Log.app.error("Could not rebuild the graph after a wipe: \(error.localizedDescription)")
         }
@@ -315,37 +340,17 @@ final class AppEnvironment {
     /// lock. This is not a bypass: it reveals nothing, it erases. Everything
     /// cached locally goes, the pairing goes, and the device comes back
     /// unpaired and unlocked, exactly as if it had been reinstalled.
-    func resetAfterFailedUnlock() throws {
-        // A pending sign-on or deferred pairing link would re-pair the device
-        // this reset promises comes back "as if reinstalled".
-        Self.postSessionReset()
-        // Gated copy and gate flag first: `clear()` routes through the gate,
-        // and it must not be the only thing that removes the gated secret.
-        graph.credentialGateService.removeAll()
-        try? graph.securePairingStore.clear()
-        try? graph.desktopSessionStore.clear()
-        // This path promises the device comes back "as if reinstalled". An
-        // envelope that survived it would be the account's private key left on
-        // a device whose pairing and lock were both just erased.
-        graph.enrollmentVault.destroy()
-        // The pairing is gone, so no device row is left to correct; a marker
-        // must not speak for the next pairing's device.
-        graph.enrollmentVault.forgetPendingReports()
-        // Destroying the sealed envelope is not enough on its own: an unsealed
-        // copy may be held right now, and this path promises the device comes
-        // back as if reinstalled.
-        EnrollmentSession.shared.clear()
-        graph.mailCursorStore.clear()
-        graph.mailSignatureStore.clear()
-        try? graph.appLockStore.setCredentialGateEnabled(false)
-        try graph.appLockStore.setLockEnabled(false)
-        try? AppDatabase.deleteStoreFiles()
-        try? ContactPhotoCache.deleteAll()
-        InboxViewModel.purgeAttachmentTempFiles()
-        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
-        NotificationCenter.default.post(name: .kyPostCloseComposeWindows, object: nil)
-        // The rebuilt graph reads lockEnabled == false, so its AppLockManager
-        // comes up unlocked and the cover goes away.
-        try rebuild { try SingletonGraph() }
+    ///
+    /// **It is the security wipe**, not a list of its own. A separate list
+    /// with `try?` deletes turned the lock off even when deletion failed, and
+    /// left the PIN hash, pepper, attempt counter, threshold, tripwire, the
+    /// defaults domain and the cards exported to Contacts behind. Through the
+    /// wipe, every step is reported, an incomplete run keeps its resume marker
+    /// and is retried at the next launch (or by pressing Reset again), and the
+    /// lock comes off only once the wipe reports complete — so a failed step
+    /// brings the app back locked over what it could not delete.
+    @discardableResult
+    func resetAfterFailedUnlock() async -> WipeResult {
+        await performSecurityWipe()
     }
 }
