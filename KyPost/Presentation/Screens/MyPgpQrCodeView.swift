@@ -77,7 +77,7 @@ struct MyPgpQrCodeView: View {
             } else {
                 Image(systemName: "qrcode")
                     .font(.system(size: 44))
-                    .foregroundStyle(theme.ink.opacity(0.5))
+                    .foregroundStyle(theme.secondaryInk)
                 Text("Couldn't render the QR code.")
                     .font(AppFont.ui(14))
                     .foregroundStyle(theme.ink)
@@ -91,7 +91,7 @@ struct MyPgpQrCodeView: View {
             if let seconds = viewModel.secondsRemaining {
                 Text(seconds > 0 ? "Expires in \(seconds)s" : "Expired — refreshing…")
                     .font(AppFont.mono(12))
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                    .foregroundStyle(theme.secondaryInk)
                     .monospacedDigit()
             }
 

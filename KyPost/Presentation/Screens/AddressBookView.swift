@@ -113,7 +113,7 @@ struct AddressBookView: View {
             actions: Text("")
         )
         .font(AppFont.ui(11, weight: .semibold))
-        .foregroundStyle(theme.ink.opacity(0.7))
+        .foregroundStyle(theme.secondaryInk)
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
     }
@@ -173,7 +173,7 @@ struct AddressBookView: View {
             email: addressCell(contact: contact, match: match, address: address),
             department: Text(contact.department)
                 .font(AppFont.ui(12))
-                .foregroundStyle(theme.ink.opacity(0.8))
+                .foregroundStyle(theme.secondaryInk)
                 .lineLimit(1),
             actions: HStack(spacing: 4) {
                 ForEach(RecipientField.allCases, id: \.self) { field in
@@ -200,7 +200,7 @@ struct AddressBookView: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8))
                 }
-                .foregroundStyle(theme.ink.opacity(0.8))
+                .foregroundStyle(theme.secondaryInk)
             }
             .menuStyle(.borderlessButton)
         } else {
@@ -210,7 +210,7 @@ struct AddressBookView: View {
                 font: AppFont.mono(11),
                 highlightFont: AppFont.mono(11, weight: .bold)
             )
-            .foregroundStyle(theme.ink.opacity(0.8))
+            .foregroundStyle(theme.secondaryInk)
             .lineLimit(1)
         }
     }

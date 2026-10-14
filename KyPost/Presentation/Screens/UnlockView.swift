@@ -68,7 +68,7 @@ struct UnlockView: View {
                 VStack(spacing: 8) {
                     Text("Can't unlock? Resetting removes this device's pairing and everything KyPost has cached here. Your mail stays on your server.")
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 360)
                     Button("Reset KyPost on This Device") {
@@ -137,7 +137,7 @@ struct UnlockView: View {
             if lockoutRemaining > 0 {
                 Text("Too many attempts. Try again in \(Self.wait(lockoutRemaining)).")
                     .font(AppFont.ui(12))
-                    .foregroundStyle(theme.ink.opacity(0.8))
+                    .foregroundStyle(theme.secondaryInk)
             }
             if let pinStatus {
                 Text(pinStatus)

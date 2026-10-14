@@ -43,7 +43,7 @@ struct DesktopPairingView: View {
                         if let userEmail {
                             Text("Paired as \(userEmail)")
                                 .font(AppFont.mono(12))
-                                .foregroundStyle(theme.ink.opacity(0.8))
+                                .foregroundStyle(theme.secondaryInk)
                         }
                         Button("Done") { dismiss() }
                             .buttonStyle(PrimaryButtonStyle())

@@ -67,7 +67,7 @@ struct SettingsView: View {
                     }
                     Text("Pair this device with your KyPost account to load mail.")
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                     Button("Pair Device") { showPairingSheet = true }
                         .buttonStyle(PrimaryButtonStyle())
                 }
@@ -129,7 +129,7 @@ struct SettingsView: View {
                 if viewModel.contactsExportDenied {
                     Text("Contacts access is denied for KyPost.")
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                     Button("Open Settings") { viewModel.openContactsPrivacySettings() }
                         .buttonStyle(SecondaryButtonStyle())
                 }

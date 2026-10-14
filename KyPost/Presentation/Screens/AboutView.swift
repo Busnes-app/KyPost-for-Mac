@@ -44,7 +44,7 @@ struct AboutView: View {
                         .foregroundStyle(theme.inkStrong)
                     Text("Version ") + Text(version) + Text("  ·  Copyright © 2026 Busnes.app")
                         .font(AppFont.ui(12))
-                        .foregroundStyle(theme.ink.opacity(0.75))
+                        .foregroundStyle(theme.secondaryInk)
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
@@ -53,7 +53,7 @@ struct AboutView: View {
                         .foregroundStyle(theme.inkStrong)
                     Text("Help keep private, secure email available with a one-time contribution.")
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
 
                     ForEach(tipJar.products, id: \.id) { product in
                         Button {
@@ -69,7 +69,7 @@ struct AboutView: View {
                                         .foregroundStyle(theme.inkStrong)
                                     Text("One-time support")
                                         .font(AppFont.ui(12))
-                                        .foregroundStyle(theme.ink.opacity(0.7))
+                                        .foregroundStyle(theme.secondaryInk)
                                 }
                                 Spacer()
                                 Text(product.displayPrice)
@@ -88,12 +88,12 @@ struct AboutView: View {
                     if tipJar.products.isEmpty && !tipJar.isLoading {
                         Text(tipJar.errorMessage ?? "Support options are not available right now.")
                             .font(AppFont.ui(13))
-                            .foregroundStyle(theme.ink.opacity(0.75))
+                            .foregroundStyle(theme.secondaryInk)
                     }
                     if let errorMessage = tipJar.errorMessage {
                         Text(errorMessage)
                             .font(AppFont.ui(12))
-                            .foregroundStyle(theme.ink.opacity(0.75))
+                            .foregroundStyle(theme.secondaryInk)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -109,7 +109,7 @@ struct AboutView: View {
                         Text(Self.mitLicense)
                             .font(AppFont.mono(10))
                             .textSelection(.enabled)
-                            .foregroundStyle(theme.ink.opacity(0.85))
+                            .foregroundStyle(theme.secondaryInk)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(height: 170)
@@ -133,17 +133,17 @@ struct AboutView: View {
             Section("KyPost") {
                 LabeledContent("Version", value: version)
                 Text("Copyright © 2026 Busnes.app")
-                    .foregroundStyle(theme.ink.opacity(0.8))
+                    .foregroundStyle(theme.secondaryInk)
             }
             .listRowBackground(theme.panel)
 
             Section {
                 Text("If KyPost is useful to you, you can support its continued development with a one-off tip.")
-                    .foregroundStyle(theme.ink.opacity(0.8))
+                    .foregroundStyle(theme.secondaryInk)
 
                 if tipJar.products.isEmpty && !tipJar.isLoading {
                     Text(tipJar.errorMessage ?? "Support options are not available right now.")
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                 }
 
                 ForEach(tipJar.products, id: \.id) { product in
@@ -162,7 +162,7 @@ struct AboutView: View {
                 if let errorMessage = tipJar.errorMessage {
                     Text(errorMessage)
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                 }
             } header: {
                 Text("Support KyPost")
@@ -180,7 +180,7 @@ struct AboutView: View {
                 Text(Self.mitLicense)
                     .font(AppFont.mono(11))
                     .textSelection(.enabled)
-                    .foregroundStyle(theme.ink.opacity(0.9))
+                    .foregroundStyle(theme.secondaryInk)
             }
             .listRowBackground(theme.panel)
         }

@@ -53,7 +53,7 @@ struct PushPairingView: View {
                         if let deviceId {
                             Text(deviceId)
                                 .font(AppFont.mono(12))
-                                .foregroundStyle(theme.ink.opacity(0.8))
+                                .foregroundStyle(theme.secondaryInk)
                         }
                         Button("Done") { dismiss() }
                             .buttonStyle(PrimaryButtonStyle())
