@@ -45,6 +45,43 @@ private nonisolated let keyJSON = #"""
 }
 """#
 
+/// The fixture key's fingerprint, as a device that holds it puts it in its code.
+private nonisolated let plainCode = "https://mail.example.com/api/pgp/qr/key?t=abc"
+private nonisolated let shownCode = plainCode + "#fp=6853864FF482DCF29CD0CB0E56CD3B5CB8625680"
+private nonisolated let fixtureArmoredKey = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: KyPostTest\n\nxg0EYAAAAAEACQEjAAID\n=ABCD\n-----END PGP PUBLIC KEY BLOCK-----"
+
+private nonisolated let bootstrapJSON = #"""
+{
+  "hasIdentity": true,
+  "publicKey": "-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: KyPostTest\n\nxg0EYAAAAAEACQEjAAID\n=ABCD\n-----END PGP PUBLIC KEY BLOCK-----"
+}
+"""#
+
+/// Answers bootstrap with `bootstrap` and everything else with `json`.
+private func routedClient(json: String, bootstrap: String) -> HTTPClient {
+    HTTPClient { request in
+        let isBootstrap = request.url?.path.hasSuffix("/api/pgp/bootstrap") == true
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil
+        )!
+        return (Data((isBootstrap ? bootstrap : json).utf8), response)
+    }
+}
+
+/// Derives the fixture key as this device's own public key.
+private final class OwnKeyCrypto: PgpEncrypting, @unchecked Sendable {
+    func encryptAndSign(plaintext: Data, recipientKeys: [String], privateKey: Data) throws -> String {
+        throw PgpCryptoError.unusableKey
+    }
+
+    func ownPublicKey(privateKey: Data) throws -> String { fixtureArmoredKey }
+}
+
+private struct FixedOpener: VaultOpening {
+    var outcome: VaultOpenOutcome
+    func open() async -> VaultOpenOutcome { outcome }
+}
+
 // MARK: - Client
 
 @Suite struct PgpQrClientTests {
@@ -111,23 +148,22 @@ private nonisolated let keyJSON = #"""
 
 @Suite struct PgpQrPayloadTests {
     @Test func acceptsAWellFormedKeyURL() throws {
-        let url = try #require(
-            PgpQrClient.keyURL(fromScannedPayload: "https://mail.example.com/api/pgp/qr/key?t=abc")
-        )
-        #expect(url.absoluteString == "https://mail.example.com/api/pgp/qr/key?t=abc")
+        let code = try #require(PgpQrClient.scannedKeyCode(fromPayload: plainCode))
+        #expect(code.url.absoluteString == plainCode)
+        #expect(code.shownFingerprint == .absent)
     }
 
     @Test func acceptsAServerHostedUnderASubpath() throws {
-        let url = try #require(
-            PgpQrClient.keyURL(fromScannedPayload: "https://ex.com/llama/api/pgp/qr/key?t=abc")
+        let code = try #require(
+            PgpQrClient.scannedKeyCode(fromPayload: "https://ex.com/llama/api/pgp/qr/key?t=abc")
         )
-        #expect(url.path == "/llama/api/pgp/qr/key")
+        #expect(code.url.path == "/llama/api/pgp/qr/key")
     }
 
     @Test func toleratesSurroundingWhitespaceFromAPastedLink() {
         #expect(
-            PgpQrClient.keyURL(
-                fromScannedPayload: "  https://ex.com/api/pgp/qr/key?t=abc\n"
+            PgpQrClient.scannedKeyCode(
+                fromPayload: "  https://ex.com/api/pgp/qr/key?t=abc\n"
             ) != nil
         )
     }
@@ -147,7 +183,72 @@ private nonisolated let keyJSON = #"""
         "",
     ])
     func rejectsAnythingElse(payload: String) {
-        #expect(PgpQrClient.keyURL(fromScannedPayload: payload) == nil)
+        #expect(PgpQrClient.scannedKeyCode(fromPayload: payload) == nil)
+    }
+
+    @Test func splitsTheShownFingerprintOffTheURLSoItIsNeverSent() throws {
+        let code = try #require(PgpQrClient.scannedKeyCode(fromPayload: shownCode))
+        #expect(code.url.absoluteString == plainCode)
+        #expect(code.url.fragment == nil)
+        #expect(code.shownFingerprint == .fingerprint("6853864FF482DCF29CD0CB0E56CD3B5CB8625680"))
+    }
+
+    @Test(arguments: [
+        // Lowercase, short, long, grouped.
+        "#fp=6853864ff482dcf29cd0cb0e56cd3b5cb8625680",
+        "#fp=6853864FF482DCF29CD0CB0E56CD3B5CB862568",
+        "#fp=6853864FF482DCF29CD0CB0E56CD3B5CB86256800",
+        "#fp=6853%20864F%20F482%20DCF2%209CD0%20CB0E%2056CD%203B5C%20B862%205680",
+        // A v6 fingerprint is not what `fp` carries.
+        "#fp=6853864FF482DCF29CD0CB0E56CD3B5CB86256806853864FF482DCF29CD0CB0E",
+        "#fp=",
+        "#FP=6853864FF482DCF29CD0CB0E56CD3B5CB8625680",
+        "#x=6853864FF482DCF29CD0CB0E56CD3B5CB8625680",
+        "#fp=6853864FF482DCF29CD0CB0E56CD3B5CB8625680&x=1",
+    ])
+    func anyOtherFragmentIsMalformed(fragment: String) throws {
+        let code = try #require(PgpQrClient.scannedKeyCode(fromPayload: plainCode + fragment))
+        #expect(code.shownFingerprint == .malformed)
+        #expect(code.url.fragment == nil)
+    }
+}
+
+// MARK: - QR payload
+
+@Suite struct PgpQrPayloadBuildTests {
+    @Test func carriesThisDevicesFingerprintAsTheFragment() {
+        #expect(
+            PgpQrClient.qrPayload(pickupURL: plainCode, fingerprint: syntheticKeyFingerprint)
+                == shownCode
+        )
+    }
+
+    @Test func withoutALocalFingerprintTheCodeHasNoFragment() {
+        #expect(PgpQrClient.qrPayload(pickupURL: plainCode, fingerprint: nil) == plainCode)
+    }
+
+    /// The server must never be able to supply `fp` itself.
+    @Test func aFragmentOnTheServersURLIsDropped() {
+        let served = plainCode + "#fp=AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555"
+        #expect(PgpQrClient.qrPayload(pickupURL: served, fingerprint: nil) == plainCode)
+        #expect(
+            PgpQrClient.qrPayload(pickupURL: served, fingerprint: syntheticKeyFingerprint)
+                == shownCode
+        )
+    }
+
+    @Test func onlyAV4FingerprintGoesInTheCode() {
+        let v6 = String(repeating: "AB", count: 32)
+        #expect(PgpQrClient.qrPayload(pickupURL: plainCode, fingerprint: v6) == plainCode)
+    }
+
+    @Test func whatOneDeviceBuildsTheOtherParses() throws {
+        let payload = try #require(
+            PgpQrClient.qrPayload(pickupURL: plainCode, fingerprint: syntheticKeyFingerprint)
+        )
+        let code = try #require(PgpQrClient.scannedKeyCode(fromPayload: payload))
+        #expect(code.url.absoluteString == plainCode)
+        #expect(code.shownFingerprint == .fingerprint(syntheticKeyFingerprint))
     }
 }
 
@@ -183,11 +284,21 @@ private nonisolated let keyJSON = #"""
     private func makeViewModel(
         status: Int = 200,
         json: String = tokenJSON,
-        paired: Bool = true
+        paired: Bool = true,
+        http: HTTPClient? = nil,
+        session: EnrollmentSession = EnrollmentSession(),
+        opener: VaultOpenOutcome = .notEnrolled,
+        enrolled: Bool = false
     ) throws -> MyPgpQrViewModel {
-        MyPgpQrViewModel(
-            client: PgpQrClient(httpClient: stubClient(status: status, json: json)),
-            pairingStore: try makePairedStore(paired: paired)
+        let http = http ?? stubClient(status: status, json: json)
+        return MyPgpQrViewModel(
+            client: PgpQrClient(httpClient: http),
+            pairingStore: try makePairedStore(paired: paired),
+            bootstrapClient: PgpSendClient(httpClient: http),
+            session: session,
+            crypto: OwnKeyCrypto(),
+            opener: FixedOpener(outcome: opener),
+            deviceIsEnrolled: { enrolled }
         )
     }
 
@@ -205,9 +316,9 @@ private nonisolated let keyJSON = #"""
 
     @Test func withoutAPairingItAsksForPairingAndNeverCallsTheServer() async throws {
         let capture = Box<URLRequest?>(nil)
-        let viewModel = MyPgpQrViewModel(
-            client: PgpQrClient(httpClient: stubClient(json: tokenJSON) { capture.value = $0 }),
-            pairingStore: try makePairedStore(paired: false)
+        let viewModel = try makeViewModel(
+            paired: false,
+            http: stubClient(json: tokenJSON) { capture.value = $0 }
         )
 
         await viewModel.refresh()
@@ -257,6 +368,85 @@ private nonisolated let keyJSON = #"""
         // than going negative.
         #expect(viewModel.secondsRemaining == 0)
     }
+
+    @Test func aHeldKeyPutsThisDevicesOwnFingerprintInTheCode() async throws {
+        let session = EnrollmentSession()
+        session.put(armoredKey: "PRIVATE")
+        let viewModel = try makeViewModel(session: session)
+
+        await viewModel.refresh()
+
+        guard case .showing(let urlString, _) = viewModel.state else {
+            Issue.record("Expected .showing, got \(viewModel.state)")
+            return
+        }
+        #expect(urlString == "https://mail.example.com/api/pgp/qr/key?t=tok-abc#fp=\(syntheticKeyFingerprint)")
+        #expect(viewModel.fingerprint == .thisDevice(syntheticKeyFingerprint))
+        #expect(!viewModel.canUnlockKey)
+    }
+
+    @Test func withNoKeyTheFingerprintIsTheServersAndTheCodeCarriesNone() async throws {
+        // A server-supplied fragment must not survive either.
+        let served = tokenJSON.replacingOccurrences(
+            of: "?t=tok-abc\"",
+            with: "?t=tok-abc#fp=AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555\""
+        )
+        let viewModel = try makeViewModel(http: routedClient(json: served, bootstrap: bootstrapJSON))
+
+        await viewModel.refresh()
+
+        guard case .showing(let urlString, _) = viewModel.state else {
+            Issue.record("Expected .showing, got \(viewModel.state)")
+            return
+        }
+        #expect(urlString == "https://mail.example.com/api/pgp/qr/key?t=tok-abc")
+        #expect(viewModel.fingerprint == .serverReported(syntheticKeyFingerprint))
+        #expect(!viewModel.canUnlockKey)
+    }
+
+    @Test func anEnrolledDeviceUnlocksItsKeyAndThenCarriesItsFingerprint() async throws {
+        let session = EnrollmentSession()
+        let viewModel = try makeViewModel(
+            session: session,
+            opener: .opened(privateKey: Data("PRIVATE".utf8)),
+            enrolled: true
+        )
+
+        await viewModel.refresh()
+        #expect(viewModel.canUnlockKey)
+        guard case .showing(let before, _) = viewModel.state else {
+            Issue.record("Expected .showing, got \(viewModel.state)")
+            return
+        }
+        #expect(!before.contains("#"))
+
+        await viewModel.unlockKey()
+
+        #expect(session.isHeld)
+        #expect(!viewModel.canUnlockKey)
+        guard case .showing(let after, _) = viewModel.state else {
+            Issue.record("Expected .showing, got \(viewModel.state)")
+            return
+        }
+        #expect(after.hasSuffix("#fp=\(syntheticKeyFingerprint)"))
+        #expect(viewModel.fingerprint == .thisDevice(syntheticKeyFingerprint))
+    }
+
+    @Test func cancellingTheUnlockKeepsTheCodeWithoutAFingerprint() async throws {
+        let session = EnrollmentSession()
+        let viewModel = try makeViewModel(session: session, opener: .cancelled, enrolled: true)
+        await viewModel.refresh()
+
+        await viewModel.unlockKey()
+
+        #expect(!session.isHeld)
+        #expect(viewModel.canUnlockKey)
+        guard case .showing(let urlString, _) = viewModel.state else {
+            Issue.record("Expected .showing, got \(viewModel.state)")
+            return
+        }
+        #expect(!urlString.contains("#"))
+    }
 }
 
 // MARK: - Scan view model
@@ -267,6 +457,7 @@ private nonisolated let keyJSON = #"""
         let repository: ContactSyncRepository
         let dao: ContactDAO
         let database: AppDatabase
+        let pins: RecipientPinStore
     }
 
     private func makeEnvironment(
@@ -279,12 +470,17 @@ private nonisolated let keyJSON = #"""
         let db = try AppDatabase(inMemory: true)
         let dao = ContactDAO(modelContainer: db.container)
         let http = stubClient(status: status, json: json, onRequest: onRequest)
+        let pins = RecipientPinStore(
+            defaults: defaults,
+            hostileLocation: HostileLocationProtectionStore(defaults: defaults)
+        )
         let repository = ContactSyncRepository(
             client: ContactSyncClient(httpClient: http),
             contactDAO: dao,
             cursorStore: ContactCursorStore(defaults: defaults),
             pendingDeletesStore: ContactPendingDeletesStore(defaults: defaults),
-            securePairingStore: pairingStore
+            securePairingStore: pairingStore,
+            recipientPins: pins
         )
         return Environment(
             viewModel: ScanPgpKeyViewModel(
@@ -293,20 +489,20 @@ private nonisolated let keyJSON = #"""
             ),
             repository: repository,
             dao: dao,
-            database: db
+            database: db,
+            pins: pins
         )
     }
 
     @Test func aValidCodeFetchesTheKeyAndAsksForFingerprintConfirmation() async throws {
         let env = try makeEnvironment()
-        await env.viewModel.handleScannedPayload(
-            "https://mail.example.com/api/pgp/qr/key?t=abc"
-        )
+        await env.viewModel.handleScannedPayload(shownCode)
 
-        guard case .confirming(let key) = env.viewModel.state else {
+        guard case .confirming(let key, let inPerson) = env.viewModel.state else {
             Issue.record("Expected .confirming, got \(env.viewModel.state)")
             return
         }
+        #expect(inPerson)
         #expect(key.name == "Ada Lovelace")
         // The displayed fingerprint is the locally computed one.
         #expect(key.fingerprint == syntheticKeyFingerprint)
@@ -399,14 +595,15 @@ private nonisolated let keyJSON = #"""
         ada.emails = [ContactLabeledValue(label: nil, value: "ada@example.com")]
         try await env.repository.saveContact(ada)
 
-        await env.viewModel.handleScannedPayload("https://mail.example.com/api/pgp/qr/key?t=abc")
-        guard case .confirming(let key) = env.viewModel.state else {
+        await env.viewModel.handleScannedPayload(shownCode)
+        guard case .confirming(let key, _) = env.viewModel.state else {
             Issue.record("Expected .confirming, got \(env.viewModel.state)")
             return
         }
-        await env.viewModel.attach(to: ada, key: key)
+        await env.viewModel.confirmFingerprint()
+        await env.viewModel.attach(to: ada)
 
-        #expect(env.viewModel.state == .saved("Ada Lovelace"))
+        #expect(env.viewModel.state == .saved(name: "Ada Lovelace", inPerson: true))
         let pending = try await env.dao.listPendingSync()
         let saved = try #require(pending.first { $0.name == "Ada Lovelace" })
         #expect(saved.pgpKey == key.publicKey)
@@ -415,15 +612,16 @@ private nonisolated let keyJSON = #"""
 
     @Test func attachingWithNoContactCreatesOneNamedAfterTheKeysOwner() async throws {
         let env = try makeEnvironment()
-        await env.viewModel.handleScannedPayload("https://mail.example.com/api/pgp/qr/key?t=abc")
-        guard case .confirming(let key) = env.viewModel.state else {
+        await env.viewModel.handleScannedPayload(shownCode)
+        guard case .confirming(let key, _) = env.viewModel.state else {
             Issue.record("Expected .confirming, got \(env.viewModel.state)")
             return
         }
+        await env.viewModel.confirmFingerprint()
 
-        await env.viewModel.attach(to: nil, key: key)
+        await env.viewModel.attach(to: nil)
 
-        #expect(env.viewModel.state == .saved("Ada Lovelace"))
+        #expect(env.viewModel.state == .saved(name: "Ada Lovelace", inPerson: true))
         let pending = try await env.dao.listPendingSync()
         let created = try #require(pending.first { $0.name == "Ada Lovelace" })
         #expect(created.pgpKey == key.publicKey)
@@ -435,12 +633,13 @@ private nonisolated let keyJSON = #"""
         let env = try makeEnvironment(json: keyJSON) { request in
             if request.httpMethod == "POST" { capture.value = request }
         }
-        await env.viewModel.handleScannedPayload("https://mail.example.com/api/pgp/qr/key?t=abc")
-        guard case .confirming(let key) = env.viewModel.state else {
+        await env.viewModel.handleScannedPayload(shownCode)
+        guard case .confirming(let key, _) = env.viewModel.state else {
             Issue.record("Expected .confirming, got \(env.viewModel.state)")
             return
         }
-        await env.viewModel.attach(to: nil, key: key)
+        await env.viewModel.confirmFingerprint()
+        await env.viewModel.attach(to: nil)
 
         // The sync response decodes as an empty delta; we only care about the
         // body that went up.
@@ -450,6 +649,87 @@ private nonisolated let keyJSON = #"""
         let json = String(decoding: body, as: UTF8.self)
         #expect(json.contains("\"pgpKey\""))
         #expect(json.contains("BEGIN PGP PUBLIC KEY BLOCK"))
+    }
+
+    // MARK: The three outcomes of the shown fingerprint
+
+    private func adaWithEmail(_ env: Environment) async throws -> Contact {
+        var ada = Contact(name: "Ada Lovelace", createdAt: Date(), updatedAt: Date())
+        ada.emails = [ContactLabeledValue(label: nil, value: "ada@example.com")]
+        try await env.repository.saveContact(ada)
+        return ada
+    }
+
+    @Test func aMatchingShownFingerprintSavesTheKeyAsVerifiedInPerson() async throws {
+        let env = try makeEnvironment()
+        let ada = try await adaWithEmail(env)
+
+        await env.viewModel.handleScannedPayload(shownCode)
+        #expect(env.viewModel.state == .confirming(
+            PgpQrKeyResponse(
+                name: "Ada Lovelace",
+                fingerprint: syntheticKeyFingerprint,
+                publicKey: fixtureArmoredKey
+            ),
+            inPerson: true
+        ))
+        await env.viewModel.confirmFingerprint()
+        await env.viewModel.attach(to: ada)
+
+        #expect(env.viewModel.state == .saved(name: "Ada Lovelace", inPerson: true))
+        #expect(env.pins.pin(for: "ada@example.com")?.fingerprint == syntheticKeyFingerprint)
+    }
+
+    @Test func aDifferentShownFingerprintRefusesAndSavesNothing() async throws {
+        let env = try makeEnvironment()
+
+        await env.viewModel.handleScannedPayload(
+            plainCode + "#fp=AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555"
+        )
+
+        #expect(env.viewModel.state == .failed(
+            message: ScanPgpKeyViewModel.notTheShownKey,
+            canRescan: true
+        ))
+        // No contact picker, so no path to a save.
+        await env.viewModel.confirmFingerprint()
+        await env.viewModel.attach(to: nil)
+        #expect(try await env.dao.listPendingSync().isEmpty)
+        #expect(env.pins.all().isEmpty)
+    }
+
+    @Test func aMalformedShownFingerprintRefusesWithoutTouchingTheNetwork() async throws {
+        let capture = Box<URLRequest?>(nil)
+        let env = try makeEnvironment { capture.value = $0 }
+
+        await env.viewModel.handleScannedPayload(
+            plainCode + "#fp=6853864ff482dcf29cd0cb0e56cd3b5cb8625680"
+        )
+
+        #expect(env.viewModel.state == .failed(
+            message: ScanPgpKeyViewModel.notTheShownKey,
+            canRescan: true
+        ))
+        #expect(capture.value == nil)
+    }
+
+    @Test func aCodeWithoutAShownFingerprintSavesTheKeyOnlyAsUnverified() async throws {
+        let env = try makeEnvironment()
+        let ada = try await adaWithEmail(env)
+
+        await env.viewModel.handleScannedPayload(plainCode)
+        guard case .confirming(_, let inPerson) = env.viewModel.state else {
+            Issue.record("Expected .confirming, got \(env.viewModel.state)")
+            return
+        }
+        #expect(!inPerson)
+        await env.viewModel.confirmFingerprint()
+        await env.viewModel.attach(to: ada)
+
+        #expect(env.viewModel.state == .saved(name: "Ada Lovelace", inPerson: false))
+        let saved = try #require(try await env.dao.listPendingSync().first { $0.name == "Ada Lovelace" })
+        #expect(saved.pgpKey == fixtureArmoredKey)
+        #expect(env.pins.pin(for: "ada@example.com") == nil)
     }
 
     @Test func rescanClearsThePastedLinkSoTheOldOneIsNotResubmitted() async throws {
