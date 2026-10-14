@@ -41,9 +41,10 @@ concurrency:
 
 jobs:
   test:
-    # macos-26, not macos-15: this project's deployment target is 26.5, and the
-    # macos-15 images top out at Xcode 26.3 / SDK 26.3. A deployment target
-    # newer than the SDK cannot build, which is what the first run hit.
+    # macos-26, not macos-15: the macos-15 images top out at Xcode 26.3 /
+    # SDK 26.3. The deployment target is 26.0 now, but it was 26.5 when the
+    # first run hit a target newer than the SDK, and the newest Xcode 26 is
+    # what release.yml archives with.
     runs-on: macos-26
 
     steps:
@@ -51,7 +52,7 @@ jobs:
 
       - name: Select Xcode
         # This project needs Xcode 26 — README pins the deployment target at
-        # macOS/iOS 26.5. The first cut selected `/Applications/Xcode_16.app`,
+        # macOS/iOS 26.0. The first cut selected `/Applications/Xcode_16.app`,
         # which exists on the image and builds nothing here: xcodebuild exited
         # 70 rather than saying the SDK was too old.
         #
