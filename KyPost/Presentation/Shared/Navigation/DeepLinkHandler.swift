@@ -71,7 +71,7 @@ enum PairingLinkParser {
     /// Parses and validates a pairing link. All required params must be
     /// present and non-empty (spec §1), and `srv`/`reg` must be `https` URLs
     /// (mirrors the same check already applied to the PGP QR-key flow in
-    /// PgpQrClient.keyURL(fromScannedPayload:)).
+    /// PgpQrClient.scannedKeyCode(fromPayload:)).
     static func parse(_ url: URL) throws -> PairingParams {
         guard
             url.scheme?.lowercased() == Config.deepLinkScheme,

@@ -347,7 +347,7 @@ final class SingletonGraph {
 
     // MARK: - Security
 
-    lazy var wipeStateStore = WipeStateStore(defaults: userDefaults)
+    lazy var wipeStateStore = WipeStateStore(defaults: userDefaults, keychain: keychain)
     lazy var securityWipe = SecurityWipe(state: wipeStateStore)
 
     lazy var appLockManager = AppLockManager(store: appLockStore)
@@ -409,6 +409,11 @@ final class SingletonGraph {
     /// UserDefaults-backed stores were built against — the app's in production,
     /// a scratch suite in tests.
     let userDefaults: UserDefaults
+
+    /// Where the account-describing stores keep their values under Hostile
+    /// Location Protection (nil when the mode is off). The graph is rebuilt
+    /// when the mode flips, so this is fixed for a graph's lifetime.
+    let hostileMemoryDefaults: MemoryOnlyDefaults?
 
     /// One-time data backfills after schema migrations (the V1→V2 legacy
     /// email/phone → arrays copy, the V9 email sort-date backfill, and the
@@ -528,13 +533,20 @@ final class SingletonGraph {
         self.keychain = keychain
         appLockStore = AppLockStore(keychain: keychain, defaults: userDefaults)
         securePairingStore = SecurePairingStore(keychain: keychain)
-        keywordSettingsStore = KeywordSettingsStore(defaults: userDefaults)
-        notificationCursorStore = NotificationCursorStore(defaults: userDefaults)
-        contactCursorStore = ContactCursorStore(defaults: userDefaults)
-        contactPendingDeletesStore = ContactPendingDeletesStore(defaults: userDefaults)
-        verifiedPgpKeyStore = VerifiedPgpKeyStore(defaults: userDefaults)
+        // What these stores hold describes the user's mail and contacts —
+        // labels, which contacts exist and which keys were verified, cursor
+        // positions, the cards exported to Contacts — so under Hostile Location
+        // Protection they write nowhere but memory. Their persisted copies are
+        // erased by `AppEnvironment.eraseHostileLocationDefaults`.
+        hostileMemoryDefaults = hostileLocation ? MemoryOnlyDefaults() : nil
+        let accountDefaults: UserDefaults = hostileMemoryDefaults ?? userDefaults
+        keywordSettingsStore = KeywordSettingsStore(defaults: accountDefaults)
+        notificationCursorStore = NotificationCursorStore(defaults: accountDefaults)
+        contactCursorStore = ContactCursorStore(defaults: accountDefaults)
+        contactPendingDeletesStore = ContactPendingDeletesStore(defaults: accountDefaults)
+        verifiedPgpKeyStore = VerifiedPgpKeyStore(defaults: accountDefaults)
         contactsSettingsStore = ContactsSettingsStore(defaults: userDefaults)
-        systemContactsLinkStore = SystemContactsLinkStore(defaults: userDefaults)
+        systemContactsLinkStore = SystemContactsLinkStore(defaults: accountDefaults)
         systemContactsBaselineStore = SystemContactsBaselineStore(defaults: userDefaults)
         pushSettingsStore = PushSettingsStore(defaults: userDefaults)
         desktopSessionStore = DesktopSessionStore(keychain: keychain)

@@ -211,15 +211,17 @@ func makeLockStore(defaults: UserDefaults? = nil) -> AppLockStore {
         let store = makeLockStore()
         #expect(store.failedAttempts == 0)
         try store.setFailedAttempts(4)
-        try store.setLockout(untilMillis: 5_000, durationMillis: 30_000)
+        try store.setLockout(untilMillis: 5_000, durationMillis: 30_000, bootId: "boot-a")
         #expect(store.failedAttempts == 4)
         #expect(store.lockoutUntilMillis == 5_000)
         #expect(store.lockoutDurationMillis == 30_000)
+        #expect(store.lockoutBootId == "boot-a")
 
         try store.resetFailedAttempts()
         #expect(store.failedAttempts == 0)
         #expect(store.lockoutUntilMillis == 0)
         #expect(store.lockoutDurationMillis == 0)
+        #expect(store.lockoutBootId == nil)
     }
 
     @Test func aHalfWrittenVerifierIsUnreadableRatherThanAbsent() throws {

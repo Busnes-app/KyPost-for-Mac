@@ -214,10 +214,10 @@ per-address on-device pin before — `VerifiedPgpKeyStore` is per-uid memory for
 holding a synced key change for review, and the relay's TOFU (`key_changed`)
 is the server's pin, not this device's.
 
-- **A key verified here by QR is authoritative for its addresses.** The QR
-  save (`saveContact(_:verifiedInPerson: true)`) pins the contact's key for
-  each of its emails, replacing what was pinned; re-scanning is how a pin
-  changes. A contact with no email gets no pin. Sync never writes a pin.
+- **A key verified here by QR is authoritative for its addresses.** A QR
+  save whose code carried a matching `#fp=` (`saveContact(_:verifiedInPerson:
+  true)`, see "In-person key exchange") pins the contact's key for each of its
+  emails, replacing what was pinned; re-scanning is how a pin changes. A contact with no email gets no pin. Sync never writes a pin.
 - **The one thing a synced copy may do is revoke it**, recorded on every
   contact write (sync and local), never on a lookup:
   `PgpKeyRevocation.withRevocations` takes only revocation signatures of
@@ -261,6 +261,24 @@ is the server's pin, not this device's.
   defaults when the mode turns on and at every launch while it is on
   (`AppEnvironment.eraseHostileLocationDefaults`) — swept by the wipe, cleared
   on unpair.
+
+### In-person key exchange (`Data/Networking/PgpQrClient.swift`, `PgpQrViewModel.swift`)
+
+Same protocol as KyPost for Android and Linux; change it in all three.
+
+- **The code is the pickup URL plus `#fp=<FPR>`**: the primary key's v4
+  fingerprint, 40 uppercase hex, no spaces. `FPR` is computed from the key
+  this device signs with (`ownPublicKey` → `PgpFingerprint`), never from the
+  server and never from `VaultRecord.identityFingerprint` (a legacy record's
+  came from the server). `qrPayload` drops any fragment the server's URL had.
+- **No key held: no `fp`.** The screen shows bootstrap's fingerprint, labelled
+  as the server's. An enrolled device offers "Unlock Key to Verify" (presence
+  prompt, `DeviceVaultOpener`); opening the screen never prompts.
+- **Scanning** splits the fragment off before the fetch; it never reaches the
+  server. `fp` equal to the fingerprint of the fetched bytes is the only path
+  to `verifiedInPerson: true`. `fp` different or malformed: refused, nothing
+  saved. `fp` absent: may be saved, never pinned, and the screen says it was
+  not verified in person.
 
 ### Contacts: sync status and vCard export
 
@@ -533,10 +551,27 @@ old sentence edited out.
   advances the wipe counter. Both serialise through one in-flight task: two
   concurrent checks otherwise read the same count, both write `n + 1`, and both
   clear the lockout gate at the same instant.
-- The lockout deadline is on **`CLOCK_MONOTONIC_RAW`**, and clamped to the
-  stored duration. A wall clock is cleared from the Date & Time pane; a
-  monotonic one restarts at zero on reboot, so without the clamp a reboot reads
-  the deadline as the whole previous uptime.
+- The lockout deadline is on **`CLOCK_MONOTONIC_RAW`**, stored with its
+  duration and the boot it was written in (`kern.bootsessionuuid`). A wall
+  clock is cleared from the Date & Time pane; a monotonic one restarts at zero
+  on reboot. A deadline from another boot restarts once as now + duration and
+  is written back (clamping alone froze the countdown for days); within a
+  boot, or with no boot id, it is clamped to the duration. The manager also
+  holds the deadline in memory and gates on the later of the two, so a failed
+  Keychain write is never free guesses.
+- **Whether the app starts locked is decided from `AppLockStore.lockState`,
+  and `.unreadable` is locked.** A Mac login item reads the Keychain before
+  it is ready; reading that as off started the app unlocked and made `lock()`
+  a no-op all session. `refreshLockState` re-reads it (each unlock attempt,
+  and each second the lock screen is up); only an *unresolved* flag that then
+  reads off releases the lock without a prompt.
+- **A device-owner unlock (Touch ID, password) resets the wrong-PIN count and
+  any lockout**, stored and in session, under the same serialisation as the
+  PIN checks. A cancelled prompt (`DeviceAuthOutcome.cancelled`) counts
+  toward nothing; concurrent `requestUnlock` calls share one prompt.
+- **`PinPepper.ensureExists` never downgrades.** With a Secure Enclave present,
+  a failed enclave key throws `PepperUnavailable`; the software pepper is only
+  for machines without one.
 - **The tripwire is armed by `setPin`, not by `setLockEnabled`.** The PIN is
   optional on this platform, so arming it with the toggle would make
   "configured, and the PIN vanished" true immediately and wipe the machine at
@@ -570,10 +605,21 @@ old sentence edited out.
 - **The wipe fails closed.** `WipeResult.complete` is only returned when every
   step ran; a step must not catch its own errors, or the step cannot fail and
   the claim cannot be supported. An incomplete run keeps its marker, resumes at
-  the next launch, and after `SecurityWipe.maxResumes` sets `abandoned` —
-  which stops the retries **without** forgetting. Clearing the marker to
-  express "giving up" is the bug that presented a clean first-run app over data
-  that was never deleted.
+  the next launch, and on its `SecurityWipe.maxAttempts`th (3rd) failed run
+  — the first run plus two resumes — sets `abandoned`, which stops the retries
+  **without** forgetting. Clearing the marker to express "giving up" is the bug
+  that presented a clean first-run app over data that was never deleted.
+- **The lock comes off last, and only after a complete run.** The `appLock`
+  step keeps Require Unlock to Open; `SecurityWipeSteps.releaseLock` (the
+  `release:` step of `SecurityWipe.run`) removes it only when every other step
+  succeeded. An incomplete wipe rebuilds a locked app.
+- **The in-progress and abandoned markers are mirrored into the Keychain**
+  (`WipeStateStore`), and either copy is believed. A Keychain marker with no
+  defaults record (a deleted plist, or a reinstall — Keychain items survive
+  both) resumes the wipe rather than blocking, so reinstalling stays the
+  recovery. An unreadable Keychain reads as no marker.
+- **The failed-unlock reset is this wipe** (`resetAfterFailedUnlock` →
+  `performSecurityWipe`). Never give it a step list of its own.
 - **Order: in-memory plaintext, then local files, then network.** The
   deregister is not a step and is never folded into the result — an unreachable
   relay says nothing about local data, and counting it would keep the resume
@@ -984,6 +1030,51 @@ an event only when asked and syncs no calendar.
 - `Contact.primaryEmail` / `primaryPhone` are `emails.first` / `phones.first`.
   Anything that treats email order as meaningful is suspect; prefer the
   `matchKeys` set.
+
+### Release and store readiness (`.github/workflows/release.yml`, `Distribution/`, `KyPost/PrivacyInfo.xcprivacy`)
+
+- **Signing is automatic, with an App Store Connect API key.** A `v*` tag runs
+  `release.yml` on the `release` environment (create it in GitHub with
+  required reviewers, tags `v*` only). Its secrets are exactly
+  `APP_STORE_CONNECT_PRIVATE_KEY` (.p8, base64), `APP_STORE_CONNECT_KEY_ID`,
+  `APP_STORE_CONNECT_ISSUER_ID`, `APPLE_DEVELOPMENT_CERTIFICATE` (.p12 of an
+  Apple Development identity, base64) and
+  `APPLE_DEVELOPMENT_CERTIFICATE_PASSWORD`. The key must have the **Admin**
+  role: the export signs with the team's cloud-managed Apple Distribution
+  certificate, which App Store Connect refuses to every other role. There is
+  no distribution certificate or profile secret. The development identity is
+  there because xcodebuild otherwise creates a fresh development certificate
+  per runner and refuses on the next one (release.yml's header has the
+  detail). Both `Distribution/ExportOptions-*.plist` say `signingStyle
+  automatic`.
+- **The build number is the workflow run**, `<run_number>.<run_attempt>`,
+  passed as `CURRENT_PROJECT_VERSION` to archive and checked in the archive
+  before upload. `project.pbxproj` keeps `1`; do not commit CI's value back.
+  `scripts/verify-version.sh` checks only `MARKETING_VERSION` against the tag.
+- **The privacy manifest covers the GopenPGP archive.** The XCFramework is a
+  static Go archive with no manifest of its own, so its required-reason
+  imports are declared in ours: file timestamp `C617.1` (`stat` family, plus
+  `SignOnHandoff`'s `.contentModificationDateKey`), system boot time `35F9.1`
+  (`mach_absolute_time`, the Go runtime's clock), user defaults `CA92.1`.
+  After a GopenPGP bump, re-check with `nm -u` on the framework binary for
+  `stat`, `statfs`, `getattrlist`, `mach_absolute_time` and similar.
+  `AppBundleTests` pins the declared set.
+- **Acknowledgements are resources**, `KyPost/Resources/Acknowledgements/`:
+  `Acknowledgements.json` plus one `.txt` licence per entry, loaded by
+  `Acknowledgement.load()`. The list follows the modules actually linked into
+  the GopenPGP binary (go.mod of the pinned tag, checked against the module
+  paths in the binary's strings); test-only modules are not listed. A
+  GopenPGP bump re-checks that list and refreshes the texts from upstream.
+- **No AGENTS.md ships in the app.** The `KyPost` folder is a synchronized
+  root group, so every file under it is copied into the bundle unless
+  `project.pbxproj` lists it in `membershipExceptions`. A new AGENTS.md under
+  `KyPost/` gets an exception in the same change; `AppBundleTests` fails
+  otherwise.
+- Deployment target is **macOS and iOS 26.0** in every configuration;
+  platforms are iPhone, iPad and Mac only (no visionOS). An API newer than
+  26.0 needs `#available`.
+- France is not in the App Store availability list, so no ANSSI encryption
+  declaration is filed. Adding France means filing one first.
 
 ## User Preferences
 
