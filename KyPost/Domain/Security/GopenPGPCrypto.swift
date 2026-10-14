@@ -176,18 +176,33 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
     }
 
     func userIDAddresses(ofArmoredPublicKey key: String) -> [String] {
-        // The ring's identities are the ones the library kept on reading the
-        // key — a User ID without a valid self-signature is not among them.
-        guard let ring = try? keyRing(fromArmored: [key]),
-              ring.countEntities() > 0,
-              let json = ring.getIdentitiesJson(),
-              let identities = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]]
+        // Not the library's identity list as read: go-crypto keeps every User
+        // ID that a signature merely *claims* to certify (`readUser` checks the
+        // issuer, not the signature), so a relay could append an address the
+        // key's owner never certified. Each User ID is judged alone instead.
+        // A copy of the key holding only that one can verify only if the
+        // library finds a valid, unrevoked self-certification for it
+        // (`PrimarySelfSignature` → `PrimaryIdentity` → `Identity.Verify`).
+        //
+        // v4 only: a v6 key's validity comes from its direct-key signature, so
+        // there the check proves nothing and no address is used.
+        guard let sections = OpenPgpKeySections(armored: key),
+              let userIDs = sections.userIDs,
+              Self.key(sections)?.getVersion() == 4
         else { return [] }
+        let now = Int64(Date().timeIntervalSince1970)
         var seen = Set<String>()
-        return identities.compactMap { identity in
+        return userIDs.indices.compactMap { index in
+            guard let alone = sections.isolating(userID: index).flatMap(Self.key),
+                  alone.canVerify(now),
+                  let ring = CryptoKeyRing(alone),
+                  let json = ring.getIdentitiesJson(),
+                  let identities = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]],
+                  identities.count == 1
+            else { return nil }
             // Go's default JSON field name is `Email`; accept either case.
             // Owner-chosen text: anything not one plain address is dropped.
-            let raw = (identity["Email"] ?? identity["email"]) as? String ?? ""
+            let raw = (identities[0]["Email"] ?? identities[0]["email"]) as? String ?? ""
             guard let email = plainAddress(raw), seen.insert(email).inserted else { return nil }
             return email
         }
