@@ -23,7 +23,7 @@ struct ContactSuggestionsDropdown: View {
             if matches.isEmpty {
                 Text("No contacts found")
                     .font(AppFont.ui(13))
-                    .foregroundStyle(theme.ink.opacity(0.6))
+                    .foregroundStyle(theme.secondaryInk)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
             } else {
@@ -63,7 +63,7 @@ struct ContactSuggestionsDropdown: View {
                     font: AppFont.mono(11),
                     highlightFont: AppFont.mono(11, weight: .bold)
                 )
-                .foregroundStyle(theme.ink.opacity(0.8))
+                .foregroundStyle(theme.secondaryInk)
                 .lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -71,7 +71,7 @@ struct ContactSuggestionsDropdown: View {
             if let label = match.entry.addressLabel, !label.isEmpty {
                 Text(label)
                     .font(AppFont.ui(10))
-                    .foregroundStyle(theme.ink.opacity(0.6))
+                    .foregroundStyle(theme.secondaryInk)
             }
         }
         .padding(.horizontal, 10)

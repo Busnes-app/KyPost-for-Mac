@@ -50,8 +50,8 @@ import Testing
 
     /// Web buttonText: white on Busnes Light's orange, charcoal on Dark's.
     @Test func busnesAccentsGetTheWebsButtonTextContrast() {
-        #expect(AppTheme.palette(named: "Busnes Light").readableOnAccent == .white)
-        #expect(AppTheme.palette(named: "Busnes Dark").readableOnAccent != .white)
+        #expect(AppTheme.palette(named: "Busnes Light").hex.readableOnAccent == 0xFFFFFF)
+        #expect(AppTheme.palette(named: "Busnes Dark").hex.readableOnAccent == 0x1A1A1E)
     }
 
     @Test func spotCheckHexValuesAgainstThemeTs() {
@@ -88,6 +88,97 @@ import Testing
         #expect(Color(hex: 0x00F5D4).isPerceptuallyLight)
         // Ocean's deep accentSoft is dark.
         #expect(!Color(hex: 0x214657).isPerceptuallyLight)
+    }
+}
+
+// MARK: - WCAG AA
+
+/// Every text color the app puts on a theme background, in every theme,
+/// reads at least 4.5:1 (WCAG 2.x AA, normal text).
+@Suite struct ThemeContrastTests {
+    private struct Pair {
+        let name: String
+        let text: UInt32
+        let background: UInt32
+    }
+
+    private func pairs(_ palette: ThemePalette) -> [Pair] {
+        let hex = palette.hex
+        let light = palette.isLight
+        let danger = light ? SemanticColors.dangerLight : SemanticColors.dangerDark
+        let success = light ? SemanticColors.successLight : SemanticColors.successDark
+        let warning = light ? SemanticColors.warningLight : SemanticColors.warningDark
+        var pairs = [Pair(name: "readableOnAccent/accent", text: hex.readableOnAccent, background: hex.accent)]
+        for (surface, background) in [("bg", hex.bg), ("panel", hex.panel)] {
+            let dangerFill = Contrast.mix(
+                SemanticColors.dangerFillBase, over: background, alpha: SemanticColors.dangerFillOpacity
+            )
+            pairs += [
+                Pair(name: "ink/\(surface)", text: hex.ink, background: background),
+                Pair(name: "inkStrong/\(surface)", text: hex.inkStrong, background: background),
+                Pair(name: "secondaryInk/\(surface)", text: hex.secondaryInk, background: background),
+                Pair(name: "link/\(surface)", text: hex.link, background: background),
+                Pair(name: "danger/\(surface)", text: danger, background: background),
+                Pair(name: "danger/dangerFill over \(surface)", text: danger, background: dangerFill),
+                Pair(name: "inkStrong/dangerFill over \(surface)", text: hex.inkStrong, background: dangerFill),
+                Pair(name: "success/\(surface)", text: success, background: background),
+                Pair(name: "warning/\(surface)", text: warning, background: background),
+            ]
+        }
+        return pairs
+    }
+
+    @Test(arguments: AppTheme.themeNames)
+    func everyTextPairReachesAA(_ name: String) {
+        for pair in pairs(AppTheme.palette(named: name)) {
+            let ratio = Contrast.ratio(pair.text, pair.background)
+            #expect(
+                ratio >= Contrast.minimum,
+                "\(name) \(pair.name): \(String(format: "%.2f", ratio)):1"
+            )
+        }
+    }
+
+    /// The reference values from the WCAG definition, so the formula itself
+    /// is checked and not only its use.
+    @Test func ratioMatchesTheWcagDefinition() {
+        #expect(Contrast.ratio(0x000000, 0xFFFFFF) == 21)
+        #expect(Contrast.ratio(0x777777, 0x777777) == 1)
+        #expect(abs(Contrast.ratio(0x767676, 0xFFFFFF) - 4.54) < 0.01)
+    }
+
+    /// The pairs the hostile review measured, now fixed — and the old values
+    /// shown to have failed, so the test cannot pass by testing nothing.
+    @Test func theReviewedFailuresWereRealAndAreGone() {
+        #expect(Contrast.ratio(0xFF5F5F, 0xFFFFFF) < 4.5)
+        #expect(Contrast.ratio(0xA5DCA5, 0xFFFFFF) < 4.5)
+        #expect(Contrast.ratio(0x64748B, 0x0D0F14) < 4.5)
+        let busnes = AppTheme.palette(named: "Busnes Light").hex
+        #expect(Contrast.ratio(Contrast.mix(busnes.ink, over: busnes.bg, alpha: 0.7), busnes.bg) < 4.5)
+        #expect(Contrast.ratio(AppTheme.palette(named: "Tropics").hex.accent, 0xF4F1EB) < 4.5)
+
+        #expect(AppTheme.palette(named: "Patina Ky").hex.ink == 0x7C8BA1)
+        #expect(AppTheme.palette(named: "Tropics").hex.link != AppTheme.palette(named: "Tropics").hex.accent)
+        // A theme whose accent already reads keeps it as the link color.
+        #expect(AppTheme.palette(named: "Busnes Light").hex.link == 0xBF3F18)
+    }
+
+    /// The light/dark semantic colors resolve by appearance, which every
+    /// scene sets from the theme.
+    @Test @MainActor func semanticTextColorsFollowTheAppearance() {
+        var light = EnvironmentValues()
+        light.colorScheme = .light
+        var dark = EnvironmentValues()
+        dark.colorScheme = .dark
+        func hex(_ color: Color, _ environment: EnvironmentValues) -> UInt32 {
+            let resolved = color.resolve(in: environment)
+            func channel(_ value: Float) -> UInt32 { UInt32((max(0, min(1, value)) * 255).rounded()) }
+            return channel(resolved.red) << 16 | channel(resolved.green) << 8 | channel(resolved.blue)
+        }
+        #expect(hex(SemanticColors.danger, light) == SemanticColors.dangerLight)
+        #expect(hex(SemanticColors.danger, dark) == SemanticColors.dangerDark)
+        #expect(hex(SemanticColors.successText, light) == SemanticColors.successLight)
+        #expect(hex(SemanticColors.successText, dark) == SemanticColors.successDark)
     }
 }
 

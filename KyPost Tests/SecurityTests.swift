@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import LocalAuthentication
 import Testing
 @testable import KyPost
 
@@ -507,6 +508,179 @@ private final class StubGatedStore: GatedCredentialStoring {
         #expect(!manager.isLocked)
         #expect(!store.lockEnabled)
     }
+
+    /// Dismissing the prompt — or the system taking it down — says nothing
+    /// about whether the device can still authenticate, so it must not move
+    /// the destructive reset closer.
+    @Test func aCancelledPromptIsNotAFailure() async throws {
+        let store = makeLockStore()
+        try store.setLockEnabled(true)
+        let manager = AppLockManager(store: store, authenticator: OutcomeAuthenticator(.cancelled))
+        for _ in 0..<5 { #expect(await !manager.requestUnlock()) }
+        #expect(manager.isLocked)
+        #expect(manager.failedUnlockAttempts == 0)
+        #expect(!manager.shouldOfferReset)
+    }
+
+    /// Every macOS window carries a lock screen. Asking at once must raise one
+    /// prompt, not one per window, and every caller gets its answer.
+    @Test func concurrentUnlockRequestsShareOnePrompt() async throws {
+        let store = makeLockStore()
+        try store.setLockEnabled(true)
+        let gate = GatedAuthenticator()
+        let manager = AppLockManager(store: store, authenticator: gate)
+
+        async let first = manager.requestUnlock()
+        async let second = manager.requestUnlock()
+        async let third = manager.requestUnlock()
+        while gate.calls.value == 0 { await Task.yield() }
+        gate.release(.success)
+        let results = await [first, second, third]
+
+        #expect(results == [true, true, true])
+        #expect(gate.calls.value == 1)
+        #expect(!manager.isLocked)
+    }
+
+    /// The automatic prompt is raised once per lock, whichever window asks
+    /// first; the Unlock button still prompts on demand.
+    @Test func theAutomaticPromptIsRaisedOncePerLock() async throws {
+        let store = makeLockStore()
+        try store.setLockEnabled(true)
+        let stub = StubAuthenticator(authResult: false)
+        let manager = AppLockManager(store: store, authenticator: stub)
+
+        await manager.autoPromptUnlock()
+        await manager.autoPromptUnlock()
+        #expect(stub.authenticateCalls.value == 1)
+
+        await manager.requestUnlock()
+        #expect(stub.authenticateCalls.value == 2)
+    }
+
+    @Test func aNewLockGetsANewAutomaticPrompt() async throws {
+        let store = makeLockStore()
+        try store.setLockEnabled(true)
+        let stub = StubAuthenticator()
+        let manager = AppLockManager(store: store, authenticator: stub)
+
+        await manager.autoPromptUnlock()
+        #expect(!manager.isLocked)
+        manager.lock()
+        await manager.autoPromptUnlock()
+        #expect(stub.authenticateCalls.value == 2)
+    }
+}
+
+// MARK: - An unreadable lock flag is a locked app
+
+@MainActor
+@Suite struct UnreadableLockStateTests {
+    private func manager(
+        _ state: Box<AppLockStore.FlagState>,
+        authenticator: any DeviceAuthenticating = StubAuthenticator()
+    ) -> AppLockManager {
+        AppLockManager(store: makeLockStore(), authenticator: authenticator, readLockState: { state.value })
+    }
+
+    /// `errSecInteractionNotAllowed` at launch is normal for a Mac login
+    /// item. Reading it as "off" started the app unlocked and made `lock()`
+    /// a no-op for the whole session.
+    @Test func anUnreadableFlagStartsLocked() {
+        let lock = manager(Box(.unreadable))
+        #expect(lock.isLocked)
+        #expect(lock.isLockEnabled)
+        #expect(lock.isLockStateUnresolved)
+    }
+
+    @Test func lockStillEngagesAfterAnUnreadableLaunch() async {
+        let lock = manager(Box(.unreadable))
+        #expect(await lock.requestUnlock())
+        lock.lock()
+        #expect(lock.isLocked)
+    }
+
+    /// Once the Keychain answers "off", the lock was never on: it lifts
+    /// without a prompt.
+    @Test func aLaterOffReleasesWithoutAPrompt() {
+        let state = Box(AppLockStore.FlagState.unreadable)
+        let stub = StubAuthenticator()
+        let lock = manager(state, authenticator: stub)
+        let unlocked = Box(0)
+        lock.onUnlock = { unlocked.mutate { $0 += 1 } }
+
+        lock.refreshLockState()
+        #expect(lock.isLocked)
+
+        state.value = .off
+        lock.refreshLockState()
+        #expect(!lock.isLocked)
+        #expect(!lock.isLockEnabled)
+        #expect(!lock.isLockStateUnresolved)
+        #expect(unlocked.value == 1)
+        #expect(stub.authenticateCalls.value == 0)
+    }
+
+    @Test func aLaterOnKeepsItLocked() {
+        let state = Box(AppLockStore.FlagState.unreadable)
+        let lock = manager(state)
+        state.value = .on
+        lock.refreshLockState()
+        #expect(lock.isLocked)
+        #expect(lock.isLockEnabled)
+        #expect(!lock.isLockStateUnresolved)
+    }
+
+    /// The unlock path re-reads first, so a Keychain that became readable
+    /// and says "off" does not ask for anything.
+    @Test func requestUnlockReReadsTheFlag() async {
+        let state = Box(AppLockStore.FlagState.unreadable)
+        let stub = StubAuthenticator()
+        let lock = manager(state, authenticator: stub)
+        state.value = .off
+        #expect(await lock.requestUnlock())
+        #expect(stub.authenticateCalls.value == 0)
+    }
+
+    /// Only an *unresolved* flag may release the lock. One that read "on" and
+    /// later reads "off" is not a reason to open the app mid-session.
+    @Test func aResolvedFlagIsNotReReadIntoAnUnlock() {
+        let state = Box(AppLockStore.FlagState.on)
+        let lock = manager(state)
+        state.value = .off
+        lock.refreshLockState()
+        #expect(lock.isLocked)
+    }
+}
+
+/// Answers every prompt with one outcome.
+private struct OutcomeAuthenticator: DeviceAuthenticating {
+    let outcome: DeviceAuthOutcome
+    init(_ outcome: DeviceAuthOutcome) { self.outcome = outcome }
+    func canAuthenticate() -> Bool { true }
+    func authenticate(reason: String) async -> Bool { outcome == .success }
+    func authenticateForUnlock(reason: String) async -> (outcome: DeviceAuthOutcome, context: LAContext?) {
+        (outcome, nil)
+    }
+}
+
+/// Holds every prompt open until the test releases it.
+private final class GatedAuthenticator: DeviceAuthenticating, @unchecked Sendable {
+    let calls = Box(0)
+    private let result = Box<DeviceAuthOutcome?>(nil)
+
+    func canAuthenticate() -> Bool { true }
+    func authenticate(reason: String) async -> Bool { await authenticateForUnlock(reason: reason).outcome == .success }
+
+    func authenticateForUnlock(reason: String) async -> (outcome: DeviceAuthOutcome, context: LAContext?) {
+        calls.mutate { $0 += 1 }
+        while true {
+            if let outcome = result.value { return (outcome, nil) }
+            await Task.yield()
+        }
+    }
+
+    func release(_ outcome: DeviceAuthOutcome) { result.value = outcome }
 }
 
 @MainActor
@@ -529,10 +703,16 @@ private final class StubGatedStore: GatedCredentialStoring {
         router.handle(.openMfaApproval(challenge))
         #expect(router.mfaRoute == nil)
 
-        router.handle(.openDesktopPairingFlow(
-            DesktopPairingParams(code: String(repeating: "a", count: 32), srv: "https://x.example")
-        ))
-        #expect(router.desktopPairingParams == nil)
+        router.handle(.openPairingFlow(PairingParams(sub: "u", srv: "https://x.example", pt: "p")))
+        #expect(router.pairingParams == nil)
+    }
+
+    /// Desktop pairing is gone: its link opens nothing.
+    @Test func aDesktopPairLinkIsNotRouted() {
+        let router = makeRouter(locked: false)
+        router.handleURL(URL(string: "kypost://desktop-pair?code=\(String(repeating: "a", count: 32))&srv=https://x.example")!)
+        #expect(router.pairingParams == nil)
+        #expect(DeepLinkHandler().handle(URL(string: "kypost://desktop-pair?code=c&srv=https://x.example")!) == nil)
     }
 
     @Test func theDeferredActionReplaysOnUnlock() {
@@ -558,7 +738,6 @@ private final class StubGatedStore: GatedCredentialStoring {
         router.dismissPresentedRoutes()
         #expect(router.mfaRoute == nil)
         #expect(router.pairingParams == nil)
-        #expect(router.desktopPairingParams == nil)
     }
 
     @Test func routingWorksNormallyWhileUnlocked() {

@@ -42,7 +42,7 @@ struct AppPinSetupView: View {
 
             Text(consequence)
                 .font(AppFont.ui(12))
-                .foregroundStyle(theme.ink.opacity(0.85))
+                .foregroundStyle(theme.secondaryInk)
                 .frame(maxWidth: 380, alignment: .leading)
 
             if isChange {

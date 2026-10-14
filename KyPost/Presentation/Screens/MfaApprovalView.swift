@@ -43,7 +43,7 @@ struct MfaApprovalView: View {
 
                 Text(viewModel.challengeId)
                     .font(AppFont.mono(12))
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                    .foregroundStyle(theme.secondaryInk)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(theme.panel, in: Capsule())

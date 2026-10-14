@@ -53,7 +53,7 @@ struct RecipientTokenField: View {
                 onRemove(token)
             } label: {
                 Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(theme.ink.opacity(0.6))
+                    .foregroundStyle(theme.secondaryInk)
             }
             .buttonStyle(.plain)
             .help("Remove \(token.address)")

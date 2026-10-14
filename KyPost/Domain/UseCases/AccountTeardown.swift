@@ -13,6 +13,12 @@ import os
 
 @MainActor
 struct AccountTeardown {
+    /// Set when this session runs in memory over a store file it kept
+    /// (`AppDatabase.erasePreservedStore`): the account's mail and contacts
+    /// on disk were never in the stores the steps below clear. Required, nil
+    /// where no store was kept (`SingletonGraph.erasePreservedStoreStep`), so
+    /// no call site can drop it without saying so.
+    let erasePreservedStore: (() -> Bool)?
     var enrollmentVault: EnrollmentVault?
     var pushRepository: PushRepository?
     var recipientPinStore: RecipientPinStore?
@@ -34,6 +40,12 @@ struct AccountTeardown {
         // otherwise commit it — with the credentials it was bound to —
         // while a later step awaits. Dropped, not sent.
         forgetInbox?()
+        // Also before any suspension. A failed delete still leaves the erase
+        // marked, so no later launch opens the file: the step cannot leave
+        // the data reachable, and does not fail the teardown.
+        if let erasePreservedStore, !erasePreservedStore() {
+            Log.storage.error("A kept store could not be erased yet; it is erased before it next opens")
+        }
         // The envelope is the account's private key sealed to *this* device;
         // left behind, it outlives the pairing that authorised putting it
         // here. The in-memory copy goes with it — destroying the sealed blob
@@ -65,6 +77,9 @@ struct AccountTeardown {
             Log.mail.error("Could not clear cached mail on leaving the account: \(error)")
             complete = false
         }
+        // Relay responses an older build's `.default` session cached on disk,
+        // and any cookies it kept. The relay session no longer writes either.
+        PinnedSessionDelegate.purgeLegacySharedHTTPState()
         // Again, now the cache is empty: rows the inbox repainted from it
         // while a step above awaited are the account just left.
         forgetInbox?()

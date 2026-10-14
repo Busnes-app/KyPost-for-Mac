@@ -48,4 +48,12 @@ final class KeywordSettingsStore {
     func setOrder(_ keywords: [String]) {
         defaults.set(keywords, forKey: Self.orderKey)
     }
+
+    /// Forgets every keyword setting. The keyword names are the user's
+    /// labels, so Hostile Location Protection erases the persisted copy.
+    func clear() {
+        for key in [Self.visibilityKey, Self.orderKey, Self.allTabVisibleKey] {
+            defaults.removeObject(forKey: key)
+        }
+    }
 }

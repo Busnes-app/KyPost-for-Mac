@@ -328,8 +328,8 @@ private struct UnlockingAuthenticator: DeviceAuthenticating {
     let context: LAContext
     func canAuthenticate() -> Bool { true }
     func authenticate(reason: String) async -> Bool { true }
-    func authenticateForUnlock(reason: String) async -> (succeeded: Bool, context: LAContext?) {
-        (true, context)
+    func authenticateForUnlock(reason: String) async -> (outcome: DeviceAuthOutcome, context: LAContext?) {
+        (.success, context)
     }
 }
 

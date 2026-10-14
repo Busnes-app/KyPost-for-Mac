@@ -28,10 +28,25 @@ final class ContactCursorStore {
         defaults.set(cursor, forKey: Self.key)
     }
 
-    /// Discards the cursor after a `tooOld` response so the next sync is a
-    /// full re-pull from 0 (Mobile_Contact_Sync.md).
+    /// Discards the cursor so the next sync is a full re-pull from 0: after a
+    /// `tooOld` response (Mobile_Contact_Sync.md), when the contacts table is
+    /// empty, and whenever the store files are deleted. A cursor describes
+    /// rows this device holds; kept past them, the next pull is a delta and
+    /// the address book stays empty.
     func reset() {
         defaults.removeObject(forKey: Self.key)
+    }
+
+    private static let createsInFlightKey = "contacts.createsInFlight"
+
+    /// Set while a push carrying creates has not been answered. A create the
+    /// relay committed but whose response was lost has no uid here, so the
+    /// next sync would send it again as a new contact; while this is set the
+    /// next sync first pulls and reconciles pending creates against what the
+    /// server already has (`ContactSyncRepository.reconcileUnansweredCreates`).
+    var createsInFlight: Bool {
+        get { defaults.bool(forKey: Self.createsInFlightKey) }
+        set { defaults.set(newValue, forKey: Self.createsInFlightKey) }
     }
 }
 
@@ -84,7 +99,10 @@ final class VerifiedPgpKeyStore {
 }
 
 /// Uids of contacts deleted locally while unsynced; included as
-/// `{uid, deleted: true}` in the next sync request delta, then cleared.
+/// `{uid, deleted: true}` in the next sync request delta, then removed —
+/// only the uids that request carried (`remove`), so a delete queued while it
+/// was in flight is not dropped unsent. Not cleared by a `tooOld` wipe or by
+/// deleting the store: the delete still has to reach the server.
 final class ContactPendingDeletesStore {
     private static let key = "contacts.pendingDeletes"
     /// When the oldest tombstone still queued was added — the outbox age the
@@ -111,6 +129,18 @@ final class ContactPendingDeletesStore {
 
     var oldestQueuedAt: Date? {
         all().isEmpty ? nil : defaults.object(forKey: Self.sinceKey) as? Date
+    }
+
+    /// Removes the tombstones a sync actually sent. The queue's age is kept
+    /// while anything remains: it may overstate the age, never hide it.
+    func remove(_ sent: [String]) {
+        let sent = Set(sent)
+        let remaining = all().filter { !sent.contains($0) }
+        if remaining.isEmpty {
+            clear()
+        } else {
+            defaults.set(remaining, forKey: Self.key)
+        }
     }
 
     func clear() {

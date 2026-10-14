@@ -8,12 +8,21 @@
 //  Mobile uses bg/panel/ink/inkStrong/accent/line + accentSoft (the one extra
 //  field, needed for the avatar gradient per STYLE_GUIDE §3).
 //
+//  Exception: colors that failed WCAG AA (4.5:1) were changed here, on
+//  purpose, for web and Android to follow — the list is in
+//  Presentation/AGENTS.md, and ThemeContrastTests holds every text pair.
+//
 //  The two Busnes palettes come from the web's ky-ui palettes.ts. Their web
 //  `line` is translucent; `line` here is Android's opaque composite onto
 //  `panel`, because every palette color on both native clients is opaque.
 //
 
 import SwiftUI
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 struct ThemePalette: Equatable, Sendable {
     let bg: Color
@@ -23,10 +32,18 @@ struct ThemePalette: Equatable, Sendable {
     let accent: Color
     let accentSoft: Color
     let line: Color
-
+    /// Secondary text (dates, sizes, captions, hints). Use this, never
+    /// `ink.opacity(…)`: an opacity drops below WCAG AA on several themes.
+    let secondaryInk: Color
+    /// Link colour in the HTML reader (`EmailDetailView.themedHTML`).
+    let link: Color
     /// Readable text color on top of the accent fill (web: buttonText).
-    var readableOnAccent: Color {
-        accent.isPerceptuallyLight ? Color(hex: 0x1A1A1E) : .white
+    let readableOnAccent: Color
+    /// The same colors as sRGB hex, for contrast checks.
+    let hex: Hex
+
+    struct Hex: Equatable, Sendable {
+        let bg, panel, ink, inkStrong, accent, secondaryInk, link, readableOnAccent: UInt32
     }
 
     /// Light themes must run the light system appearance (and vice versa) so
@@ -51,6 +68,83 @@ struct ThemePalette: Equatable, Sendable {
         self.accent = Color(hex: accent)
         self.accentSoft = Color(hex: accentSoft)
         self.line = Color(hex: line)
+        let secondary = Contrast.secondaryInk(ink: ink, bg: bg, panel: panel)
+        let link = Contrast.link(accent: accent, inkStrong: inkStrong, bg: bg, panel: panel)
+        let onAccent = Contrast.readableOn(accent)
+        self.secondaryInk = Color(hex: secondary)
+        self.link = Color(hex: link)
+        self.readableOnAccent = Color(hex: onAccent)
+        hex = Hex(
+            bg: bg, panel: panel, ink: ink, inkStrong: inkStrong, accent: accent,
+            secondaryInk: secondary, link: link, readableOnAccent: onAccent
+        )
+    }
+}
+
+/// WCAG 2.x contrast, and the derived colors that use it. Every text color
+/// the app puts on a theme background reads at least `minimum` (AA, normal
+/// text) — `ThemeContrastTests` checks every theme.
+nonisolated enum Contrast {
+    static let minimum = 4.5
+
+    /// WCAG relative luminance of an sRGB hex color.
+    static func luminance(_ hex: UInt32) -> Double {
+        func channel(_ shift: UInt32) -> Double {
+            let value = Double((hex >> shift) & 0xFF) / 255
+            return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+
+    static func ratio(_ a: UInt32, _ b: UInt32) -> Double {
+        let (x, y) = (luminance(a), luminance(b))
+        return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+    }
+
+    /// `foreground` laid over `background` at `alpha`, as an opaque color.
+    static func mix(_ foreground: UInt32, over background: UInt32, alpha: Double) -> UInt32 {
+        func channel(_ shift: UInt32) -> UInt32 {
+            let f = Double((foreground >> shift) & 0xFF)
+            let b = Double((background >> shift) & 0xFF)
+            return UInt32((alpha * f + (1 - alpha) * b).rounded()) << shift
+        }
+        return channel(16) | channel(8) | channel(0)
+    }
+
+    static func readsOn(_ text: UInt32, _ backgrounds: UInt32...) -> Bool {
+        backgrounds.allSatisfy { ratio(text, $0) >= minimum }
+    }
+
+    /// `ink` faded toward `bg` as the old `ink.opacity(0.7)` did, but only as
+    /// far as AA allows on both `bg` and `panel`; at worst `ink` itself.
+    static func secondaryInk(ink: UInt32, bg: UInt32, panel: UInt32) -> UInt32 {
+        for step in 0...6 {
+            let candidate = mix(ink, over: bg, alpha: 0.7 + Double(step) * 0.05)
+            if readsOn(candidate, bg, panel) { return candidate }
+        }
+        return ink
+    }
+
+    /// The accent where it reads on `bg` and `panel`, else the accent moved
+    /// toward `inkStrong` until it does — keeping some of the accent's hue
+    /// on the light themes whose accent is a pale fill color.
+    static func link(accent: UInt32, inkStrong: UInt32, bg: UInt32, panel: UInt32) -> UInt32 {
+        for step in 0...20 {
+            let candidate = mix(inkStrong, over: accent, alpha: Double(step) * 0.05)
+            if readsOn(candidate, bg, panel) { return candidate }
+        }
+        return inkStrong
+    }
+
+    /// The web's buttonText choice (charcoal on a light accent, white on a
+    /// dark one), switched to the other when that one does not reach AA.
+    static func readableOn(_ accent: UInt32) -> UInt32 {
+        let charcoal: UInt32 = 0x1A1A1E, white: UInt32 = 0xFFFFFF
+        // The same weighting as `Color.isPerceptuallyLight`.
+        let r = Double((accent >> 16) & 0xFF), g = Double((accent >> 8) & 0xFF), b = Double(accent & 0xFF)
+        let preferred = (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? charcoal : white
+        let other = preferred == white ? charcoal : white
+        return ratio(preferred, accent) >= minimum ? preferred : other
     }
 }
 
@@ -132,8 +226,10 @@ enum AppTheme {
             bg: 0xFFF3DC, panel: 0xFFF9EC, ink: 0x5A4024, inkStrong: 0x392611,
             accent: 0xE0AB4F, accentSoft: 0xF1D9A2, line: 0xD4B27A
         ),
+        // ink deviates from web/Android 0x64748B (4.0:1 on bg, 3.7:1 on
+        // panel) to reach WCAG AA; see Presentation/AGENTS.md.
         "Patina Ky": ThemePalette(
-            bg: 0x0D0F14, panel: 0x161A22, ink: 0x64748B, inkStrong: 0xE2E8F0,
+            bg: 0x0D0F14, panel: 0x161A22, ink: 0x7C8BA1, inkStrong: 0xE2E8F0,
             accent: 0x4DEEEA, accentSoft: 0x0E4A48, line: 0x1E293B
         ),
         "Polished Ky": ThemePalette(
@@ -147,15 +243,32 @@ enum AppTheme {
     }
 }
 
-/// Theme-invariant semantic colors (STYLE_GUIDE §1: fixed literals, never
-/// part of the per-theme palette).
+/// Semantic colors (STYLE_GUIDE §1: fixed literals, not part of the
+/// per-theme palette).
+///
+/// The text colors have a light and a dark variant: the web's single
+/// literals (#FF5F5F, #A5DCA5, #FFD64D) are built for dark backgrounds and
+/// read at 1.3–2.7:1 on the light themes. Each resolves by appearance, and
+/// every scene sets `preferredColorScheme` from the theme's `isLight`, so
+/// the variant follows the theme. Recorded as a deviation from web/Android
+/// in Presentation/AGENTS.md; `ThemeContrastTests` checks both variants.
 enum SemanticColors {
-    static let danger = Color(hex: 0xFF5F5F)
+    static let dangerLight: UInt32 = 0xB71C1C
+    static let dangerDark: UInt32 = 0xFF8A8A
+    static let successLight: UInt32 = 0x1B5E20
+    static let successDark: UInt32 = 0xA5DCA5
+    static let warningLight: UInt32 = 0x8A5A00
+    static let warningDark: UInt32 = 0xFFD64D
+    /// The fill under danger text, as an opaque blend over its background.
+    static let dangerFillBase: UInt32 = 0xFF5F5F
+    static let dangerFillOpacity = 0.12
+
+    static let danger = Color(light: dangerLight, dark: dangerDark)
     static let dangerBorder = Color(hex: 0xFFB4AB).opacity(0.4)
-    static let dangerFill = Color(hex: 0xFF5F5F).opacity(0.12)
-    static let warning = Color(hex: 0xFFD64D)
+    static let dangerFill = Color(hex: dangerFillBase).opacity(dangerFillOpacity)
+    static let warning = Color(light: warningLight, dark: warningDark)
     static let successBorder = Color(hex: 0x7BBF7B)
-    static let successText = Color(hex: 0xA5DCA5)
+    static let successText = Color(light: successLight, dark: successDark)
 }
 
 /// Shape tokens (spec §6 / STYLE_GUIDE §3). Stadium shapes use Capsule.
@@ -176,6 +289,29 @@ extension Color {
             green: Double((hex >> 8) & 0xFF) / 255,
             blue: Double(hex & 0xFF) / 255
         )
+    }
+
+    /// One color per appearance (light / dark), resolved by the view's
+    /// color scheme.
+    init(light: UInt32, dark: UInt32) {
+        func components(_ hex: UInt32) -> (CGFloat, CGFloat, CGFloat) {
+            (CGFloat((hex >> 16) & 0xFF) / 255, CGFloat((hex >> 8) & 0xFF) / 255, CGFloat(hex & 0xFF) / 255)
+        }
+        let (lr, lg, lb) = components(light)
+        let (dr, dg, db) = components(dark)
+#if os(macOS)
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor(srgbRed: dr, green: dg, blue: db, alpha: 1)
+                : NSColor(srgbRed: lr, green: lg, blue: lb, alpha: 1)
+        })
+#else
+        self.init(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: dr, green: dg, blue: db, alpha: 1)
+                : UIColor(red: lr, green: lg, blue: lb, alpha: 1)
+        })
+#endif
     }
 
     /// Relative luminance check used by readableOnAccent.

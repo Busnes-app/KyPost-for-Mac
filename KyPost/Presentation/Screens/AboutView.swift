@@ -14,6 +14,9 @@ import AppKit
 struct AboutView: View {
     @Environment(\.theme) private var theme
     @State private var tipJar = TipJarStore()
+    #if os(macOS)
+    @State private var showAcknowledgements = false
+    #endif
 
     private let privacyPolicyURL = URL(string: "https://www.kypost.org/privacy.html")!
 
@@ -44,16 +47,16 @@ struct AboutView: View {
                         .foregroundStyle(theme.inkStrong)
                     Text("Version ") + Text(version) + Text("  ·  Copyright © 2026 Busnes.app")
                         .font(AppFont.ui(12))
-                        .foregroundStyle(theme.ink.opacity(0.75))
+                        .foregroundStyle(theme.secondaryInk)
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Support KyPost")
+                    Text("Tip Jar")
                         .font(AppFont.ui(17, weight: .semibold))
                         .foregroundStyle(theme.inkStrong)
-                    Text("Help keep private, secure email available with a one-time contribution.")
+                    Text("If KyPost is useful to you, you can support its continued development with a one-off tip.")
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
 
                     ForEach(tipJar.products, id: \.id) { product in
                         Button {
@@ -67,9 +70,9 @@ struct AboutView: View {
                                     Text(product.displayName)
                                         .font(AppFont.ui(14, weight: .semibold))
                                         .foregroundStyle(theme.inkStrong)
-                                    Text("One-time support")
+                                    Text("One-off tip")
                                         .font(AppFont.ui(12))
-                                        .foregroundStyle(theme.ink.opacity(0.7))
+                                        .foregroundStyle(theme.secondaryInk)
                                 }
                                 Spacer()
                                 Text(product.displayPrice)
@@ -85,31 +88,33 @@ struct AboutView: View {
                         .disabled(tipJar.isLoading)
                     }
 
-                    if tipJar.products.isEmpty && !tipJar.isLoading {
-                        Text(tipJar.errorMessage ?? "Support options are not available right now.")
+                    if let status = tipJar.statusMessage {
+                        Text(status)
                             .font(AppFont.ui(13))
-                            .foregroundStyle(theme.ink.opacity(0.75))
+                            .foregroundStyle(theme.secondaryInk)
                     }
-                    if let errorMessage = tipJar.errorMessage {
-                        Text(errorMessage)
-                            .font(AppFont.ui(12))
-                            .foregroundStyle(theme.ink.opacity(0.75))
-                    }
+                    Text("Payments are processed securely by Apple.")
+                        .font(AppFont.ui(12))
+                        .foregroundStyle(theme.secondaryInk)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(18)
                 .background(theme.panel.opacity(0.7), in: RoundedRectangle(cornerRadius: 14))
 
-                Link("Privacy Policy", destination: privacyPolicyURL)
-                    .font(AppFont.ui(13, weight: .semibold))
-                    .foregroundStyle(theme.accent)
+                HStack(spacing: 20) {
+                    Link("Privacy Policy", destination: privacyPolicyURL)
+                    Button("Acknowledgements") { showAcknowledgements = true }
+                        .buttonStyle(.link)
+                }
+                .font(AppFont.ui(13, weight: .semibold))
+                .foregroundStyle(theme.accent)
 
                 DisclosureGroup {
                     ScrollView {
                         Text(Self.mitLicense)
                             .font(AppFont.mono(10))
                             .textSelection(.enabled)
-                            .foregroundStyle(theme.ink.opacity(0.85))
+                            .foregroundStyle(theme.secondaryInk)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(height: 170)
@@ -126,6 +131,20 @@ struct AboutView: View {
         .background(theme.bg)
         .frame(minWidth: 440, idealWidth: 480, minHeight: 560, idealHeight: 620)
         .task { await tipJar.start() }
+        // The About window is not a navigation stack, so the list opens as a
+        // sheet. It shows only bundled licence text, nothing from the account.
+        .sheet(isPresented: $showAcknowledgements) {
+            NavigationStack {
+                AcknowledgementsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showAcknowledgements = false }
+                        }
+                    }
+            }
+            .frame(minWidth: 520, idealWidth: 560, minHeight: 520, idealHeight: 600)
+            .environment(\.theme, theme)
+        }
     }
     #else
     private var mobileBody: some View {
@@ -133,18 +152,13 @@ struct AboutView: View {
             Section("KyPost") {
                 LabeledContent("Version", value: version)
                 Text("Copyright © 2026 Busnes.app")
-                    .foregroundStyle(theme.ink.opacity(0.8))
+                    .foregroundStyle(theme.secondaryInk)
             }
             .listRowBackground(theme.panel)
 
             Section {
                 Text("If KyPost is useful to you, you can support its continued development with a one-off tip.")
-                    .foregroundStyle(theme.ink.opacity(0.8))
-
-                if tipJar.products.isEmpty && !tipJar.isLoading {
-                    Text(tipJar.errorMessage ?? "Support options are not available right now.")
-                        .foregroundStyle(theme.ink.opacity(0.8))
-                }
+                    .foregroundStyle(theme.secondaryInk)
 
                 ForEach(tipJar.products, id: \.id) { product in
                     Button {
@@ -159,13 +173,13 @@ struct AboutView: View {
                     .disabled(tipJar.isLoading)
                 }
 
-                if let errorMessage = tipJar.errorMessage {
-                    Text(errorMessage)
+                if let status = tipJar.statusMessage {
+                    Text(status)
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                 }
             } header: {
-                Text("Support KyPost")
+                Text("Tip Jar")
             } footer: {
                 Text("Payments are processed securely by Apple.")
             }
@@ -173,6 +187,9 @@ struct AboutView: View {
 
             Section {
                 Link("Privacy Policy", destination: privacyPolicyURL)
+                NavigationLink("Acknowledgements") {
+                    AcknowledgementsView()
+                }
             }
             .listRowBackground(theme.panel)
 
@@ -180,7 +197,7 @@ struct AboutView: View {
                 Text(Self.mitLicense)
                     .font(AppFont.mono(11))
                     .textSelection(.enabled)
-                    .foregroundStyle(theme.ink.opacity(0.9))
+                    .foregroundStyle(theme.secondaryInk)
             }
             .listRowBackground(theme.panel)
         }

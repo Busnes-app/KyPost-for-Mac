@@ -29,6 +29,7 @@
 //
 
 import Foundation
+import os
 
 nonisolated struct RecipientPin: Codable, Equatable, Sendable {
     var publicKey: String
@@ -77,27 +78,40 @@ final class RecipientPinStore: @unchecked Sendable, SignerKeyHistory {
 
     func all() -> [String: RecipientPin] {
         lock.lock(); defer { lock.unlock() }
+        return loadLocked() ?? [:]
+    }
+
+    /// True when pins are stored but cannot be decoded (a corrupt or
+    /// future-format defaults value). Every write is refused while this
+    /// holds: writing would replace the whole map with the one or two pins
+    /// being added, and every other verified key would be gone for good.
+    var persistedPinsUnreadable: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return loadLocked() == nil
+    }
+
+    /// The stored pins, or nil when they exist but will not decode. Caller
+    /// holds `lock`.
+    private func loadLocked() -> [String: RecipientPin]? {
         if hostileLocation.enabled { return memoryPins }
-        guard let data = defaults.data(forKey: Self.key),
-              let pins = try? JSONDecoder().decode([String: RecipientPin].self, from: data)
-        else { return [:] }
-        return pins
+        guard let data = defaults.data(forKey: Self.key) else { return [:] }
+        return try? JSONDecoder().decode([String: RecipientPin].self, from: data)
     }
 
     /// Pins `publicKey` for every address in `addresses`, replacing whatever
     /// was pinned for them. Refuses a key whose fingerprint cannot be
-    /// computed: a pin that cannot be checked is not a pin.
+    /// computed: a pin that cannot be checked is not a pin. False, too, when
+    /// the stored pins cannot be read (`persistedPinsUnreadable`).
     @discardableResult
     func pin(addresses: [String], publicKey: String) -> Bool {
         guard let fingerprint = PgpFingerprint.compute(fromArmored: publicKey) else { return false }
         let targets = addresses.map(Self.normalized).filter { !$0.isEmpty }
         guard !targets.isEmpty else { return false }
-        update { pins in
+        return update { pins in
             for address in targets {
                 pins[address] = RecipientPin(publicKey: publicKey, fingerprint: fingerprint)
             }
         }
-        return true
     }
 
     /// Replaces a pin's bytes with the same key carrying more revocations.
@@ -172,15 +186,24 @@ final class RecipientPinStore: @unchecked Sendable, SignerKeyHistory {
         })
     }
 
-    private func update(_ body: (inout [String: RecipientPin]) -> Void) {
-        var pins = all()
-        body(&pins)
+    /// Read, change and write under one lock. Refuses — and leaves the
+    /// stored bytes exactly as they were — when they will not decode.
+    @discardableResult
+    private func update(_ body: (inout [String: RecipientPin]) -> Void) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        guard var pins = loadLocked() else {
+            Log.storage.error("Recipient pins are stored but unreadable; refusing to overwrite them")
+            return false
+        }
+        body(&pins)
         if hostileLocation.enabled {
             memoryPins = pins
         } else if let data = try? JSONEncoder().encode(pins) {
             defaults.set(data, forKey: Self.key)
+        } else {
+            return false
         }
+        return true
     }
 }
 
@@ -199,5 +222,17 @@ nonisolated struct RecipientPinSnapshot: Equatable, Sendable {
 
     func state(for address: String) -> PinnedKeyState? {
         states[RecipientPinStore.normalized(address)]
+    }
+}
+
+/// A pin write refused because the stored pins cannot be read.
+nonisolated enum RecipientPinStoreError: Error, LocalizedError, Equatable {
+    case unreadable
+
+    var errorDescription: String? {
+        String(localized: """
+        The contact was saved, but its verified key was not recorded on this device: the keys \
+        already verified here can't be read, and recording this one would erase them.
+        """)
     }
 }

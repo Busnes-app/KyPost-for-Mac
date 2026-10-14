@@ -20,7 +20,7 @@ struct FreshnessLine: View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             Text(InboxRules.freshnessText(refreshedAt: lastRefreshed, now: context.date))
                 .font(AppFont.ui(11))
-                .foregroundStyle(theme.ink.opacity(0.7))
+                .foregroundStyle(theme.secondaryInk)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 2)
         }

@@ -214,10 +214,10 @@ per-address on-device pin before — `VerifiedPgpKeyStore` is per-uid memory for
 holding a synced key change for review, and the relay's TOFU (`key_changed`)
 is the server's pin, not this device's.
 
-- **A key verified here by QR is authoritative for its addresses.** The QR
-  save (`saveContact(_:verifiedInPerson: true)`) pins the contact's key for
-  each of its emails, replacing what was pinned; re-scanning is how a pin
-  changes. A contact with no email gets no pin. Sync never writes a pin.
+- **A key verified here by QR is authoritative for its addresses.** A QR
+  save whose code carried a matching `#fp=` (`saveContact(_:verifiedInPerson:
+  true)`, see "In-person key exchange") pins the contact's key for each of its
+  emails, replacing what was pinned; re-scanning is how a pin changes. A contact with no email gets no pin. Sync never writes a pin.
 - **The one thing a synced copy may do is revoke it**, recorded on every
   contact write (sync and local), never on a lookup:
   `PgpKeyRevocation.withRevocations` takes only revocation signatures of
@@ -261,6 +261,10 @@ is the server's pin, not this device's.
   opens with no await before encrypting (`recheckPins`). A recipient whose
   pin no longer lands on the key already chosen stops the send with the same
   two outcomes; it is never re-chosen silently.
+- **Stored pins that will not decode are never written over.** Every write
+  is refused while `persistedPinsUnreadable` holds (a write would replace the
+  map with the one new pin), and the QR save throws
+  `RecipientPinStoreError.unreadable` after keeping the contact.
 - A pin is trusted only while its bytes fingerprint to the stored fingerprint
   (`broken` otherwise, never "absent"). The reader and sender each take a
   provider returning a `RecipientPinSnapshot` value, never a snapshot taken
@@ -268,6 +272,24 @@ is the server's pin, not this device's.
   defaults when the mode turns on and at every launch while it is on
   (`AppEnvironment.eraseHostileLocationDefaults`) — swept by the wipe, cleared
   on unpair.
+
+### In-person key exchange (`Data/Networking/PgpQrClient.swift`, `PgpQrViewModel.swift`)
+
+Same protocol as KyPost for Android and Linux; change it in all three.
+
+- **The code is the pickup URL plus `#fp=<FPR>`**: the primary key's v4
+  fingerprint, 40 uppercase hex, no spaces. `FPR` is computed from the key
+  this device signs with (`ownPublicKey` → `PgpFingerprint`), never from the
+  server and never from `VaultRecord.identityFingerprint` (a legacy record's
+  came from the server). `qrPayload` drops any fragment the server's URL had.
+- **No key held: no `fp`.** The screen shows bootstrap's fingerprint, labelled
+  as the server's. An enrolled device offers "Unlock Key to Verify" (presence
+  prompt, `DeviceVaultOpener`); opening the screen never prompts.
+- **Scanning** splits the fragment off before the fetch; it never reaches the
+  server. `fp` equal to the fingerprint of the fetched bytes is the only path
+  to `verifiedInPerson: true`. `fp` different or malformed: refused, nothing
+  saved. `fp` absent: may be saved, never pinned, and the screen says it was
+  not verified in person.
 
 ### Contacts: sync status and vCard export
 
@@ -281,6 +303,32 @@ is the server's pin, not this device's.
   description, which `localizedDescription` would drop. The outbox count also
   lives in `health.pending`, recounted by the repository after every write and
   every sync, so syncs the change monitor runs reach the banner.
+- **Contact sync never discards or duplicates the user's work**
+  (`ContactSyncRepository`):
+  - The cursor describes rows held: with the table empty and a cursor above 0
+    the sync resets it and pulls from 0 (MailRepository's `hasRows` rule). It
+    is also reset wherever the store files are deleted.
+  - Tombstones are removed only for the uids the request carried
+    (`ContactPendingDeletesStore.remove`); `tooOld` and store deletion never
+    clear them.
+  - Server writes are stamped with the sync's start time, never "now", so
+    `ContactDAO.upsert`'s newer-wins guard keeps an edit made while the
+    request was out. `assignUid` takes the pushed `updatedAt` for the same
+    reason.
+  - `tooOld` drops only synced rows (`ContactDAO.clearSynced`): `needsSync`
+    rows keep their localIds, tombstones stay, and the re-pull runs at once
+    (once — a second `tooOld` stops).
+  - Every create carries its localId as `clientRef`, and reconciliation
+    matches an echoed `clientRef` exactly before falling back to content.
+    **The relay does not store or echo it yet** (KyPost-Server
+    `contactSyncChange` ignores the field), so until it does the protection
+    is `ContactCursorStore.createsInFlight`: set while a push with creates is
+    unanswered, it makes the next sync pull and reconcile pending creates
+    before pushing them again.
+  - The Apple Contacts reconcile refuses a pass that would delete every
+    linked card or more than half of them (cards already gone do not count),
+    aborts on a failed Contacts read, and reports withheld deletes through
+    `ContactSyncHealth.withheldCardDeletes` to `ContactSyncBanner`.
 - **vCard** (`Utilities/VCard.swift`, Android #184): 4.0 or 3.0; every value
   escaped and stripped of control characters by **unicode scalar** (C0, DEL,
   C1, U+2028/2029 — wider than Android), so no field can start a property or a
@@ -355,8 +403,10 @@ is the server's pin, not this device's.
   `cid:`. Markup inside an HTML comment or a raw-text/RCDATA
   element (`script`, `style`, `textarea`, `title`, `xmp`, `iframe`,
   `noembed`, `noframes`, `plaintext`) is text, as an HTML parser reads it: it
-  is never rewritten and spends no budget. `data:` images render with `loadsSubresources` off (verified against
-  WebKit), so remote content stays blocked.
+  is never rewritten and spends no budget. `data:` images render under the
+  reader's remote-content block (`loadsSubresources` off plus
+  `RemoteContentBlocker`, which exempts only `data:` and `about:`;
+  `RemoteContentBlockingTests`), so remote content stays blocked.
   **The scan must stay linear on any input** (`MarkupScanner`): no
   backtracking pattern over an open-ended tag or body; malformed markup made
   the old single regex slow down quadratically. Tag names match as ICU
@@ -577,10 +627,27 @@ old sentence edited out.
   advances the wipe counter. Both serialise through one in-flight task: two
   concurrent checks otherwise read the same count, both write `n + 1`, and both
   clear the lockout gate at the same instant.
-- The lockout deadline is on **`CLOCK_MONOTONIC_RAW`**, and clamped to the
-  stored duration. A wall clock is cleared from the Date & Time pane; a
-  monotonic one restarts at zero on reboot, so without the clamp a reboot reads
-  the deadline as the whole previous uptime.
+- The lockout deadline is on **`CLOCK_MONOTONIC_RAW`**, stored with its
+  duration and the boot it was written in (`kern.bootsessionuuid`). A wall
+  clock is cleared from the Date & Time pane; a monotonic one restarts at zero
+  on reboot. A deadline from another boot restarts once as now + duration and
+  is written back (clamping alone froze the countdown for days); within a
+  boot, or with no boot id, it is clamped to the duration. The manager also
+  holds the deadline in memory and gates on the later of the two, so a failed
+  Keychain write is never free guesses.
+- **Whether the app starts locked is decided from `AppLockStore.lockState`,
+  and `.unreadable` is locked.** A Mac login item reads the Keychain before
+  it is ready; reading that as off started the app unlocked and made `lock()`
+  a no-op all session. `refreshLockState` re-reads it (each unlock attempt,
+  and each second the lock screen is up); only an *unresolved* flag that then
+  reads off releases the lock without a prompt.
+- **A device-owner unlock (Touch ID, password) resets the wrong-PIN count and
+  any lockout**, stored and in session, under the same serialisation as the
+  PIN checks. A cancelled prompt (`DeviceAuthOutcome.cancelled`) counts
+  toward nothing; concurrent `requestUnlock` calls share one prompt.
+- **`PinPepper.ensureExists` never downgrades.** With a Secure Enclave present,
+  a failed enclave key throws `PepperUnavailable`; the software pepper is only
+  for machines without one.
 - **The tripwire is armed by `setPin`, not by `setLockEnabled`.** The PIN is
   optional on this platform, so arming it with the toggle would make
   "configured, and the PIN vanished" true immediately and wipe the machine at
@@ -614,10 +681,21 @@ old sentence edited out.
 - **The wipe fails closed.** `WipeResult.complete` is only returned when every
   step ran; a step must not catch its own errors, or the step cannot fail and
   the claim cannot be supported. An incomplete run keeps its marker, resumes at
-  the next launch, and after `SecurityWipe.maxResumes` sets `abandoned` —
-  which stops the retries **without** forgetting. Clearing the marker to
-  express "giving up" is the bug that presented a clean first-run app over data
-  that was never deleted.
+  the next launch, and on its `SecurityWipe.maxAttempts`th (3rd) failed run
+  — the first run plus two resumes — sets `abandoned`, which stops the retries
+  **without** forgetting. Clearing the marker to express "giving up" is the bug
+  that presented a clean first-run app over data that was never deleted.
+- **The lock comes off last, and only after a complete run.** The `appLock`
+  step keeps Require Unlock to Open; `SecurityWipeSteps.releaseLock` (the
+  `release:` step of `SecurityWipe.run`) removes it only when every other step
+  succeeded. An incomplete wipe rebuilds a locked app.
+- **The in-progress and abandoned markers are mirrored into the Keychain**
+  (`WipeStateStore`), and either copy is believed. A Keychain marker with no
+  defaults record (a deleted plist, or a reinstall — Keychain items survive
+  both) resumes the wipe rather than blocking, so reinstalling stays the
+  recovery. An unreadable Keychain reads as no marker.
+- **The failed-unlock reset is this wipe** (`resetAfterFailedUnlock` →
+  `performSecurityWipe`). Never give it a step list of its own.
 - **Order: in-memory plaintext, then local files, then network.** The
   deregister is not a step and is never folded into the result — an unreachable
   relay says nothing about local data, and counting it would keep the resume
@@ -655,6 +733,34 @@ old sentence edited out.
 - Un-gestured navigations stay blocked regardless of scheme: a
   `<meta http-equiv="refresh">` is plain HTML and a main-frame navigation, so
   neither the JavaScript switch nor `loadsSubresources` touches it.
+- **Remote content is blocked by a content rule list, not only a flag**
+  (`RemoteContentBlocker`, `EmailBodyWebView.makePage`). Every reader page
+  — server-rendered and decrypted alike — gets the block-all list (exempt:
+  `data:`, `about:`) before its first load; "Load Remote Content" builds a
+  page without it for that message's HTML only. No list, no render (fail
+  closed). `RemoteContentBlockingTests` renders every beacon vector through
+  the reader's own page and counts zero fetches: over loopback HTTP where a
+  listener is allowed (iOS Simulator, CI) — the sandboxed macOS host may not
+  listen, and must not gain a network-server entitlement for a test — and
+  through a URL scheme handler everywhere. Measured 2026-10-13: over HTTP
+  `loadsSubresources = false` alone already stopped every vector, so the list
+  is defence in depth there; it is what stops custom-scheme loads.
+
+### The local store (`Data/Database/AppDatabase.swift`, `AppSchemaVersions.swift`)
+
+- **Each schema version lists every entity as it was at that version** — a
+  nested snapshot, never a live `@Model` that changed later. V3 once listed
+  the live `ContactEntity` (which gained `isSelf` at V6), so every V3 store
+  read as an unknown version and was deleted at launch. A new version is
+  added to `SchemaMigrationTests`, which writes a store at every version and
+  opens it with the current plan.
+- **A store that will not open is deleted only when this build can never
+  read it** (`AppDatabase.openFailureDisposition`): an unknown model version,
+  a failed migration (its hashes are not the current version's), or a file
+  that is not a database. A full disk, a locked or unreadable file, an I/O
+  error, or a current-version store that fails anyway keeps the file and runs
+  the session in memory. The store holds unsynced contacts, and Apple
+  Contacts cards follow its rows; it is not a disposable cache.
 
 ### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
 
@@ -679,6 +785,9 @@ old sentence edited out.
 - **Only a full window may prune, and only window rows.** A partial delta
   describes what changed; everything it omits is still legitimately in the
   mailbox. Pruning against one deletes the folder.
+- **One empty full window over cached rows prunes nothing**
+  (`EmailDAO.unconfirmedEmptyWindows`): the next refresh asks for the full
+  window again, and only a second empty answer in a row prunes.
 - **Mail older than the window is kept** (KyPost-Server `before=` paging and
   `agedOut`/`hasMore`/`nextBefore`; Android #183). `EmailEntity.inWindow` is
   false for rows paged in by "Load older mail" (`MailRepository.loadOlder`) or
@@ -761,8 +870,12 @@ old sentence edited out.
   same pair **together with that row's OpenPGP state** — a result carries
   none, and dropping it hides a cached verdict or turns a client-protected row
   into a server fetch), and Reply All uses the result's own `sentTo`/`cc` —
-  the body endpoint carries none. `InboxViewModel.email(for:)` (macOS pop-out
-  readers) prefers the folder row but takes the result's To/Cc.
+  the body endpoint carries none. `InboxViewModel.email(for:)` prefers the
+  folder row but takes the result's To/Cc. A macOS pop-out reader resolves
+  its row once through `resolveEmail(for:)`: the list's row, else the row it
+  was opened with (`rememberForWindow`, memory only, dropped by
+  `forgetAccount`), else the cache — so a folder switch or search never
+  blanks it. An uncached result's window does not survive a relaunch.
 - **Results land only while their submission is the newest and their query
   and folder are still on screen.** A failure says why and shows the folder
   list — never an older query's results. The search ends on clearing or
@@ -774,6 +887,42 @@ old sentence edited out.
 - Known gap: results carry no PGP flags (the server sends none), so encrypted
   mail found only by search and not cached opens through `/api/mail/body` with no decrypt
   path, like older mail.
+
+### Pairing and relay certificate pinning (`Domain/UseCases/DeviceRegistrationService.swift`, `Data/Networking/PinnedSessionDelegate|RelayPairingConnection`, `Data/Storage/SecurePairingStore.swift`)
+
+- **Every client pairs with `kypost://native-pair`.** Desktop pairing
+  (`kypost://desktop-pair`) is removed: its session token was never sent by
+  anything. Its link opens nothing; `DesktopSessionStore` survives only to
+  erase a token an older build stored (unpair, wipe, failed-unlock reset).
+- **The pin is bound to its host** (`pinnedSpkiHost`; an unbound legacy pin
+  belongs to the stored srv). `savePairing(_:pinnedSpkiHash:)` writes it with
+  the pairing, and saving another host without a pin removes it.
+- **A pairing pins its own connection before anything is sent.** Pin
+  expected = the link's `pin=`, else the pin stored for that host. A link pin
+  differing from a stored one is refused (remove the pairing in Settings →
+  Connection first) — never swapped in. `RelayPairingConnection` (own
+  ephemeral session and delegate) probes; the probed hash must match the
+  expected pin, or becomes the pin when there is none; no hash fails the
+  pairing. The registration then rides that connection, held to that pin.
+- **Never arm a pin on the shared `relaySession` delegate.** It enforces
+  stored pins only, read through `SecurePairingStore.pinnedSpkiHash(in:forHost:)`.
+  **`reregisterIfPaired` never captures a pin**; it rides the shared session.
+- **A pin lookup that throws refuses the handshake** (`PinFailure.unreadable`
+  → `NetworkError.pinUnreadable`); only "not found" means unpinned. Never
+  `try?` a pin read on an enforcement path.
+- **Relay sessions are `relaySessionConfiguration()`**: ephemeral, no
+  `URLCache`, no cookies. `HTTPClient(session:)` has no default — never hand a
+  relay client `URLSession.shared`. Redirects must keep scheme https, host and
+  effective port.
+- A pairing (not a re-registration) posts `.kyPostPaired` once stored.
+- **A reset ends registrations in flight.** `.kyPostSessionReset` and
+  `SingletonGraph.shutdown()` call `DeviceRegistrationService.cancelAll()`,
+  which closes open pairing connections (graph shutdown's
+  `relaySession.invalidateAndCancel()` does not reach them) and moves the
+  service's session on. A result from an older session stores and announces
+  nothing — checked before every write and after every await — or an answer
+  landing after a wipe or failed-unlock reset would restore the pairing on
+  an app that reset just unlocked.
 
 ### Relay error mapping (`Data/Mail/MailSource.swift`)
 
@@ -793,6 +942,14 @@ old sentence edited out.
   not a form.
 - 502 is `.upstreamFailure` and retryable with backoff; other 5xx are not.
   Telling the user to retry is only honest for the one that is.
+- **A send is the exception** (`MailRepository.send`,
+  `MailOutcome.sendOutcomeUnknown`): a transport error, any 5xx, or a 2xx
+  that will not decode is `.mayHaveBeenSent` — the relay answers only after
+  SMTP accepted the message, so the message may be out. `/api/mail/send`
+  carries an `Idempotency-Key` header (`OutgoingEmail.idempotencyKey`) and,
+  with attachments, a 180 s timeout. **The relay does not dedupe on the key
+  yet**; until it does, the guard is compose refusing a second send without
+  the user's explicit retry. The client-custody `send-pgp` path has neither.
 
 ### KyIdentity sign-on via KyAuth, iOS only (`Domain/SignOn`, `Data/Networking/KyIdentitySignOnClient.swift`, `KyIdentitySignOnCoordinator`)
 
@@ -840,7 +997,8 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
   same-id row in another folder stays visible. The source folder is pinned at
   tap time.
 - **Commit points:** the timer, leaving the list, iOS backgrounding (under a
-  background-task assertion), and app lock. Leaving is switching tabs on iOS
+  background-task assertion), app lock, and quitting on macOS
+  (`QuitPreparation`, waiting at most 10 s for the relay). Leaving is switching tabs on iOS
   or, in the iOS stack layout only, opening a message over the list; on macOS
   switching to Contacts or closing the window. In the iOS split layout the
   list stays beside the reader, so opening a message commits nothing and held
@@ -993,6 +1151,51 @@ an event only when asked and syncs no calendar.
   Anything that treats email order as meaningful is suspect; prefer the
   `matchKeys` set.
 
+### Release and store readiness (`.github/workflows/release.yml`, `Distribution/`, `KyPost/PrivacyInfo.xcprivacy`)
+
+- **Signing is automatic, with an App Store Connect API key.** A `v*` tag runs
+  `release.yml` on the `release` environment (create it in GitHub with
+  required reviewers, tags `v*` only). Its secrets are exactly
+  `APP_STORE_CONNECT_PRIVATE_KEY` (.p8, base64), `APP_STORE_CONNECT_KEY_ID`,
+  `APP_STORE_CONNECT_ISSUER_ID`, `APPLE_DEVELOPMENT_CERTIFICATE` (.p12 of an
+  Apple Development identity, base64) and
+  `APPLE_DEVELOPMENT_CERTIFICATE_PASSWORD`. The key must have the **Admin**
+  role: the export signs with the team's cloud-managed Apple Distribution
+  certificate, which App Store Connect refuses to every other role. There is
+  no distribution certificate or profile secret. The development identity is
+  there because xcodebuild otherwise creates a fresh development certificate
+  per runner and refuses on the next one (release.yml's header has the
+  detail). Both `Distribution/ExportOptions-*.plist` say `signingStyle
+  automatic`.
+- **The build number is the workflow run**, `<run_number>.<run_attempt>`,
+  passed as `CURRENT_PROJECT_VERSION` to archive and checked in the archive
+  before upload. `project.pbxproj` keeps `1`; do not commit CI's value back.
+  `scripts/verify-version.sh` checks only `MARKETING_VERSION` against the tag.
+- **The privacy manifest covers the GopenPGP archive.** The XCFramework is a
+  static Go archive with no manifest of its own, so its required-reason
+  imports are declared in ours: file timestamp `C617.1` (`stat` family, plus
+  `SignOnHandoff`'s `.contentModificationDateKey`), system boot time `35F9.1`
+  (`mach_absolute_time`, the Go runtime's clock), user defaults `CA92.1`.
+  After a GopenPGP bump, re-check with `nm -u` on the framework binary for
+  `stat`, `statfs`, `getattrlist`, `mach_absolute_time` and similar.
+  `AppBundleTests` pins the declared set.
+- **Acknowledgements are resources**, `KyPost/Resources/Acknowledgements/`:
+  `Acknowledgements.json` plus one `.txt` licence per entry, loaded by
+  `Acknowledgement.load()`. The list follows the modules actually linked into
+  the GopenPGP binary (go.mod of the pinned tag, checked against the module
+  paths in the binary's strings); test-only modules are not listed. A
+  GopenPGP bump re-checks that list and refreshes the texts from upstream.
+- **No AGENTS.md ships in the app.** The `KyPost` folder is a synchronized
+  root group, so every file under it is copied into the bundle unless
+  `project.pbxproj` lists it in `membershipExceptions`. A new AGENTS.md under
+  `KyPost/` gets an exception in the same change; `AppBundleTests` fails
+  otherwise.
+- Deployment target is **macOS and iOS 26.0** in every configuration;
+  platforms are iPhone, iPad and Mac only (no visionOS). An API newer than
+  26.0 needs `#available`.
+- France is not in the App Store availability list, so no ANSSI encryption
+  declaration is filed. Adding France means filing one first.
+
 ## User Preferences
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
@@ -1003,8 +1206,10 @@ When the user requests a durable behavior change, record it here or in the relev
   (`AppEnvironment` / `SingletonGraph.shared` aliasing), lifecycle/lock
   ordering at launch, the pull poll as push-mode heartbeat.
 - `KyPost/Presentation/AGENTS.md` — SwiftUI views, view models, and
-  components: theming and font contracts, MainActor isolation rules, compose
-  recipient tokens and contact search, and the macOS/iOS input deviations.
+  components: theming, contrast and font contracts (and the recorded palette
+  deviations from web/Android), MainActor isolation rules, compose recipient
+  tokens and contact search, the macOS Message menu, and the macOS/iOS input
+  deviations.
 
 ## Product icon
 

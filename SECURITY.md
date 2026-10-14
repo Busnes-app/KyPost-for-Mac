@@ -47,7 +47,10 @@ stops.
 
 "Require Unlock to Open" gates the app behind Face ID, Touch ID, or the device passcode
 (`Domain/Security/AppLockManager.swift`). iOS locks on backgrounding; macOS locks when
-the screen locks, and not when you switch apps.
+the screen locks, and not when you switch apps. If the setting cannot be read at launch
+— the Keychain is often not ready yet for a Mac login item — the app starts locked and
+asks again once it can. On macOS a locked window hides its toolbar and search field, and
+its content is disabled and hidden from VoiceOver, not just covered.
 
 An **app PIN** is optional and separate from the device passcode. It exists because a
 verifier this app owns can be throttled by this app; `LAContext` is throttled by the OS
@@ -59,9 +62,14 @@ and cannot be.
 - The first two wrong attempts are free, because typos happen; the third onward adds a
   growing delay — 30s, 60s, 5m, 15m, 30m (`Domain/Security/LockoutPolicy.swift`). The
   delay is enforced in the manager, not by a disabled button, so a second entry point
-  cannot become an unthrottled oracle.
+  cannot become an unthrottled oracle. The deadline is on a monotonic clock that the
+  Date & Time settings cannot move; it records the boot it was set in, and after a
+  restart the current delay is served again in full rather than skipped. If the deadline
+  cannot be saved, the delay still holds for the rest of that session.
 - After ten consecutive wrong attempts with no intervening success, local data is wiped
-  (`Domain/Security/SecurityWipe.swift`).
+  (`Domain/Security/SecurityWipe.swift`). A success is a correct PIN or an unlock with
+  Touch ID, Face ID or the device password; either starts the count and any delay over.
+  The number is configurable (10, 20, 30 or never).
 - Because an attacker gets a bounded number of guesses, common PINs are refused at set
   time. The runs, repeats, keypad walks and dates that dominate published leaked-PIN
   datasets would otherwise all fit inside the ten.
@@ -70,30 +78,43 @@ and cannot be.
   that into "wrong" is how the Android app destroyed user data in response to an
   OS-level key invalidation the user neither caused nor could avoid.
 - **The wipe fails closed.** It reports each step it could not complete rather than
-  claiming a clean erasure, and resumes at the next launch. If it still cannot finish
-  after three resumes it stops retrying — but it does *not* forget: the marker persists,
-  and every launch from then on blocks the whole app behind "manual recovery required"
-  instead of presenting a first-run screen over data that is still on disk. Reinstalling
-  is the recovery.
+  claiming a clean erasure, keeps the app locked, and resumes at the next launch. It gets
+  three attempts — the first run and two resumes. If the third still cannot finish it
+  stops retrying — but it does *not* forget: the marker persists, and every launch from
+  then on blocks the whole app behind "manual recovery required" instead of presenting a
+  first-run screen over data that is still on disk. The marker is kept in both the app's
+  preferences and the Keychain, so deleting the preferences file re-runs the wipe rather
+  than opening the app. Reinstalling is the recovery: the next launch re-runs the wipe,
+  which then completes.
 - A **tripwire** covers the other direction: if the Keychain loses the stored PIN while a
   plain marker still says one was set — which is what deleting the item to disable the
   lock looks like — the app wipes at launch rather than opening the inbox. A Keychain
   that merely will not answer yet does *not* arm it; that is the ordinary state of a Mac
   mid-launch, and erasing someone's mail for a transient status would be worse than the
   attack.
+- The PIN verifier's pepper lives in the Secure Enclave wherever there is one. If the
+  enclave is present but will not create the key, setting a PIN fails rather than
+  falling back to a weaker Keychain-only pepper.
 
 **What it does not do:** the app lock gates the app, not the Mac. It is not a defence
 against an attacker with the machine unlocked and the app already open. The escape hatch
-offered after repeated authentication failures erases rather than bypasses — it removes
-the pairing and everything cached — so a user locked out by a changed biometric enrolment
-is not stranded.
+offered after repeated authentication failures erases rather than bypasses — it is the
+same security wipe, removing the pairing, everything cached and the cards exported to
+Contacts — so a user locked out by a changed biometric enrolment is not stranded. The
+lock comes off only once that wipe reports complete; until then the app stays locked
+and the reset can be retried. A dismissed Touch ID prompt does not count toward offering
+it.
 
 ### Hostile Location Protection
 
 An opt-in mode (off by default) for users who expect their machine to be inspected or
 seized. When enabled, KyPost keeps no mail, contacts or attachments on disk: the
-SwiftData store and the contact-photo cache are constructed in-memory, mail cursors are
-not persisted, and the enrollment envelope is destroyed.
+SwiftData store and the contact-photo cache are constructed in-memory, and the enrollment
+envelope is destroyed. The preferences that describe the account are held in memory
+too, and what was saved before is erased when the mode is turned on and at every launch
+while it is on: mail, contact and notification sync cursors, queued contact deletions,
+keyword names and settings, keys you verified, keys pinned on this device, and the record
+of which Contacts cards KyPost created.
 
 Turning it *off* does not restore the envelope. Re-enrolling is a deliberate act.
 
@@ -105,16 +126,46 @@ overwrites them. Turn it on before you have anything worth finding, not after.
 Also still on the machine while it is on: attachment previews use the sandboxed temporary
 directory briefly while open, because Quick Look needs a file; notifications you have
 already received stay in Notification Center; and cards exported to Apple Contacts remain
-there until you remove them.
+there. Because the mode erases the record of which cards KyPost created, neither Remove
+Exported Contacts nor a wipe can recognise cards exported before it was turned on — run
+Remove Exported Contacts first.
 
 ### Certificate pinning
 
 KyPost is self-hosted with a per-user server URL, so there is no certificate to hardcode.
-The server's SPKI pin is captured once at pairing time and enforced on every later
-connection (`Data/Networking/PinnedSessionDelegate.swift`).
+A pin is the SHA-256 of the server's leaf SubjectPublicKeyInfo. It is stored in the
+Keychain bound to the host it was seen on (`Data/Storage/SecurePairingStore.swift`), and
+every connection to that host must present that key
+(`Data/Networking/PinnedSessionDelegate.swift`).
 
-**This is trust-on-first-use.** It detects a certificate that changes after pairing. It
-cannot detect an attacker already in position *at* pairing. Pair over a network you
+- **Pairing has its own connection** (`Data/Networking/RelayPairingConnection.swift`).
+  It probes the server first. The key that handshake presents must match the link's
+  `pin=` if it has one, or else the pin already stored for that host; with neither, it
+  becomes the pin. The registration, which sends the pairing token and receives the
+  device secret, then rides that same connection, held to that pin. If no key can be
+  read, nothing is sent and the pairing fails. The shared session that mail and
+  background sync use only ever enforces stored pins.
+- **A link cannot replace a pin.** If the host already has a pin and the link carries a
+  different one, or the server presents a different key, the pairing is refused. If the
+  certificate was legitimately replaced, remove the pairing in Settings → Connection,
+  then pair again.
+- **Re-registration never captures a pin.** A pairing that an older build left without
+  one stays unpinned until it is removed and paired again. Settings → Security shows
+  whether the relay is pinned.
+- **Changing servers drops the old pin.** Saving a pairing for another host removes the
+  previous host's pin, and the new server is pinned from its own pairing handshake.
+- **It fails closed.** On a pinned host the app refuses a key it cannot hash, and a
+  Keychain error while reading the pin refuses the connection rather than falling back to
+  system trust.
+- **Redirects stay on the origin.** A redirect to another host, another port or plain
+  http is refused, so the device-secret header never follows one.
+- **Relay responses are not cached.** Relay sessions are ephemeral, with no response
+  cache and no cookie store. Unpair and the security wipe also empty the process-wide URL
+  cache and cookie store that the relay session of earlier builds wrote to.
+
+**Without `pin=` this is trust-on-first-use.** It detects a certificate that changes
+after pairing. It cannot detect an attacker already in position *at* pairing. The web
+app adds `pin=` only when the server terminates TLS itself. Pair over a network you
 trust.
 
 ### Pairing credentials

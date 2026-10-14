@@ -18,7 +18,15 @@ struct MyPgpQrCodeView: View {
 
     @State private var viewModel = MyPgpQrViewModel(
         client: SingletonGraph.shared.pgpQrClient,
-        pairingStore: SingletonGraph.shared.securePairingStore
+        pairingStore: SingletonGraph.shared.securePairingStore,
+        bootstrapClient: SingletonGraph.shared.pgpSendClient,
+        session: EnrollmentSession.shared,
+        crypto: SingletonGraph.shared.pgpCrypto,
+        opener: DeviceVaultOpener(
+            vault: SingletonGraph.shared.enrollmentVault,
+            inspector: SingletonGraph.shared.pgpCrypto
+        ),
+        deviceIsEnrolled: { [vault = SingletonGraph.shared.enrollmentVault] in vault.isEnrolled }
     )
 
     var body: some View {
@@ -77,7 +85,7 @@ struct MyPgpQrCodeView: View {
             } else {
                 Image(systemName: "qrcode")
                     .font(.system(size: 44))
-                    .foregroundStyle(theme.ink.opacity(0.5))
+                    .foregroundStyle(theme.secondaryInk)
                 Text("Couldn't render the QR code.")
                     .font(AppFont.ui(14))
                     .foregroundStyle(theme.ink)
@@ -88,10 +96,12 @@ struct MyPgpQrCodeView: View {
                 .foregroundStyle(theme.ink)
                 .multilineTextAlignment(.center)
 
+            fingerprintContent
+
             if let seconds = viewModel.secondsRemaining {
                 Text(seconds > 0 ? "Expires in \(seconds)s" : "Expired — refreshing…")
                     .font(AppFont.mono(12))
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                    .foregroundStyle(theme.secondaryInk)
                     .monospacedDigit()
             }
 
@@ -101,6 +111,42 @@ struct MyPgpQrCodeView: View {
             .buttonStyle(SecondaryButtonStyle())
         }
         .frame(maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var fingerprintContent: some View {
+        switch viewModel.fingerprint {
+        case .thisDevice(let fingerprint):
+            Text("Your fingerprint, from the key on this device")
+                .font(AppFont.ui(12))
+                .foregroundStyle(theme.secondaryInk)
+            fingerprintText(fingerprint)
+        case .serverReported(let fingerprint):
+            Text("Fingerprint reported by the server, not checked on this device. They can't verify this code in person.")
+                .font(AppFont.ui(12, weight: .semibold))
+                .foregroundStyle(theme.inkStrong)
+                .multilineTextAlignment(.center)
+            fingerprintText(fingerprint)
+        case nil:
+            Text("No fingerprint from a key on this device, so they can't verify this code in person.")
+                .font(AppFont.ui(12, weight: .semibold))
+                .foregroundStyle(theme.inkStrong)
+                .multilineTextAlignment(.center)
+        }
+        if viewModel.canUnlockKey {
+            Button("Unlock Key to Verify") {
+                Task { await viewModel.unlockKey() }
+            }
+            .buttonStyle(SecondaryButtonStyle())
+        }
+    }
+
+    private func fingerprintText(_ fingerprint: String) -> some View {
+        Text(ScanPgpKeyView.groupedFingerprint(fingerprint))
+            .font(AppFont.mono(13))
+            .foregroundStyle(theme.inkStrong)
+            .multilineTextAlignment(.center)
+            .textSelection(.enabled)
     }
 
     private func message(_ text: String, icon: String) -> some View {

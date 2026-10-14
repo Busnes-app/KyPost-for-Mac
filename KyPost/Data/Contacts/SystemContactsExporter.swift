@@ -112,6 +112,9 @@ final class SystemContactsExporter {
         var imported = 0
         var adopted = 0
         var failed = 0
+        /// Card deletes a reconcile refused: they would have removed more
+        /// than half of the linked cards in one pass.
+        var withheldDeletes = 0
     }
 
     private let store: SystemContactStoring
@@ -226,7 +229,15 @@ final class SystemContactsExporter {
     private func performReconcile() async -> Summary {
         var summary = Summary()
         guard settings.exportToSystemContactsEnabled, isAuthorized else { return summary }
-        let cards = (try? await store.listAll()) ?? []
+        // A failed read is not an empty Contacts database either: every
+        // linked card would read as already gone, and its link be dropped.
+        let cards: [CNContact]
+        do {
+            cards = try await store.listAll()
+        } catch {
+            Log.sync.error("Reconcile aborted: Contacts read failed: \(error.localizedDescription)")
+            return summary
+        }
         await adoptMatchingCards(cards, summary: &summary)
         await importNewCards(cards, summary: &summary)
 
@@ -261,6 +272,25 @@ final class SystemContactsExporter {
             Reconcile aborted: \(plan.deletes.count) deletes would remove every \
             linked card. Treating this as a transient empty contact store.
             """)
+            summary.withheldDeletes = plan.deletes.count
+            return summary
+        }
+        // The same shape, partly: a store that lost most of its rows (a
+        // discarded file, a re-pull that has not finished) orphans most links
+        // at once, and each orphan deletes a real card in the user's own
+        // Contacts database. A user deleting most of a small address book
+        // hits this too, which is the safe direction: the cards stay, and the
+        // contacts list says so (`ContactSyncHealth.withheldCardDeletes`).
+        // Only cards still present count: a link to a card the user already
+        // deleted removes nothing, so deleting them in Contacts clears this.
+        let existing = Set(cards.map(\.identifier))
+        let destructive = plan.deletes.filter { existing.contains($0.cnIdentifier) }.count
+        if links.count > 1 && destructive * 2 > links.count {
+            Log.sync.error("""
+            Reconcile aborted: \(destructive) of \(links.count) linked cards \
+            would be deleted, more than half.
+            """)
+            summary.withheldDeletes = destructive
             return summary
         }
 

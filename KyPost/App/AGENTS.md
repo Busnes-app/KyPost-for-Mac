@@ -16,12 +16,14 @@ graph at runtime (`AppEnvironment.rebuild`), so:
   unless that state sits inside a view tree keyed with
   `.id(environment.generation)` — those are torn down and rebuilt on swap.
 - Every scene root in `KyPostApp` carries `.id(environment.generation)`.
-  A new `WindowGroup`/`Settings` scene must too, plus the `LockedOverlay`
-  and `protectedFromCapture()` modifiers its siblings have.
+  A new `WindowGroup`/`Settings` scene must too, plus the
+  `lockCover(theme:)` and `protectedFromCapture()` modifiers its siblings
+  have.
 - `SingletonGraph.shutdown()` must stop any new long-lived task or resource
   a graph child owns (pollers, monitors, auto-refresh loops, and
   `relaySession`, whose delegate-backed `URLSession` holds its delegate and
-  connection pool until `invalidateAndCancel()`). If you add one, add its
+  connection pool until `invalidateAndCancel()`; it is ephemeral, with no
+  cache or cookies — see the root pinning contract). If you add one, add its
   stop call there, or the superseded graph keeps writing to a database the
   app no longer shows — or, worse, keeps relay connections open through the
   Hostile Location Protection swap that was meant to close them.
@@ -53,7 +55,13 @@ router, and `scenePhase == .active` makes it check for KyAuth's response.
 `AppEnvironment.eraseHostileLocationDefaults` runs when Hostile Location
 Protection turns on and at every launch while it is on (`PushLifecycle.onLaunch`).
 A `UserDefaults`-backed store that goes memory-only under the mode erases its
-persisted copy there; switching reads to memory does not remove it.
+persisted copy there; switching reads to memory does not remove it. Stores that
+describe the account (keyword settings, notification and contact cursors,
+pending contact deletes, verified keys, system-contact links) are built on
+`SingletonGraph.hostileMemoryDefaults` (`MemoryOnlyDefaults`) under the mode —
+the graph is rebuilt on every switch, so the choice is made once, at
+construction. A new account-describing store joins that list and the erase.
+`MailCursorStore` and `RecipientPinStore` branch per call instead.
 
 `shutdown()` also **drops** the inbox's held list actions (the undo window),
 its older-mail paging state and the rows it shows, voiding any refresh in
@@ -67,10 +75,14 @@ and must do so before `appLockManager.lockAfterGrace()` (a grace period
 does not extend the undo window) — see the root "Inbox list actions"
 contract.
 
-**Leaving an account is one list, `AccountTeardown`** (enrollment vault,
+**Leaving an account is one list, `AccountTeardown`** (a store file kept
+under an in-memory session, enrollment vault,
 session and pending reports; notification history and pull cursor; recipient
-pins; mail signature; cached mail and cursors; the inbox's held actions and
-rows). `SettingsViewModel.unpair` runs it after clearing the pairing, and a
+pins; mail signature; cached mail and cursors; the relay responses and cookies
+an older build's `.default` relay session left in `URLCache.shared` and
+`HTTPCookieStorage.shared`; the inbox's held actions and rows).
+`SettingsViewModel.unpair` runs it after clearing the pairing (and an older
+build's desktop session token), and a
 registration that stores a pairing for another `sub` or server over the
 current one runs it first (`DeviceRegistrationService.onAccountReplaced`,
 wired to `SingletonGraph.makeAccountTeardown`); an unreadable previous
@@ -99,22 +111,45 @@ it there made `onLaunch` assign a closure that calls `onLaunch`, reassigning
 the property from inside `rebuild` while that same property was being invoked,
 and re-ran `requestAuthorization` on every toggle.
 
-`AppEnvironment.shared` never traps on a bad store. A `ModelContainer` that
-will not open falls back to deleting the store files, then to an in-memory
-container; only an invalid *schema* is fatal. Mail lives on the server, so the
-local store is always disposable.
+`AppEnvironment.shared` never traps on a bad store, and does not delete one
+it might still read. A `ModelContainer` that will not open is deleted (and
+the contact cursor reset) only when `AppDatabase.openFailureDisposition` says
+this build can never read it; otherwise the file is kept and the session runs
+in memory. Such a graph has `preservedStoreURL` set, and every
+`AccountTeardown` — replacement and Settings → unpair alike, through the
+required `erasePreservedStore` argument (`erasePreservedStoreStep`) — erases
+the kept file too (`AppDatabase.erasePreservedStore`):
+the steps clear only the in-memory copy, and the file would reopen with the
+left account's mail. A delete that fails leaves `store.pendingErase` set, and
+`makeLaunchGraph` erases the file before opening it (`storeMayOpen`), or runs
+in memory if it still cannot. Only an invalid *schema* is fatal. The store holds unsynced
+contacts and the rows Apple Contacts cards are linked to, so it is not
+disposable (root "The local store"). Every site that deletes the store files
+also resets `contactCursorStore`.
+
+**Quitting on macOS** (`applicationShouldTerminate`, `QuitPreparation`) asks
+the compose Discard question when any open compose has something to lose
+(`OpenComposeRegistry`), then commits held list actions and replies
+`.terminateLater` until the relay answers or 10 s pass. Cancelling the quit
+leaves held actions undoable.
 
 `AppEnvironment.resetAfterFailedUnlock` is the app lock's only escape hatch,
-offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true. It
-erases rather than bypasses: gated secret, pairing, desktop session, both lock
-flags, store, photos, temp attachments, delivered notifications, drafts, the
-mail signature. Keep
-it that way — anything that unlocks *without* erasing is a bypass.
+offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true (and
+again while `wipeNotice` says the last wipe was incomplete). It erases rather
+than bypasses, and it is `performSecurityWipe` — the same steps, resume marker
+and deregister — so the lock comes off only when the wipe reports complete.
+Those steps include the pairing and its pin, an older build's desktop session
+token, and the legacy shared URL cache and cookies.
+Keep it that way: anything that unlocks *without* erasing is a bypass, and a
+second, shorter step list is how this path once left the PIN hash, pepper,
+counters, tripwire, defaults and exported contacts behind while unlocking.
+`makeWipeSteps` / `makeGraphAfterWipe` exist for tests only.
 
 ## URL schemes
 
-`KyPost/Info.plist` declares two `CFBundleURLTypes`: `kypost` (pairing,
-desktop pairing, the iOS KyIdentity return) and `mailto`, which is what lets
+`KyPost/Info.plist` declares two `CFBundleURLTypes`: `kypost` (`native-pair`
+pairing and the iOS KyIdentity return; `desktop-pair` is no longer routed)
+and `mailto`, which is what lets
 macOS offer KyPost as the default mail app. iOS cannot become the default mail
 app without Apple's entitlement, so there a `mailto:` is handled only if
 something opens one here. Both arrive through `onOpenURL` →
@@ -145,7 +180,11 @@ intact and the wipe landed a few hundred milliseconds later.
   `presentMfaLocally`, `deliveredRemotePushes`, the KyIdentity sign-on
   (`KyIdentitySignOnCoordinator.appIsGated`), and notification history
   (`NotificationHistoryAccess`), which the macOS Settings scene shows outside
-  the main window's recovery screen.
+  the main window's recovery screen. macOS pop-out readers, which macOS
+  restores at launch outside the main window, check `MailAccessGate`
+  (pending verdict or abandoned wipe) before resolving or showing mail
+  (`EmailWindowView`, `InboxViewModel.resolveEmail`), and the Message menu
+  and a pop-out's ⌫ treat a shut gate like the lock.
 
 `AppLockManager.onWipe` is wired in `onLaunch`. Left unset it fails closed and
 reports a wipe that could not run, rather than rejecting the eleventh wrong PIN
@@ -188,7 +227,9 @@ for deciding what to *show* and wrong for deciding to repair: the repair writes
 the device secret back into the plain, non-presence-gated item, and one
 transient `errSecInteractionNotAllowed` at launch used to trigger it
 permanently. Any new caller that acts destructively on this flag uses
-`lockState` and fails closed on `.unreadable`.
+`lockState` and fails closed on `.unreadable`. `AppLockManager` decides
+whether the app starts locked the same way: `.unreadable` is locked (root
+AGENTS.md, "App lock").
 
 `PushLifecycle.runEnrollmentReporter()` restates an enrollment acknowledgement
 that did not land, or a Hostile Location Protection teardown. It runs from
@@ -252,12 +293,20 @@ and `PullHeartbeatPolicy.decide` says whether a tick touches the network:
   alerted twice; pulled MFA is never stored and is raised only within the
   server's 5-minute window — measured when the banner is raised, not at tick
   start — as a detail-free tap-to-open banner.
-- `pollNow` is single-flight. The iOS refresh task is armed whenever paired.
+- **Fetch, present, then record** (`PushRepository.fetchPull` /
+  `recordPulled` / `commitPull`). History is the record of what was
+  presented: an entry is recorded after its banner was raised, and the cursor
+  moves only after the whole batch was. A poll cut short in between fetches
+  the same entries again; the banner id is `pull-<seq>`, so one raised twice
+  replaces itself. `pullOnce` (no presentation) does all three at once.
+- `pollNow` is single-flight. The iOS refresh task is armed whenever paired,
+  and its `expirationHandler` cancels the poll in flight
+  (`cancelInFlightPoll`) and the task's own work.
   `PullPollingScheduler.shutdown` (graph teardown) cancels the poll in flight
   as well as the cadence; backgrounding only stops the cadence. A cancelled
-  poll persists and presents nothing: `PushNotificationDAO.insert` itself
-  refuses a cancelled caller, so an insert queued on the actor at shutdown
-  does not land.
+  poll records nothing further and does not move the cursor:
+  `PushNotificationDAO.insert` itself refuses a cancelled caller, so an insert
+  queued on the actor at shutdown does not land.
 - History shows 30 rows (`PushNotificationDAO.historyLimit`). Rows pushed past
   that keep only their message id, seq and time for
   `deliveryIdRetention` (the heartbeat window) and are then deleted; they are
@@ -288,7 +337,7 @@ Four seams carry it, and each one defaults to the real path:
 
 - `MailRepository(overrideSource:)` — serves `DemoMailSource` and **skips the
   pairing guard in `refreshFolder`**. Without it an unpaired build paints
-  "Pair this device (Settings → Connection) to load mail" over every shot.
+  the not-paired notice (`PairingInstructions.inbox`) over every shot.
 - `PgpSendService.preload(hasIdentity:protection:accountAddress:)` — installs
   a bootstrap answer so compose offers Encrypt/Sign. Nothing in a shipping
   build may decide custody locally; this is the only caller.
@@ -346,7 +395,9 @@ Rules:
 
 - `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (`AppEnvironmentTests`, `SecurityTests`, `SecurityWipeTests`,
-  `SecurityWipeStepsTests`, `PullHeartbeatTests`).
+  `SecurityWipeStepsTests`, `AppLockResetAndHostileTests`,
+  `PullHeartbeatTests`, `SchemaMigrationTests` for the store-open policy,
+  `DataLossTests` for `QuitPreparation`).
 - The rebuild path is exercised end-to-end by toggling Hostile Location
   Protection in Settings → Security on a paired build.
 

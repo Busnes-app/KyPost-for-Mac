@@ -175,12 +175,12 @@ struct ContactDetailView: View {
             if !draft.pronouns.isEmpty {
                 Text(draft.pronouns)
                     .font(AppFont.ui(13))
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                    .foregroundStyle(theme.secondaryInk)
             }
             if !draft.nickname.isEmpty {
                 Text("“\(draft.nickname)”")
                     .font(AppFont.ui(13))
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                    .foregroundStyle(theme.secondaryInk)
             }
             StatusBadgeView(
                 label: contact?.uid == nil ? "Local only" : "Synced",
@@ -299,7 +299,7 @@ struct ContactDetailView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("PGP KEY CHANGED")
                             .font(AppFont.ui(11, weight: .medium))
-                            .foregroundStyle(theme.ink.opacity(0.65))
+                            .foregroundStyle(theme.secondaryInk)
                         Text("A different key arrived for this contact. Check the new fingerprint with them over a channel the server doesn't control before trusting it.")
                             .font(AppFont.ui(13))
                             .foregroundStyle(theme.inkStrong)
@@ -342,7 +342,7 @@ struct ContactDetailView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(AppFont.ui(11, weight: .medium))
-                .foregroundStyle(theme.ink.opacity(0.65))
+                .foregroundStyle(theme.secondaryInk)
             Text(Self.fingerprintText(for: armored))
                 .font(AppFont.mono(12))
                 .foregroundStyle(theme.inkStrong)
@@ -372,7 +372,7 @@ struct ContactDetailView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("PGP KEY")
                             .font(AppFont.ui(11, weight: .medium))
-                            .foregroundStyle(theme.ink.opacity(0.65))
+                            .foregroundStyle(theme.secondaryInk)
                         // The fingerprint, not just "on file": this is the
                         // value the user compares out of band, and it was
                         // previously unreachable anywhere in the app for a
@@ -419,10 +419,10 @@ struct ContactDetailView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label.uppercased())
                     .font(AppFont.ui(11, weight: .medium))
-                    .foregroundStyle(theme.ink.opacity(0.65))
+                    .foregroundStyle(theme.secondaryInk)
                 Text(value.isEmpty ? "—" : value)
                     .font(AppFont.mono(14))
-                    .foregroundStyle(value.isEmpty ? theme.ink.opacity(0.5) : theme.inkStrong)
+                    .foregroundStyle(value.isEmpty ? theme.secondaryInk : theme.inkStrong)
                     .textSelection(.enabled)
             }
             Spacer(minLength: 0)

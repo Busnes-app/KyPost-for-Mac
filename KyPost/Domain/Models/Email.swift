@@ -136,6 +136,11 @@ struct OutgoingEmail: Sendable {
     var allowPickupFallback = false
     /// Relay mode only: server-side categorization.
     var tab: String?
+    /// Sent as the `Idempotency-Key` header. One per compose window, stable
+    /// across every retry of that message, so a relay that dedupes on it can
+    /// answer a retry of a send whose response was lost without mailing it
+    /// twice. Never in the JSON body; nil sends no header.
+    var idempotencyKey: String?
 }
 
 /// A file attached to an outgoing email; sent base64-encoded in the

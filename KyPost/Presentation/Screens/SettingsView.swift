@@ -22,6 +22,7 @@ struct SettingsView: View {
         deviceRegistrationService: SingletonGraph.shared.deviceRegistrationService,
         deregisterDeviceUseCase: SingletonGraph.shared.deregisterDeviceUseCase,
         pushNotificationDispatcher: SingletonGraph.shared.pushNotificationDispatcher,
+        erasePreservedStore: SingletonGraph.shared.erasePreservedStoreStep,
         enrollmentVault: SingletonGraph.shared.enrollmentVault,
         appLockManager: SingletonGraph.shared.appLockManager,
         pushRepository: SingletonGraph.shared.pushRepository,
@@ -67,7 +68,7 @@ struct SettingsView: View {
                     }
                     Text("Pair this device with your KyPost account to load mail.")
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                     Button("Pair Device") { showPairingSheet = true }
                         .buttonStyle(PrimaryButtonStyle())
                 }
@@ -129,7 +130,7 @@ struct SettingsView: View {
                 if viewModel.contactsExportDenied {
                     Text("Contacts access is denied for KyPost.")
                         .font(AppFont.ui(13))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                     Button("Open Settings") { viewModel.openContactsPrivacySettings() }
                         .buttonStyle(SecondaryButtonStyle())
                 }
@@ -164,7 +165,7 @@ struct SettingsView: View {
             .listRowBackground(theme.panel)
 
             Section("About") {
-                NavigationLink("Donate / Support KyPost") {
+                NavigationLink("About & Tip Jar") {
                     AboutView()
                 }
             }

@@ -77,8 +77,10 @@ private func armored(_ packets: Data, headers: String = "Version: KyPostTest\n")
         var otherBody = keyBody
         otherBody[1] = 0x61 // a different creation time => a different key
         let decoy = Data([0xC6, UInt8(keyBody.count)]) + keyBody
-        let real = Data([0xC6, UInt8(otherBody.count)]) + otherBody
-            + Data([0xCD, 0x03]) + Data("uid".utf8) // tag 13 user id
+        // Built in steps, like every multi-packet blob here: long `+` chains
+        // of Data time out the type checker under Xcode 27.1.
+        var real = Data([0xC6, UInt8(otherBody.count)]) + otherBody
+        real += Data([0xCD, 0x03]) + Data("uid".utf8) // tag 13 user id
 
         #expect(PgpFingerprint.compute(fromArmored: armored(decoy + real)) == nil)
     }
@@ -88,10 +90,10 @@ private func armored(_ packets: Data, headers: String = "Version: KyPostTest\n")
         // the blob outright. Refuse rather than pick one.
         var otherBody = keyBody
         otherBody[1] = 0x61
-        let first = Data([0xC6, UInt8(keyBody.count)]) + keyBody
-            + Data([0xCD, 0x03]) + Data("uid".utf8)
-        let second = Data([0xC6, UInt8(otherBody.count)]) + otherBody
-            + Data([0xCD, 0x03]) + Data("uid".utf8)
+        var first = Data([0xC6, UInt8(keyBody.count)]) + keyBody
+        first += Data([0xCD, 0x03]) + Data("uid".utf8)
+        var second = Data([0xC6, UInt8(otherBody.count)]) + otherBody
+        second += Data([0xCD, 0x03]) + Data("uid".utf8)
 
         #expect(PgpFingerprint.compute(fromArmored: armored(first + second)) == nil)
     }
