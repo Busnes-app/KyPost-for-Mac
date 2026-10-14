@@ -80,8 +80,11 @@ jobs:
           nohup xcrun simctl boot "$UDID" > "$RUNNER_TEMP/simctl-boot.log" 2>&1 &
 
       - name: Build for testing
-        # Built against the simulator by id, so the products match the device
-        # the next step tests on and `test-without-building` reuses them.
+        # Built for the generic simulator, not the booting device by id: with
+        # the id, xcodebuild sat idle for 3 minutes waiting on the boot before
+        # it compiled anything. ARCHS=arm64 because a generic destination has
+        # no active arch and would otherwise build x86_64 as well; the runners
+        # and their simulators are arm64.
         #
         # Do NOT add CODE_SIGNING_ALLOWED=NO here as an "it's only a simulator"
         # tidy-up. That strips the entitlements rather than the certificate,
@@ -89,7 +92,8 @@ jobs:
         run: |
           .github/scripts/run-xcodebuild.sh build-for-testing \
             -scheme KyPost \
-            -destination "platform=iOS Simulator,id=${SIMULATOR_UDID}"
+            -destination 'generic/platform=iOS Simulator' \
+            ARCHS=arm64
 
       - name: Wait for the simulator
         # `-b` boots it if the background boot failed to start, so this step
