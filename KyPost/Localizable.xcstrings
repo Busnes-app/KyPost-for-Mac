@@ -1,6 +1,27 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "This key couldn't be verified in person: their code doesn't carry a fingerprint from their own device. You can save it, but it won't be marked as verified." : {
+
+    },
+    "Save Unverified" : {
+
+    },
+    "Not verified in person." : {
+
+    },
+    "Your fingerprint, from the key on this device" : {
+
+    },
+    "Fingerprint reported by the server, not checked on this device. They can't verify this code in person." : {
+
+    },
+    "No fingerprint from a key on this device, so they can't verify this code in person." : {
+
+    },
+    "Unlock Key to Verify" : {
+
+    },
     "RSVP may not have been sent: %@. Check your Sent folder before trying again." : {
 
     },
