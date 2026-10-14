@@ -755,7 +755,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
 
 @Suite struct EnrollmentVaultRecordTests {
     private func vault(_ store: MemoryItemStore = MemoryItemStore()) -> EnrollmentVault {
-        EnrollmentVault(keychain: store, keyTag: "org.kysecurity.mail.tests.\(UUID().uuidString)")
+        testVault(store)
     }
 
     @Test func aRecordRoundTripsWithItsKindAndGeneration() throws {
@@ -777,7 +777,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
         try store.setData(Data("ABCD".utf8), forKey: "enrollment.identityFingerprint")
         let vault = vault(store)
         #expect(vault.isEnrolled)
-        let record = try #require(try vault.storedRecord())
+        let record = try #require(try vault.openRecord())
         #expect(record.kind == .legacyArmor)
         #expect(record.material == Data("ARMOR".utf8))
         #expect(vault.identityFingerprint == "ABCD")
@@ -789,7 +789,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
         let vault = vault(store)
         vault.markTeardownReport()
         try vault.store(privateKey: Data("NEW".utf8), identityFingerprint: "AB")
-        #expect(try vault.storedRecord()?.material == Data("NEW".utf8))
+        #expect(try vault.openRecord()?.material == Data("NEW".utf8))
         #expect(!store.keys.contains("enrollment.sealedEnvelope"))
         #expect(!vault.teardownReportPending)
     }
@@ -806,7 +806,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
                 identityFingerprint: V3Fixtures.active, materialGeneration: 2
             ))
         }
-        let record = try #require(try vault.storedRecord())
+        let record = try #require(try vault.openRecord())
         #expect(record.kind == .legacyArmor)
         #expect(record.material == Data("OLD".utf8))
     }
@@ -814,7 +814,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
     @Test func aRecordThatDoesNotDecodeIsNeverReadAsEmpty() throws {
         let store = MemoryItemStore()
         try store.setData(Data("garbage".utf8), forKey: "enrollment.vaultRecord")
-        #expect(throws: EnrollmentVaultError.unreadableRecord) { try vault(store).storedRecord() }
+        #expect(throws: EnrollmentVaultError.unreadableRecord) { try vault(store).openRecord() }
     }
 
     @Test func theKeyringAcknowledgementIsReadFromTheRecord() throws {
@@ -874,7 +874,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
 
 @Suite(.serialized) struct VaultSealerImportTests {
     private func sealer(_ store: MemoryItemStore, session: EnrollmentSession) -> (VaultSealer, EnrollmentVault) {
-        let vault = EnrollmentVault(keychain: store, keyTag: "org.kysecurity.mail.tests.\(UUID().uuidString)")
+        let vault = testVault(store)
         return (VaultSealer(vault: vault, deviceId: "dev", inspector: crypto, session: session), vault)
     }
 
@@ -887,7 +887,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
             identityFingerprint: V3Fixtures.active, delivery: V3Fixtures.delivery
         )
         #expect(report == .keyring(materialGeneration: 2, fingerprint: V3Fixtures.active))
-        #expect(try vault.storedRecord()?.kind == .keyring)
+        #expect(try vault.openRecord()?.kind == .keyring)
         #expect(session.materialGeneration == 2)
         #expect(session.holdsKeyring(identicalTo: V3Fixtures.ringBytes))
     }
@@ -906,7 +906,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
                 identityFingerprint: V3Fixtures.active, delivery: V3Fixtures.delivery
             )
         }
-        #expect(try vault.storedRecord()?.kind == .legacyArmor)
+        #expect(try vault.openRecord()?.kind == .legacyArmor)
         #expect(session.materialGeneration == nil)
         #expect(session.withKey { $0 } == Data("PREVIOUS".utf8))
     }
@@ -1203,9 +1203,7 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
 
 @MainActor @Suite(.serialized) struct EnrollmentReportTriggerTests {
     private func pendingVault() throws -> EnrollmentVault {
-        let vault = EnrollmentVault(
-            keychain: MemoryItemStore(), keyTag: "org.kysecurity.mail.tests.\(UUID().uuidString)"
-        )
+        let vault = testVault()
         try vault.store(VaultRecord(
             kind: .keyring, material: V3Fixtures.ringBytes,
             identityFingerprint: V3Fixtures.active, materialGeneration: 2

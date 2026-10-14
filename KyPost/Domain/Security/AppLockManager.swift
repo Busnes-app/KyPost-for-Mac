@@ -28,6 +28,15 @@ protocol DeviceAuthenticating {
     /// (passcode/login password at minimum).
     func canAuthenticate() -> Bool
     func authenticate(reason: String) async -> Bool
+    /// The app unlock: authenticates and hands back the evaluated context, so
+    /// the vault can reuse it until the lock engages (`PresenceContext`).
+    func authenticateForUnlock(reason: String) async -> (succeeded: Bool, context: LAContext?)
+}
+
+extension DeviceAuthenticating {
+    func authenticateForUnlock(reason: String) async -> (succeeded: Bool, context: LAContext?) {
+        (await authenticate(reason: reason), nil)
+    }
 }
 
 nonisolated struct LocalAuthenticationAuthenticator: DeviceAuthenticating {
@@ -36,13 +45,18 @@ nonisolated struct LocalAuthenticationAuthenticator: DeviceAuthenticating {
     }
 
     func authenticate(reason: String) async -> Bool {
+        await authenticateForUnlock(reason: reason).succeeded
+    }
+
+    func authenticateForUnlock(reason: String) async -> (succeeded: Bool, context: LAContext?) {
         // A fresh context per call: LAContext is single-use once invalidated,
         // and reuse can return stale grace-period results.
         let context = LAContext()
-        return (try? await context.evaluatePolicy(
+        let succeeded = (try? await context.evaluatePolicy(
             .deviceOwnerAuthentication,
             localizedReason: reason
         )) ?? false
+        return (succeeded, succeeded ? context : nil)
     }
 }
 
@@ -144,6 +158,11 @@ final class AppLockManager {
     /// key still in the process heap.
     private let enrollmentSession: EnrollmentSession
 
+    /// The vault's shared authenticated context: adopted from a successful
+    /// unlock, invalidated wherever `enrollmentSession` is cleared by a lock
+    /// trigger, so the key's presence prompt comes back after every lock.
+    private let presence: PresenceContext
+
     /// The device-bound secret the stored verifier is peppered with. Injected
     /// so the whole exit table below is testable without a Secure Enclave.
     private let pepper: any PinPepper
@@ -166,12 +185,14 @@ final class AppLockManager {
         store: AppLockStore,
         authenticator: any DeviceAuthenticating = LocalAuthenticationAuthenticator(),
         enrollmentSession: EnrollmentSession = .shared,
+        presence: PresenceContext = .shared,
         pepper: (any PinPepper)? = nil,
         monotonicMillis: @escaping () -> Int64 = AppLockManager.systemMonotonicMillis
     ) {
         self.store = store
         self.authenticator = authenticator
         self.enrollmentSession = enrollmentSession
+        self.presence = presence
         let resolvedPepper = pepper ?? DevicePinPepper(keychain: KeychainStorage())
         self.pepper = resolvedPepper
         self.monotonicMillis = monotonicMillis
@@ -210,6 +231,7 @@ final class AppLockManager {
     /// never pushed back.
     func lockAfterGrace() {
         enrollmentSession.clear()
+        presence.invalidate()
         guard isLockEnabled, !isLocked else { return }
         let grace = store.lockGraceSeconds
         guard grace > 0 else {
@@ -306,6 +328,7 @@ final class AppLockManager {
         // those are settings about the UI gate, not a reason to keep an
         // unsealed key in memory.
         enrollmentSession.clear()
+        presence.invalidate()
         guard isLockEnabled, !isLocked else { return }
         clearPendingLock()
         isLocked = true
@@ -316,7 +339,10 @@ final class AppLockManager {
     @discardableResult
     func requestUnlock() async -> Bool {
         guard isLocked else { return true }
-        guard await authenticator.authenticate(reason: String(localized: "Unlock KyPost")) else {
+        let (succeeded, context) = await authenticator.authenticateForUnlock(
+            reason: String(localized: "Unlock KyPost")
+        )
+        guard succeeded else {
             failedUnlockAttempts += 1
             return false
         }
@@ -339,6 +365,9 @@ final class AppLockManager {
         // (Android 7d791090).
         clearPendingLock()
         isLocked = false
+        // Once per app unlock: the vault reuses this context rather than
+        // prompting again when encrypted mail is opened.
+        if let context { presence.adopt(context) }
         onUnlock?()
         return true
     }

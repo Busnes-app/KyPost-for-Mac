@@ -2,8 +2,10 @@
 //  DeviceVaultOpener.swift
 //  KyPost
 //
-//  The real `VaultOpening`: reads the sealed envelope back out of the
-//  Keychain, which is where the user-presence prompt happens.
+//  The real `VaultOpening`: opens the sealed record with the Secure Enclave
+//  device key, which is where the user-presence prompt happens — at most once
+//  per app unlock (`PresenceContext`). A plaintext record from an earlier
+//  build is re-sealed on this first presence-checked open.
 //
 //  Separate from EnrollmentVault so EncryptedMessageReader stays free of
 //  platform imports — the reader talks to the protocol, and this is the only
@@ -23,12 +25,12 @@ nonisolated struct DeviceVaultOpener: VaultOpening {
     }
 
     func open() async -> VaultOpenOutcome {
-        // Off the calling actor: reading an access-controlled Keychain item
-        // blocks until the user answers the presence prompt, and doing that on
-        // the main actor freezes the window the prompt is attached to.
+        // Off the calling actor: the Secure Enclave operation blocks until the
+        // user answers the presence prompt, and doing that on the main actor
+        // freezes the window the prompt is attached to.
         await Task.detached(priority: .userInitiated) {
             do {
-                guard let record = try vault.storedRecord() else { return .notEnrolled }
+                guard let record = try vault.openRecord() else { return .notEnrolled }
                 switch record.kind {
                 case .legacyArmor:
                     return VaultOpenOutcome.opened(.legacyArmor(record.material))

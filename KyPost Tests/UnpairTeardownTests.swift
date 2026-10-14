@@ -20,6 +20,18 @@ import Testing
         )
     }
 
+    /// Storing seals to the device key, which a test host has none of: the
+    /// graph's vault gets the fake one, on the graph's own Keychain and a
+    /// throwaway tag (destroy deletes the key by tag).
+    private func useFakeDeviceKey(_ graph: SingletonGraph) {
+        graph.enrollmentVault = EnrollmentVault(
+            keychain: graph.keychain,
+            keyTag: "org.kysecurity.mail.tests.\(UUID().uuidString)",
+            sealing: FakeKeySealing(),
+            presence: PresenceContext()
+        )
+    }
+
     /// Built on a mock contact store rather than `graph.systemContactsExporter`,
     /// whose live store reads the real Contacts database of whoever runs the
     /// suite.
@@ -60,6 +72,7 @@ import Testing
     /// machine the account no longer knows about, so no revocation reaches it.
     @Test func unpairingDestroysTheSealedEnvelope() async throws {
         let graph = try makeGraph()
+        useFakeDeviceKey(graph)
         try graph.enrollmentVault.store(
             privateKey: Data("-----BEGIN PGP PRIVATE KEY BLOCK-----".utf8),
             identityFingerprint: "AABBCCDDEEFF00112233445566778899AABBCCDD"
@@ -137,6 +150,7 @@ import Testing
     /// is left for B.
     @Test func pairingAnotherAccountOverThisOneLeavesNoneOfItsState() async throws {
         let graph = try makeGraph()
+        useFakeDeviceKey(graph)
         try graph.securePairingStore.savePairing(Pairing(
             sub: "u1", deviceSecret: "s1", srv: server, registrationUrl: nil,
             pairingToken: "pt", lastDeviceId: "dev-1", pairedAt: Date()
