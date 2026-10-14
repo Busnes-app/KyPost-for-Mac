@@ -9,12 +9,6 @@
     }
   ],
   "defaultOptions" : {
-    "environmentVariableEntries" : [
-      {
-        "key" : "GODEBUG",
-        "value" : "asyncpreemptoff=1"
-      }
-    ],
     "testTimeoutsEnabled" : true
   },
   "testTargets" : [

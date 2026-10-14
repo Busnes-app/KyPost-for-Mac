@@ -147,6 +147,13 @@ intact and the wipe landed a few hundred milliseconds later.
   (`NotificationHistoryAccess`), which the macOS Settings scene shows outside
   the main window's recovery screen.
 
+`KyPostApp.init` deletes the attachment staging root
+(`InboxViewModel.attachmentTempRoot`, decrypted previews included) through
+`sweepStaleAttachmentFiles`, before any scene exists. Previews are otherwise
+removed only on close, wipe or a Hostile Location Protection toggle, and a
+crash skips the close. It lives in `init`, not `onLaunch`, because `onLaunch`
+re-runs on every graph rebuild.
+
 `AppLockManager.onWipe` is wired in `onLaunch`. Left unset it fails closed and
 reports a wipe that could not run, rather than rejecting the eleventh wrong PIN
 exactly like the third.
@@ -346,7 +353,7 @@ Rules:
 
 - `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (`AppEnvironmentTests`, `SecurityTests`, `SecurityWipeTests`,
-  `SecurityWipeStepsTests`, `PullHeartbeatTests`).
+  `SecurityWipeStepsTests`, `PullHeartbeatTests`, `LaunchSweepTests`).
 - The rebuild path is exercised end-to-end by toggling Hostile Location
   Protection in Settings → Security on a paired build.
 

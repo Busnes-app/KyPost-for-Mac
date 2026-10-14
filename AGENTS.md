@@ -105,32 +105,46 @@ Default section order:
   Note `parallelizable` belongs on each entry in `testTargets`, not in
   `defaultOptions`, where it is silently ignored.
 
-- **`KyPost.xctestplan` sets `GODEBUG=asyncpreemptoff=1`.** Without it a Go
-  runtime crash, unrelated to any test, kills the run (exit 65):
+- **The GopenPGP binary bakes in `GODEBUG=asyncpreemptoff=1`; nothing sets
+  it at run time.** Without it the embedded Go runtime kills whatever process
+  links it, the shipping app as well as the test host:
 
   ```
   signal 16 received on thread with no signal stack
   fatal error: non-Go code disabled sigaltstack
   ```
 
-  Signal 16 is `SIGURG`, which Go uses for async goroutine preemption; it
-  arrives on a thread whose alternate signal stack something else has removed.
-  It comes from the GopenPGP XCFramework's embedded Go runtime, live for the
-  whole test process once any test touches PGP. It arrived with the
-  XCFramework in Phase 8, stopped reproducing for a while (0 in 21 runs on
-  2026-08-27) and came back.
+  Signal 16 is `SIGURG`, which Go sends for async goroutine preemption; it
+  lands on a thread whose alternate signal stack non-Go code has removed. In a
+  macOS crash report it shows only as `EXC_CRASH (SIGABRT)` with
+  `runtime.raise_trampoline` ← `runtime.asmcgocall` on the crashed thread (the
+  Go frames are stripped); the text above goes to stderr. A UI launch test
+  reports it as "Application 'org.kysecurity.mail' does not have a process
+  ID".
 
-  **Measured 2026-10-12** (`test-without-building`, full `KyPost Tests`,
-  Xcode 26.6, macOS 26.5.2, GopenPGP v3.4.1, alternating runs on a loaded
-  machine): **4 crashes in 8 runs without the setting, 0 in 8 with it.** At
-  the observed rate a clean 8 by luck is about 1 in 256.
+  **Where it is set, and why there.** `gopenpgp-xcframework.yml` adds
+  `-X=runtime.godebugDefault=asyncpreemptoff=1` to upstream's `build.sh`
+  ldflags. The runtime reads that string in `schedinit`
+  (`parsedebugvars`) before any Go code runs. The alternatives do not work:
+  `setenv` in the app is too late, because the c-archive runtime starts from
+  an image constructor before `main`, and cmd/go rejects `asyncpreemptoff` in
+  a `godebug` directive or `//go:debug` line (it accepts only the keys in
+  `internal/godebugs`). A `GODEBUG` environment variable still overrides the
+  default. The workflow checks every slice carries the value.
 
-  The setting only turns off Go's async preemption inside the test process;
-  goroutines still yield at function calls. Do not remove it without
-  re-measuring the same way. If the crash ever returns with it set, a bounded
-  retry keyed on this exact signature is the fallback, never a blanket job
-  retry, which would also paper over real failures. The shipping app does not
-  set it; nothing so far shows the app process crashing this way.
+  **Measured 2026-10-13** (macOS 26.5.2, Xcode 27.1, GopenPGP v3.5.2 built
+  with Go 1.26.5 locally and 1.27.2 in CI, `KyPost.xctestplan` with no
+  `GODEBUG`, alternating runs):
+  - full `KyPost Tests`: **4 crashes in 8 runs without the baked default, 0
+    in 8 with it**, then **0 in 8 more against the published pin**;
+  - launching the app binary for 20 s: **3 of 8 died without it, 0 of 8 with
+    it**; the launch UI test failed 1 of 8 without it, 0 of 8 with it.
+
+  It only turns off async preemption; goroutines still yield at function
+  calls. A GopenPGP rebuild that drops the flag brings the crash back in the
+  app, not only in tests. If it ever returns with the flag present, a bounded
+  retry keyed on this exact signature is the test-side fallback, never a
+  blanket job retry.
 
 ## Local Contracts
 
@@ -145,7 +159,12 @@ a crypto path acceptable.
   ProtonMail/gopenpgp at the tag in `Dependencies/gopenpgp.env`, using
   **upstream's own `build.sh`** rather than a reimplemented `gomobile bind`.
   Reimplementing it got three things wrong that the script encodes; call the
-  script.
+  script. The workflow's one patch to it adds
+  `-X=runtime.godebugDefault=asyncpreemptoff=1` to its `-ldflags`, fails if
+  that line stops matching, and checks every slice carries the value after
+  the build (see the GODEBUG note under Testing). Keep it on any rebuild.
+- Track plain `vX.Y.Z` tags. `vX.Y.Z-proton` builds against Proton's
+  go-crypto fork and swaps in Proton's own default profile.
 - **The build is not bit-reproducible.** Two runs of the same pinned tag
   produced different hashes. gomobile embeds build IDs and paths and the job
   does not pin Xcode, so the checksum identifies one specific build. Do not
