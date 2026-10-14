@@ -322,7 +322,7 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         let requests = Box(0)
         let env = try makeEnvironment(client: stubClient(json: json) { _ in requests.mutate { $0 += 1 } })
 
-        #expect(await AccountTeardown(pushRepository: env.repository).run())
+        #expect(await AccountTeardown(erasePreservedStore: nil, pushRepository: env.repository).run())
         #expect(try env.pairingStore.loadPairing()?.sub == "u1")
 
         await #expect(throws: MailSourceError.notPaired) { try await env.repository.pullOnce() }

@@ -15,8 +15,10 @@ import os
 struct AccountTeardown {
     /// Set when this session runs in memory over a store file it kept
     /// (`AppDatabase.erasePreservedStore`): the account's mail and contacts
-    /// on disk were never in the stores the steps below clear.
-    var erasePreservedStore: (() -> Bool)?
+    /// on disk were never in the stores the steps below clear. Required, nil
+    /// where no store was kept (`SingletonGraph.erasePreservedStoreStep`), so
+    /// no call site can drop it without saying so.
+    let erasePreservedStore: (() -> Bool)?
     var enrollmentVault: EnrollmentVault?
     var pushRepository: PushRepository?
     var recipientPinStore: RecipientPinStore?

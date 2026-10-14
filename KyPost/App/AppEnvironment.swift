@@ -105,11 +105,11 @@ final class AppEnvironment {
 
     /// An in-memory session. `preservingStore`: a store file is kept on disk
     /// that this session never opened, so leaving the account must erase it
-    /// too (`SingletonGraph.preservesDiskStore`, `AccountTeardown`).
+    /// too (`SingletonGraph.preservedStoreURL`, `AccountTeardown`).
     private static func makeFallbackGraph(preservingStore: Bool) -> SingletonGraph {
         do {
             let graph = try SingletonGraph(database: AppDatabase(inMemory: true))
-            graph.preservesDiskStore = preservingStore
+            if preservingStore { graph.preservedStoreURL = AppDatabase.storeURL }
             return graph
         } catch {
             // An in-memory SwiftData container failing means the schema itself

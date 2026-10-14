@@ -104,8 +104,10 @@ and re-ran `requestAuthorization` on every toggle.
 it might still read. A `ModelContainer` that will not open is deleted (and
 the contact cursor reset) only when `AppDatabase.openFailureDisposition` says
 this build can never read it; otherwise the file is kept and the session runs
-in memory. Such a graph has `preservesDiskStore` set, and its
-`AccountTeardown` erases the kept file too (`AppDatabase.erasePreservedStore`):
+in memory. Such a graph has `preservedStoreURL` set, and every
+`AccountTeardown` — replacement and Settings → unpair alike, through the
+required `erasePreservedStore` argument (`erasePreservedStoreStep`) — erases
+the kept file too (`AppDatabase.erasePreservedStore`):
 the steps clear only the in-memory copy, and the file would reopen with the
 left account's mail. A delete that fails leaves `store.pendingErase` set, and
 `makeLaunchGraph` erases the file before opening it (`storeMayOpen`), or runs
