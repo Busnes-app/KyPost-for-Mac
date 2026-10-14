@@ -758,6 +758,14 @@ old sentence edited out.
   relay client `URLSession.shared`. Redirects must keep scheme https, host and
   effective port.
 - A pairing (not a re-registration) posts `.kyPostPaired` once stored.
+- **A reset ends registrations in flight.** `.kyPostSessionReset` and
+  `SingletonGraph.shutdown()` call `DeviceRegistrationService.cancelAll()`,
+  which closes open pairing connections (graph shutdown's
+  `relaySession.invalidateAndCancel()` does not reach them) and moves the
+  service's session on. A result from an older session stores and announces
+  nothing — checked before every write and after every await — or an answer
+  landing after a wipe or failed-unlock reset would restore the pairing on
+  an app that reset just unlocked.
 
 ### Relay error mapping (`Data/Mail/MailSource.swift`)
 

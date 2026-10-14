@@ -395,6 +395,9 @@ final class SingletonGraph {
         // a superseded graph's requests write to a database that is going
         // away, and the Hostile Location Protection case wants them gone now.
         relaySession.invalidateAndCancel()
+        // Pairing attempts have their own sessions, which the line above does
+        // not reach; a superseded graph must not store a pairing.
+        deviceRegistrationService.cancelAll()
     }
 
     // MARK: - Startup migrations

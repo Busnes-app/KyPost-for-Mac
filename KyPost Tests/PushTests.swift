@@ -851,6 +851,107 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         withExtendedLifetime(observation) {}
     }
 
+    // MARK: - A reset ends registrations in flight
+
+    /// A registration held in flight across a session reset (wipe,
+    /// failed-unlock reset, unpair) must not put the erased pairing back
+    /// when its answer finally lands — the reset also left the app unlocked.
+    @Test func aPairingAnsweredAfterASessionResetStoresNothing() async throws {
+        let requested = Box(false)
+        let released = Box(false)
+        let held = HTTPClient { request in
+            requested.value = true
+            while !released.value { try await Task.sleep(for: .milliseconds(5)) }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#.utf8), response)
+        }
+        let (defaults, keychain) = scratchStores()
+        let pairingStore = SecurePairingStore(keychain: keychain)
+        let center = NotificationCenter()
+        // The connection registers over `held`, so the answer can be delayed.
+        let heldConnections = StubPairingConnections(client: held)
+        let service = DeviceRegistrationService(
+            client: NativeRegistrationClient(httpClient: stubClient()),
+            securePairingStore: pairingStore,
+            pushSettingsStore: PushSettingsStore(defaults: defaults),
+            notificationCenter: center,
+            makePairingConnection: { heldConnections.make(host: $0, pin: $1) }
+        )
+        let announced = Box(0)
+        let observation = NotificationObservation(center: .default, name: .kyPostPaired) {
+            announced.mutate { $0 += 1 }
+        }
+
+        let attempt = Task { await service.pair(params: params, deviceToken: "t") }
+        while !requested.value { try await Task.sleep(for: .milliseconds(5)) }
+        center.post(name: .kyPostSessionReset, object: nil)
+        #expect(heldConnections.last?.isClosed == true, "the reset closes the pairing connection")
+        released.value = true
+        let outcome = await attempt.value
+
+        guard case .failure = outcome else {
+            Issue.record("expected the cancelled pairing to fail, got \(outcome)")
+            return
+        }
+        #expect(try pairingStore.loadPairing() == nil)
+        #expect(try pairingStore.pinnedSpkiHash(forHost: relayHost) == nil)
+        #expect(announced.value == 0)
+        withExtendedLifetime(observation) {}
+    }
+
+    /// Same for a re-registration: an unpair that lands while it is in
+    /// flight must not be undone by its answer.
+    @Test func aReregistrationAnsweredAfterCancelAllStoresNothing() async throws {
+        let requested = Box(false)
+        let released = Box(false)
+        let held = HTTPClient { request in
+            requested.value = true
+            while !released.value { try await Task.sleep(for: .milliseconds(5)) }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"ok": true, "deviceId": "dev-8", "deviceSecret": "s-8"}"#.utf8), response)
+        }
+        let env = try makeEnvironment(client: held, paired: true)
+
+        let attempt = Task { await env.service.reregisterIfPaired(deviceToken: "t2") }
+        while !requested.value { try await Task.sleep(for: .milliseconds(5)) }
+        try env.pairingStore.clear()
+        env.service.cancelAll()
+        released.value = true
+        _ = await attempt.value
+
+        #expect(try env.pairingStore.loadPairing() == nil)
+    }
+
+    /// Graph shutdown cancels `relaySession`, which pairing does not ride,
+    /// so it must reach the pairing service itself.
+    @Test func graphShutdownCancelsPairingInFlight() async throws {
+        let requested = Box(false)
+        let released = Box(false)
+        let held = HTTPClient { request in
+            requested.value = true
+            while !released.value { try await Task.sleep(for: .milliseconds(5)) }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#.utf8), response)
+        }
+        let graph = try SingletonGraph(
+            userDefaults: UserDefaults(suiteName: "tests.\(UUID().uuidString)")!,
+            keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)"),
+            database: AppDatabase(inMemory: true)
+        )
+        let connections = StubPairingConnections(client: held)
+        let service = graph.deviceRegistrationService
+        service.makePairingConnection = { connections.make(host: $0, pin: $1) }
+
+        let attempt = Task { await service.pair(params: params, deviceToken: "t") }
+        while !requested.value { try await Task.sleep(for: .milliseconds(5)) }
+        graph.shutdown()
+        #expect(connections.last?.isClosed == true)
+        released.value = true
+        _ = await attempt.value
+
+        #expect(try graph.securePairingStore.loadPairing() == nil)
+    }
+
     @Test func aRefusedPairingIsNotAnnounced() async throws {
         let env = try makeEnvironment(client: stubClient(), observed: nil)
         let announced = Box(0)

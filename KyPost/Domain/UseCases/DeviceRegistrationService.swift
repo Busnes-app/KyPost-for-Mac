@@ -82,16 +82,53 @@ final class DeviceRegistrationService {
     /// link's pin.
     private var inFlight: [String: Task<RegistrationOutcome, Never>] = [:]
 
+    /// Moves on whenever the session ends (`cancelAll`). A registration that
+    /// started under an older value stores and announces nothing: a pairing
+    /// that answered after a wipe or failed-unlock reset would otherwise put
+    /// the erased account back — on an app the reset just left unlocked.
+    private var session = 0
+    /// Pairing connections open right now, closed by `cancelAll`. Graph
+    /// shutdown cancels `relaySession` but not these.
+    private var openConnections: [ObjectIdentifier: any PairingConnection] = [:]
+    private var resetObservation: NotificationObservation?
+
     init(
         client: NativeRegistrationClient,
         securePairingStore: SecurePairingStore,
         pushSettingsStore: PushSettingsStore,
+        notificationCenter: NotificationCenter = .default,
         makePairingConnection: @escaping (_ host: String, _ pin: String?) -> any PairingConnection
     ) {
         self.client = client
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
         self.makePairingConnection = makePairingConnection
+        // Wipe, failed-unlock reset and unpair all post this before erasing.
+        resetObservation = NotificationObservation(
+            center: notificationCenter,
+            name: .kyPostSessionReset
+        ) { [weak self] in
+            self?.cancelAll()
+        }
+    }
+
+    /// Ends every registration in flight: closes the pairing connections,
+    /// cancels the tasks, and makes any result still on its way store
+    /// nothing. Runs on `.kyPostSessionReset` and from
+    /// `SingletonGraph.shutdown()`.
+    func cancelAll() {
+        session += 1
+        for connection in openConnections.values {
+            connection.close()
+        }
+        openConnections = [:]
+        for task in inFlight.values {
+            task.cancel()
+        }
+    }
+
+    private static var cancelledMessage: String {
+        String(localized: "Pairing was cancelled because this device's session ended. Nothing was saved.")
     }
 
     /// Initial pairing (QR scan / deep link). Persists the pairing, its
@@ -123,13 +160,16 @@ final class DeviceRegistrationService {
         // store it again over the teardown.
         guard let pairing = try? securePairingStore.loadActivePairing() else { return nil }
         let params = PairingParams(pairing: pairing)
+        let session = session
         return await deduplicated(key: "reregister|\(params.pt)|\(deviceToken)") {
             let outcome = await self.client.register(
                 deviceToken: deviceToken,
                 params: params,
                 deviceId: pairing.lastDeviceId
             )
-            return await self.storeRegistration(outcome, params: params, deviceId: pairing.lastDeviceId, pin: nil)
+            return await self.storeRegistration(
+                outcome, params: params, deviceId: pairing.lastDeviceId, pin: nil, session: session
+            )
         }
     }
 
@@ -183,10 +223,17 @@ final class DeviceRegistrationService {
         }
         let expectedPin = params.pin ?? storedPin
 
+        let session = session
         let connection = makePairingConnection(host, expectedPin)
-        defer { connection.close() }
+        let connectionId = ObjectIdentifier(connection)
+        openConnections[connectionId] = connection
+        defer {
+            openConnections[connectionId] = nil
+            connection.close()
+        }
 
         guard let observed = await connection.probe(srvURL) else {
+            guard session == self.session else { return .failure(Self.cancelledMessage) }
             Log.app.error("No certificate could be observed on the pairing handshake; refusing to register.")
             return .failure(String(localized: "KyPost couldn't read this server's security certificate, so it didn't pair. Check the connection and try again. Nothing was sent."))
         }
@@ -196,6 +243,8 @@ final class DeviceRegistrationService {
                 ? Self.storedPinMismatchMessage(host: host)
                 : String(localized: "This server's certificate does not match the pairing link. Nothing was sent. Do not pair on this network."))
         }
+        // A session that ended during the probe sends nothing at all.
+        guard session == self.session else { return .failure(Self.cancelledMessage) }
         connection.pin(observed)
 
         let outcome = await connection.register(
@@ -203,7 +252,7 @@ final class DeviceRegistrationService {
             params: params,
             deviceId: deviceId
         )
-        return await storeRegistration(outcome, params: params, deviceId: deviceId, pin: observed)
+        return await storeRegistration(outcome, params: params, deviceId: deviceId, pin: observed, session: session)
     }
 
     static func replacesStoredPinMessage(host: String) -> String {
@@ -221,8 +270,12 @@ final class DeviceRegistrationService {
         _ outcome: RegistrationOutcome,
         params: PairingParams,
         deviceId: String?,
-        pin: String?
+        pin: String?,
+        session: Int
     ) async -> RegistrationOutcome {
+        // Checked before every write and after every await below: a reset
+        // can land while the response is in flight or while a step awaits.
+        guard session == self.session else { return .failure(Self.cancelledMessage) }
         guard case .success(let response) = outcome else { return outcome }
         // Routine re-registration of the same account (foreground, token
         // refresh) must not restart the heartbeat's quiet clock: it proves
@@ -250,6 +303,7 @@ final class DeviceRegistrationService {
         if replacesAccount, let onAccountReplaced, !(await onAccountReplaced()) {
             return .failure(String(localized: "Registered, but this device could not erase the previous account's data, so the new pairing was not saved. Try again."))
         }
+        guard session == self.session else { return .failure(Self.cancelledMessage) }
         do {
             // The pin is written with the pairing, under the same lock, and
             // a pin for another host is dropped there. A pairing that
@@ -286,7 +340,7 @@ final class DeviceRegistrationService {
         if isExistingPairingWithoutStamp {
             await reconcileExistingPairingPushes?()
         }
-        if pin != nil {
+        if pin != nil, session == self.session {
             // A new pairing: screens showing "not paired" load at once
             // instead of waiting for their next timer.
             NotificationCenter.default.post(name: .kyPostPaired, object: nil)
