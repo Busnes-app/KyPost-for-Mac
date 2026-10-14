@@ -576,22 +576,24 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
 
     /// One device-key open under the shared presence context. A held context
     /// that stopped working is dropped and the open asked once more, fresh; a
-    /// dismissed prompt is never retried.
+    /// dismissed prompt is never retried. An open that finishes after the app
+    /// locked is **cancelled** and its plaintext dropped: the lock wins.
     private func openUnderPresence(_ blob: Data) throws -> Data {
         let lease = presence.lease(reason: Self.presenceReason)
         do {
-            let plaintext = try sealing.open(blob, context: lease.context)
-            presence.keep(lease)
-            return plaintext
+            return try finish(lease, sealing.open(blob, context: lease.context))
         } catch EnrollmentVaultError.cancelled {
             throw EnrollmentVaultError.cancelled
         } catch where lease.wasHeld {
             presence.discard(lease)
             let fresh = presence.lease(reason: Self.presenceReason)
-            let plaintext = try sealing.open(blob, context: fresh.context)
-            presence.keep(fresh)
-            return plaintext
+            return try finish(fresh, sealing.open(blob, context: fresh.context))
         }
+    }
+
+    private func finish(_ lease: PresenceContext.Lease, _ plaintext: Data) throws -> Data {
+        guard presence.keep(lease) else { throw EnrollmentVaultError.cancelled }
+        return plaintext
     }
 
     var identityFingerprint: String? {

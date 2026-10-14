@@ -246,9 +246,11 @@ nonisolated struct ClientEncryptedSender: Sendable {
         guard missing.isEmpty else { return .keysMissing(missing) }
 
         if !session.isHeld {
+            // As in the reader: a lock during the open wins.
+            let epoch = session.epoch
             switch await opener.open() {
             case .opened(let material):
-                session.install(material)
+                guard session.install(material, ifEpoch: epoch) else { return .cancelled }
             case .cancelled: return .cancelled
             case .notEnrolled: return .notEnrolled
             case .noSecureLockScreen: return .noSecureLockScreen

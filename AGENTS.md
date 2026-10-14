@@ -486,9 +486,13 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
   unlock's evaluated `LAContext` is adopted
   (`DeviceAuthenticating.authenticateForUnlock`); otherwise the first open
   prompts and its context is kept. `AppLockManager.lock()` /
-  `lockAfterGrace()` and `EnrollmentVault.destroy*` invalidate it; a lease
-  taken before an invalidation is never kept. Enrollment's ECDH uses the same
-  context, so reading the previous record does not prompt twice.
+  `lockAfterGrace()` and `EnrollmentVault.destroy*` invalidate it. **The lock
+  wins a race:** an open (or enrollment ECDH) whose lease predates an
+  invalidation throws `cancelled` and returns no plaintext, and the reader and
+  sender install material only through `EnrollmentSession.install(_:ifEpoch:)`
+  with the epoch read before the open (every `clear()` advances it).
+  Enrollment's ECDH uses the same context, so reading the previous record does
+  not prompt twice.
 - **Secure Enclave required** outside the Simulator: key generation refuses a
   device without one (all supported hardware has one).
 - **Order: validate → store durably → hold → acknowledge.** No session install

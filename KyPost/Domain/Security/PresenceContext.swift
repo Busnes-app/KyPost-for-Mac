@@ -54,11 +54,15 @@ nonisolated final class PresenceContext: @unchecked Sendable {
     }
 
     /// A presence-checked operation succeeded under `lease`: hold its context
-    /// for the rest of this unlock. Dropped if the lock engaged meanwhile.
-    func keep(_ lease: Lease) {
+    /// for the rest of this unlock. Returns false, holding nothing, when the
+    /// lock engaged meanwhile — the caller must then discard the operation's
+    /// result, not just the context.
+    @discardableResult
+    func keep(_ lease: Lease) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        guard lease.generation == generation, held == nil else { return }
-        held = lease.context
+        guard lease.generation == generation else { return false }
+        if held == nil { held = lease.context }
+        return true
     }
 
     /// The app unlock's evaluated context, so the vault does not prompt again

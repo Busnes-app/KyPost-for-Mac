@@ -109,7 +109,9 @@ struct VaultSealer: EnrollmentSealer {
             // substituted because their Secure Enclave was busy.
             throw EnrollmentVaultError.unavailable
         }
-        vault.presence.keep(lease)
+        // The app locked during the key exchange: stop before anything is
+        // stored or held.
+        guard vault.presence.keep(lease) else { throw EnrollmentVaultError.cancelled }
 
         // CryptoKit's HKDF wants a SharedSecret, which only its own key
         // agreement produces; the Secure Enclave path hands back raw bytes, so

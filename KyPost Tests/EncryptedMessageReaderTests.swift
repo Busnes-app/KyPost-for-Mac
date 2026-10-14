@@ -18,6 +18,15 @@ private struct FakeOpener: VaultOpening {
     func open() async -> VaultOpenOutcome { outcome }
 }
 
+/// Opens successfully, but the app locks (clearing the session) first.
+private struct LockingOpener: VaultOpening {
+    let session: EnrollmentSession
+    func open() async -> VaultOpenOutcome {
+        session.clear()
+        return .opened(privateKey: Data("KEY".utf8))
+    }
+}
+
 private struct FakePayloads: PgpPayloadSource {
     let result: PgpPayloadResult
     var thrown: (any Error)?
@@ -261,6 +270,24 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
         #expect(body.plain?.contains("hello") == true)
         // The verdict is about what the SERVER resolved, never the raw From.
         #expect(verdict.resolvedSender == "bob@example.com")
+    }
+
+    /// The app locks while the vault is still opening: the lock clears the
+    /// session, and the key that comes back afterwards must not be installed
+    /// behind it. Reads as cancelled, so the screen offers Decrypt again.
+    @Test func aKeyOpenedAcrossALockIsNotHeld() async {
+        let session = freshSession()
+        let reader = EncryptedMessageReader(
+            opener: LockingOpener(session: session),
+            payloads: FakePayloads(result: .success(PgpPayload(encryptedPayload: "CIPHERTEXT")), thrown: nil),
+            crypto: FakeCrypto(body: mimeBody),
+            pins: { .none },
+            history: MemorySignerHistory(),
+            session: session
+        )
+        let outcome = await reader.read(mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true)
+        #expect(outcome == .cancelled)
+        #expect(!session.isHeld)
     }
 
     /// A held key means no prompt, so a second read does not re-authenticate.

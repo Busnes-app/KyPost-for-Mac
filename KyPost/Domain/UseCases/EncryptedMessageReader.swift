@@ -128,9 +128,12 @@ nonisolated struct EncryptedMessageReader: Sendable {
     ) async -> ReadOutcome {
         if !session.isHeld {
             guard unlockIfNeeded else { return .needsUnlock }
+            // A lock during the open clears the session; the key must not
+            // then be installed behind it. Read as cancelled: Decrypt again.
+            let epoch = session.epoch
             switch await opener.open() {
             case .opened(let material):
-                session.install(material)
+                guard session.install(material, ifEpoch: epoch) else { return .cancelled }
             case .cancelled: return .cancelled
             case .notEnrolled: return .notEnrolled
             case .noSecureLockScreen: return .noSecureLockScreen

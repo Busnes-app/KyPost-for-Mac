@@ -48,7 +48,17 @@ nonisolated final class FakeKeySealing: VaultKeySealing, @unchecked Sendable {
         Data("SEALED".utf8) + Data(plaintext.map { $0 ^ 0xA5 })
     }
 
+    /// Runs inside a successful open, after the prompt — where a real lock
+    /// can land while the Secure Enclave is still answering.
+    var duringOpen: (() -> Void)?
+
     func open(_ sealed: Data, context: LAContext) throws -> Data {
+        let plaintext = try openLocked(sealed, context: context)
+        duringOpen?()
+        return plaintext
+    }
+
+    private func openLocked(_ sealed: Data, context: LAContext) throws -> Data {
         lock.lock(); defer { lock.unlock() }
         if failOpens || stale.contains(where: { $0 === context }) {
             throw EnrollmentVaultError.keychain(errSecAuthFailed)
@@ -158,6 +168,34 @@ func testVault(
         presence.invalidate()
         presence.keep(lease)
         #expect(!presence.isHeld)
+    }
+
+    /// A lock that lands after the Secure Enclave answered but before the
+    /// open returns wins: no plaintext, no held context, and the next open
+    /// asks again.
+    @Test func anOpenThatCrossesALockIsCancelled() throws {
+        let sealing = FakeKeySealing()
+        let presence = PresenceContext()
+        let vault = testVault(sealing: sealing, presence: presence)
+        try vault.store(ring)
+        sealing.duringOpen = { presence.invalidate() }
+        #expect(throws: EnrollmentVaultError.cancelled) { try vault.openRecord() }
+        #expect(!presence.isHeld)
+
+        sealing.duringOpen = nil
+        #expect(try vault.openRecord() == ring)
+        #expect(sealing.prompts == 2, "a new presence check after the lock")
+    }
+
+    /// The session refuses material from an open that began before a clear.
+    @Test func theSessionRefusesMaterialFromBeforeAClear() {
+        let session = EnrollmentSession()
+        let epoch = session.epoch
+        session.clear()
+        #expect(!session.install(.legacyArmor(Data("KEY".utf8)), ifEpoch: epoch))
+        #expect(!session.isHeld)
+        #expect(session.install(.legacyArmor(Data("KEY".utf8)), ifEpoch: session.epoch))
+        #expect(session.isHeld)
     }
 
     /// A held context that stopped working is dropped and asked once, fresh.
