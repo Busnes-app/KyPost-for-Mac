@@ -15,8 +15,22 @@ struct ContactSyncBanner: View {
     let viewModel: ContactsViewModel
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 60)) { context in
-            content(viewModel.syncStatus(now: context.date))
+        VStack(spacing: 0) {
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                content(viewModel.syncStatus(now: context.date))
+            }
+            let withheld = viewModel.withheldCardDeletes
+            if withheld > 0 {
+                banner(icon: "person.crop.circle.badge.exclamationmark", tint: SemanticColors.warning) {
+                    Text("""
+                    Kept ^[\(withheld) card](inflect: true) in Contacts: removing them would delete more \
+                    than half of the cards KyPost manages at once. If you meant to, delete them in Contacts.
+                    """)
+                    .font(AppFont.ui(12))
+                    .foregroundStyle(theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
