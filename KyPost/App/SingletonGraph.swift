@@ -47,62 +47,28 @@ final class SingletonGraph {
 
     // MARK: - Networking
 
-    /// TOFU pinning (security-hardening plan, Task 9): enforce the pinned
-    /// SPKI only for the paired relay's host — scanned foreign key-exchange
-    /// URLs keep default TLS handling. Reads go straight to KeychainStorage
-    /// because the delegate runs off the main actor.
+    /// TOFU pinning (security-hardening plan, Task 9): enforce the pin stored
+    /// for a host, bound to that host — scanned foreign key-exchange URLs
+    /// keep default TLS handling. Reads go straight to KeychainStorage
+    /// because the delegate runs off the main actor, and a read error throws
+    /// so the handshake is refused rather than left to system trust. Nothing
+    /// else ever sets a pin here: pairing uses its own connection.
     lazy var pinnedSessionDelegate = PinnedSessionDelegate { [keychain] host in
-        guard
-            let pin = try? keychain.string(forKey: SecurePairingStore.pinnedSpkiHashKey),
-            !pin.isEmpty,
-            let srv = try? keychain.string(forKey: SecurePairingStore.srvKey),
-            let relayHost = URL(string: srv)?.host(),
-            relayHost.caseInsensitiveCompare(host) == .orderedSame
-        else { return nil }
-        return pin
+        try SecurePairingStore.pinnedSpkiHash(in: keychain, forHost: host)
     }
     /// Held rather than captured so `shutdown()` can invalidate it: a
     /// delegate-backed URLSession retains its delegate and its connection pool
     /// until invalidated, so without this a superseded graph would keep live
     /// TLS connections to the relay open — exactly what enabling Hostile
-    /// Location Protection is asking us to tear down.
+    /// Location Protection is asking us to tear down. Ephemeral, with no
+    /// cache and no cookies: relay responses never touch the disk.
     lazy var relaySession = URLSession(
-        configuration: .default, delegate: pinnedSessionDelegate, delegateQueue: nil
+        configuration: PinnedSessionDelegate.relaySessionConfiguration(),
+        delegate: pinnedSessionDelegate,
+        delegateQueue: nil
     )
-    lazy var httpClient: HTTPClient = {
-        let delegate = pinnedSessionDelegate
-        let session = relaySession
-        // Scoped to this request's host: an unrelated cancellation must not
-        // inherit another host's mismatch (and vice versa).
-        let mapPinFailure: @Sendable (URLRequest, Error) -> Error = { request, error in
-            guard let urlError = error as? URLError, urlError.code == .cancelled,
-                  delegate.pinFailed(forHost: request.url?.host() ?? "")
-            else { return error }
-            return NetworkError.certificateMismatch
-        }
-        // Both seams, not just the buffering one: attachment downloads go
-        // through the streaming transport, and building this from the
-        // single-transport initializer left them on the uncapped fallback.
-        let streaming = HTTPClient.streamTransport(session: session)
-        return HTTPClient(
-            transport: { request in
-                do {
-                    return try await session.data(for: request)
-                } catch {
-                    throw mapPinFailure(request, error)
-                }
-            },
-            streamTransport: { request, limit in
-                do {
-                    return try await streaming(request, limit)
-                } catch {
-                    throw mapPinFailure(request, error)
-                }
-            }
-        )
-    }()
+    lazy var httpClient = HTTPClient.pinned(session: relaySession, delegate: pinnedSessionDelegate)
     lazy var nativeRegistrationClient = NativeRegistrationClient(httpClient: httpClient)
-    lazy var desktopRegistrationClient = DesktopRegistrationClient(httpClient: httpClient)
     lazy var pushNotificationClient = PushNotificationClient(httpClient: httpClient)
     lazy var mfaResponseClient = MfaResponseClient(httpClient: httpClient)
     lazy var deregisterClient = DeregisterClient(httpClient: httpClient)
@@ -335,24 +301,11 @@ final class SingletonGraph {
         let service = DeviceRegistrationService(
             client: nativeRegistrationClient,
             securePairingStore: securePairingStore,
-            pushSettingsStore: pushSettingsStore
+            pushSettingsStore: pushSettingsStore,
+            // Each pairing gets its own session and delegate; its pin never
+            // reaches `relaySession`.
+            makePairingConnection: { host, pin in RelayPairingConnection(host: host, pin: pin) }
         )
-        // TOFU: a successful pairing persists the SPKI hash its handshake
-        // presented (see PinnedSessionDelegate).
-        service.observedSpkiHash = { [pinnedSessionDelegate] host in
-            pinnedSessionDelegate.lastSeenHash(forHost: host)
-        }
-        // …and when the registration rode a pooled or resumed connection so no
-        // handshake was ever observed, force one rather than leaving the pin
-        // silently unarmed.
-        service.probeSpkiHash = { [pinnedSessionDelegate] url in
-            await PinnedSessionDelegate.probeHash(url: url, delegate: pinnedSessionDelegate)
-        }
-        // A pin carried by the pairing link is enforced on the registration
-        // handshake itself, before the pairing exists to read one from.
-        service.setPendingPin = { [pinnedSessionDelegate] pin, host in
-            pinnedSessionDelegate.setPendingPin(pin, forHost: host)
-        }
         // A pairing from before the heartbeat's registration stamp: record
         // the banners it already delivered before the heartbeat can re-pull.
         service.reconcileExistingPairingPushes = { [weak self] in
@@ -366,10 +319,6 @@ final class SingletonGraph {
         }
         return service
     }()
-    lazy var desktopPairingService = DesktopPairingService(
-        client: desktopRegistrationClient,
-        sessionStore: desktopSessionStore
-    )
 
     // MARK: - Notifications
 
@@ -446,6 +395,9 @@ final class SingletonGraph {
         // a superseded graph's requests write to a database that is going
         // away, and the Hostile Location Protection case wants them gone now.
         relaySession.invalidateAndCancel()
+        // Pairing attempts have their own sessions, which the line above does
+        // not reach; a superseded graph must not store a pairing.
+        deviceRegistrationService.cancelAll()
     }
 
     // MARK: - Startup migrations

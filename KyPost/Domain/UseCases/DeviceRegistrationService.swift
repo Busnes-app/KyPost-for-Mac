@@ -20,34 +20,44 @@ extension PairingParams {
             reg: pairing.registrationUrl,
             // Deliberately no pin. Re-registration is not a user handing the
             // app a fresh link; the pin persisted at pairing already governs
-            // this host, and synthesising one here would let a stored value
-            // re-arm itself forever.
+            // this host through the shared relay session.
             pin: nil
         )
     }
 }
 
-/// `@MainActor` because `inFlight` and `observedSpkiHash` are unsynchronised
-/// mutable state and every caller (PushPairingViewModel, the `@MainActor`
-/// PushLifecycle) already runs here. Under Swift 5 language mode the compiler
-/// says nothing about that, so the isolation is stated rather than assumed.
+/// One pairing attempt's own connection to the relay: its own URLSession and
+/// pinning delegate, so a pin it carries never reaches the shared session
+/// background sync uses. `RelayPairingConnection` in the app; a stub in tests.
+@MainActor
+protocol PairingConnection: AnyObject {
+    /// Forces a TLS handshake with `url`'s host and returns the SPKI hash it
+    /// presented, or nil when no handshake could be observed.
+    func probe(_ url: URL) async -> String?
+    /// Every handshake this connection makes from now on must present `hash`.
+    func pin(_ hash: String)
+    /// Registers over this connection.
+    func register(deviceToken: String, params: PairingParams, deviceId: String?) async -> RegistrationOutcome
+    /// Ends the connection. Called once the attempt is over, success or not.
+    func close()
+}
+
+/// `@MainActor` because `inFlight` is unsynchronised mutable state and every
+/// caller (PushPairingViewModel, the `@MainActor` PushLifecycle) already runs
+/// here. Under Swift 5 language mode the compiler says nothing about that, so
+/// the isolation is stated rather than assumed.
 @MainActor
 final class DeviceRegistrationService {
+    /// Re-registration only. It rides the shared relay session, whose
+    /// delegate enforces the pin stored for the paired host.
     private let client: NativeRegistrationClient
     private let securePairingStore: SecurePairingStore
     private let pushSettingsStore: PushSettingsStore
-    /// TOFU pinning capture: the SPKI hash the transport saw on its latest
-    /// handshake with the given host. Wired by SingletonGraph to the pinned
-    /// session's delegate; nil in tests (no pin is recorded).
-    var observedSpkiHash: ((_ host: String) -> String?)?
-    /// Forces a fresh handshake when `observedSpkiHash` has nothing, because
-    /// the registration rode a pooled or resumed connection and no challenge
-    /// ever fired. Wired by SingletonGraph; nil in tests.
-    var probeSpkiHash: ((_ url: URL) async -> String?)?
-    /// Arms a link-supplied pin on the transport for the duration of a
-    /// pairing attempt, and clears it afterwards (nil pin). Wired by
-    /// SingletonGraph to the pinned session's delegate; nil in tests.
-    var setPendingPin: ((_ pin: String?, _ host: String) -> Void)?
+    /// Opens a dedicated connection for one pairing from a link, given the
+    /// relay host and the pin it must enforce from its first handshake (nil:
+    /// none yet, the first handshake runs on system trust). A `var` so a test
+    /// can keep the graph's wiring and swap only the network.
+    var makePairingConnection: (_ host: String, _ pin: String?) -> any PairingConnection
     /// Records the banners an existing pairing already delivered into
     /// history, ignoring `lastRegisteredAt`. Run when a pairing that predates
     /// that stamp registers for the first time and so gets it set to now.
@@ -62,217 +72,284 @@ final class DeviceRegistrationService {
     /// Returns false when a step failed: the new pairing is then not stored.
     var onAccountReplaced: (@MainActor () async -> Bool)?
 
-    /// One registration per (pairing token, device token). A pairing deep
-    /// link is delivered to every open main window and each auto-pairs, so
-    /// without this guard a single "Pair Desktop App" click registers the
-    /// same computer several times (the server appends a device row per
-    /// register call). Unlike desktop pairing codes these are not single-use,
-    /// so only concurrent calls are shared — a later call with a new device
-    /// token (APNs refresh) must still go through.
+    /// One registration per (kind, pairing token, device token). A pairing
+    /// deep link is delivered to every open main window, so without this
+    /// guard a single click could register the same computer several times
+    /// (the server appends a device row per register call). Pairing tokens
+    /// are not single-use, so only concurrent calls are shared — a later call
+    /// with a new device token (APNs refresh) must still go through. A pairing
+    /// never shares a re-registration's result: only the pairing checks the
+    /// link's pin.
     private var inFlight: [String: Task<RegistrationOutcome, Never>] = [:]
+
+    /// Moves on whenever the session ends (`cancelAll`). A registration that
+    /// started under an older value stores and announces nothing: a pairing
+    /// that answered after a wipe or failed-unlock reset would otherwise put
+    /// the erased account back — on an app the reset just left unlocked.
+    private var session = 0
+    /// Pairing connections open right now, closed by `cancelAll`. Graph
+    /// shutdown cancels `relaySession` but not these.
+    private var openConnections: [ObjectIdentifier: any PairingConnection] = [:]
+    private var resetObservation: NotificationObservation?
 
     init(
         client: NativeRegistrationClient,
         securePairingStore: SecurePairingStore,
-        pushSettingsStore: PushSettingsStore
+        pushSettingsStore: PushSettingsStore,
+        notificationCenter: NotificationCenter = .default,
+        makePairingConnection: @escaping (_ host: String, _ pin: String?) -> any PairingConnection
     ) {
         self.client = client
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
+        self.makePairingConnection = makePairingConnection
+        // Wipe, failed-unlock reset and unpair all post this before erasing.
+        resetObservation = NotificationObservation(
+            center: notificationCenter,
+            name: .kyPostSessionReset
+        ) { [weak self] in
+            self?.cancelAll()
+        }
     }
 
-    /// Initial pairing (QR scan / deep link). Persists the pairing and
-    /// delivery settings only if registration succeeds (spec §1 flow).
-    /// Concurrent calls with the same tokens share one registration.
+    /// Ends every registration in flight: closes the pairing connections,
+    /// cancels the tasks, and makes any result still on its way store
+    /// nothing. Runs on `.kyPostSessionReset` and from
+    /// `SingletonGraph.shutdown()`.
+    func cancelAll() {
+        session += 1
+        for connection in openConnections.values {
+            connection.close()
+        }
+        openConnections = [:]
+        for task in inFlight.values {
+            task.cancel()
+        }
+    }
+
+    private static var cancelledMessage: String {
+        String(localized: "Pairing was cancelled because this device's session ended. Nothing was saved.")
+    }
+
+    /// Initial pairing (QR scan / deep link). Persists the pairing, its
+    /// certificate pin and delivery settings only if registration succeeds
+    /// (spec §1 flow). Concurrent calls with the same tokens share one
+    /// registration.
     func pair(
         params: PairingParams,
         deviceToken: String,
         deviceId: String? = nil
     ) async -> RegistrationOutcome {
-        let key = "\(params.pt)|\(deviceToken)"
-        if let task = inFlight[key] {
-            return await task.value
+        await deduplicated(key: "pair|\(params.pt)|\(deviceToken)") {
+            await self.performPair(params: params, deviceToken: deviceToken, deviceId: deviceId)
         }
-        let task = Task {
-            await performPair(params: params, deviceToken: deviceToken, deviceId: deviceId)
-        }
-        inFlight[key] = task
-        let outcome = await task.value
-        inFlight[key] = nil
-        return outcome
-    }
-
-    private func performPair(
-        params: PairingParams,
-        deviceToken: String,
-        deviceId: String?
-    ) async -> RegistrationOutcome {
-        // Arm BEFORE the POST, not after it. This request carries the
-        // pairing token and the push endpoint up and brings the device
-        // secret back down, so a pin applied once the response has landed
-        // has already missed everything it was meant to protect.
-        let srvURL = URL(string: params.srv)
-        let srvHost = srvURL?.host()
-        if let linkPin = params.pin {
-            // A pin we cannot bind to a host is a pin we cannot enforce. The
-            // link asked for pinning, so refuse rather than quietly pairing
-            // without it.
-            guard let srvURL, let srvHost else {
-                return .failure("This pairing link's server address could not be read, so its certificate pin could not be applied.")
-            }
-            setPendingPin?(linkPin, srvHost)
-
-            // Arming is not enforcement. The delegate's server-trust callback
-            // fires once per CONNECTION, so a registration riding a pooled or
-            // resumed connection is never compared against the pin — the same
-            // fail-open-on-arming hazard `probeSpkiHash` already exists to
-            // close on the TOFU path below. Force a handshake here, while the
-            // pin is armed, and check what it presented BEFORE any credential
-            // is sent. A refused or unobtainable handshake yields nil.
-            let observed = await probeSpkiHash?(srvURL)
-            guard let observed, observed == linkPin else {
-                setPendingPin?(nil, srvHost)
-                Log.app.error("Relay certificate does not match the pin in the pairing link; refusing to register.")
-                return .failure("This server's certificate does not match the pairing link. Nothing was sent. Do not pair on this network.")
-            }
-        }
-        defer {
-            if params.pin != nil, let srvHost {
-                setPendingPin?(nil, srvHost)
-            }
-        }
-
-        let outcome = await client.register(
-            deviceToken: deviceToken,
-            params: params,
-            deviceId: deviceId
-        )
-        // The same account, paired before `lastRegisteredAt` existed.
-        var isExistingPairingWithoutStamp = false
-        if case .success(let response) = outcome {
-            // Routine re-registration of the same account (foreground, token
-            // refresh) must not restart the heartbeat's quiet clock: it proves
-            // the relay answers, not that APNs delivers, and resetting it on
-            // every foreground would postpone the heartbeat indefinitely.
-            //
-            // Pairing another account over this one, without an unpair first,
-            // replaces the account. An unreadable previous pairing counts as
-            // replaced: erasing a disposable cache is the safe direction.
-            let previous = Result { try securePairingStore.loadPairing() }
-            let previousPairing = try? previous.get()
-            let isSameAccount = previousPairing?.sub == params.sub && previousPairing?.srv == params.srv
-            let isRoutineReregistration = isSameAccount && pushSettingsStore.lastRegisteredAt != nil
-            isExistingPairingWithoutStamp = isSameAccount && pushSettingsStore.lastRegisteredAt == nil
-            let replacesAccount: Bool = switch previous {
-            case .success(let pairing?): pairing.sub != params.sub || pairing.srv != params.srv
-            case .success(nil): false
-            case .failure: true
-            }
-            // Stored only once the previous account is gone: a pairing saved
-            // over an incomplete teardown would list what was left under the
-            // new account. The previous pairing stays, so a retry runs the
-            // teardown again.
-            if replacesAccount, let onAccountReplaced, !(await onAccountReplaced()) {
-                return .failure("Registered, but this device could not erase the previous account's data, so the new pairing was not saved. Try again.")
-            }
-            do {
-                try securePairingStore.savePairing(Pairing(
-                    sub: params.sub,
-                    // Every successful register mints a brand-new secret
-                    // server-side, invalidating whatever was stored before —
-                    // persist unconditionally, never fall back to the
-                    // previous value.
-                    deviceSecret: response.deviceSecret ?? "",
-                    srv: params.srv,
-                    registrationUrl: params.reg,
-                    pairingToken: params.pt,
-                    lastDeviceId: response.deviceId ?? deviceId,
-                    pairedAt: Date()
-                ))
-            } catch {
-                return .failure("Registered but could not save pairing: \(error)")
-            }
-            pushSettingsStore.deliveryMode = response.deliveryMode ?? .push
-            if !isRoutineReregistration {
-                pushSettingsStore.lastRegisteredAt = Date()
-            }
-            pushSettingsStore.pullEndpoint = response
-                .resolvedPullEndpoint(srv: params.srv)?.absoluteString
-            // Trust on FIRST use: pin the key this handshake presented only
-            // when nothing is pinned yet. `performPair` also runs for every
-            // re-registration (foreground, APNs token refresh), so pinning
-            // unconditionally here would be trust-on-every-use — it would
-            // quietly adopt whatever key was last seen, turning a single
-            // interception into a permanent pin for the attacker's key and
-            // locking out the real relay. Clearing the pairing is the only
-            // way to re-pin, which is the documented rotation recovery.
-            // Best effort: a Keychain hiccup must not fail a good registration.
-            // Empty counts as unpinned, matching the delegate's own lookup.
-            if let linkPin = params.pin {
-                // Reached only after the probe above observed this exact key
-                // on a live handshake, so persisting it records something that
-                // was checked rather than something that was hoped for. That
-                // ordering is also what makes overwriting an existing pin safe
-                // — a mangled or hostile link cannot install a pin the relay
-                // does not actually present, which would otherwise lock the
-                // device out of the real relay until it was unpaired. It is
-                // how a certificate renewal recovers: re-scan, and the new pin
-                // replaces the old.
-                //
-                // NOT `try?`. A pairing that demanded a pin and then failed to
-                // store one leaves every later request on system trust while
-                // reporting success — the TOFU branch below at least logs that
-                // case, and this one is stricter because the link was explicit.
-                do {
-                    try securePairingStore.setPinnedSpkiHash(linkPin)
-                } catch {
-                    Log.app.error("Paired but could not store the certificate pin: \(error)")
-                    try? securePairingStore.clear()
-                    return .failure("Paired, but this device could not store the server's certificate pin, so the pairing was undone. Try again.")
-                }
-            } else if (securePairingStore.pinnedSpkiHash ?? "").isEmpty,
-               let srvURL, let host = srvHost {
-                // `observedSpkiHash` only has a value when this registration
-                // happened to open a new TLS connection. Connection reuse and
-                // session resumption skip the challenge entirely, which used to
-                // leave the pin permanently unarmed with nothing logged and
-                // `.success` returned — arming failed open while the docs said
-                // pinning was always on. The probe removes the coincidence.
-                var hash = observedSpkiHash?(host)
-                if hash == nil {
-                    hash = await probeSpkiHash?(srvURL)
-                }
-                if let hash {
-                    try? securePairingStore.setPinnedSpkiHash(hash)
-                } else {
-                    Log.app.error(
-                        "Could not record a certificate pin for the relay; this connection falls back to system trust. Settings → Security reports it as Not pinned."
-                    )
-                }
-            }
-        }
-        // After every write above, so nothing here can interleave with them.
-        // Its banners are this pairing's, but the stamp just set says they
-        // predate it; record them before any heartbeat can pull them again.
-        if isExistingPairingWithoutStamp {
-            await reconcileExistingPairingPushes?()
-        }
-        return outcome
     }
 
     /// Re-registration for safety (token refresh, app foreground, spec §3).
     /// Sends the stored deviceId so the server updates the existing device
     /// row rather than pairing this computer a second time.
     /// Returns nil when the device was never paired — nothing to refresh.
+    ///
+    /// Never captures a pin. A pairing that has none (an older build could
+    /// not record one) stays unpinned until it is removed and paired again:
+    /// a key adopted on some later foreground would be whatever that network
+    /// presented, not what the pairing saw.
     @discardableResult
     func reregisterIfPaired(deviceToken: String) async -> RegistrationOutcome? {
         // Not a retired pairing: re-registering the account being left would
         // store it again over the teardown.
         guard let pairing = try? securePairingStore.loadActivePairing() else { return nil }
-        return await pair(
-            params: PairingParams(pairing: pairing),
-            deviceToken: deviceToken,
-            deviceId: pairing.lastDeviceId
-        )
+        let params = PairingParams(pairing: pairing)
+        let session = session
+        return await deduplicated(key: "reregister|\(params.pt)|\(deviceToken)") {
+            let outcome = await self.client.register(
+                deviceToken: deviceToken,
+                params: params,
+                deviceId: pairing.lastDeviceId
+            )
+            return await self.storeRegistration(
+                outcome, params: params, deviceId: pairing.lastDeviceId, pin: nil, session: session
+            )
+        }
     }
+
+    private func deduplicated(
+        key: String,
+        _ operation: @escaping @MainActor () async -> RegistrationOutcome
+    ) async -> RegistrationOutcome {
+        if let task = inFlight[key] {
+            return await task.value
+        }
+        let task = Task { await operation() }
+        inFlight[key] = task
+        let outcome = await task.value
+        inFlight[key] = nil
+        return outcome
+    }
+
+    /// A pairing from a link. Every credential this request carries (the
+    /// pairing token and push endpoint up, the device secret down) crosses a
+    /// connection already held to the pin the pairing will store:
+    ///
+    /// 1. A pin already stored for this host stays authoritative; a link pin
+    ///    that disagrees with it is refused, never swapped in.
+    /// 2. A dedicated connection probes the relay. Its hash must match the
+    ///    expected pin (the link's, else the stored one); with neither, the
+    ///    probed hash becomes the pin (trust on first use). No hash, no
+    ///    pairing.
+    /// 3. That connection is held to the pin, and the registration rides it.
+    /// 4. The pin is stored with the pairing, bound to its host.
+    private func performPair(
+        params: PairingParams,
+        deviceToken: String,
+        deviceId: String?
+    ) async -> RegistrationOutcome {
+        guard let srvURL = URL(string: params.srv),
+              let host = SecurePairingStore.host(ofServer: params.srv)
+        else {
+            return .failure(String(localized: "This pairing link's server address could not be read. Nothing was sent."))
+        }
+
+        let storedPin: String?
+        do {
+            storedPin = try securePairingStore.pinnedSpkiHash(forHost: host)
+        } catch {
+            Log.app.error("Could not read the stored certificate pin before pairing: \(error)")
+            return .failure(String(localized: "KyPost couldn't read the certificate pin it holds for this server, so it didn't pair. Unlock this device and try again. Nothing was sent."))
+        }
+        if let linkPin = params.pin, let storedPin, linkPin != storedPin {
+            Log.app.error("Pairing link pin differs from the pin stored for this host; refusing.")
+            return .failure(Self.replacesStoredPinMessage(host: host))
+        }
+        let expectedPin = params.pin ?? storedPin
+
+        let session = session
+        let connection = makePairingConnection(host, expectedPin)
+        let connectionId = ObjectIdentifier(connection)
+        openConnections[connectionId] = connection
+        defer {
+            openConnections[connectionId] = nil
+            connection.close()
+        }
+
+        guard let observed = await connection.probe(srvURL) else {
+            guard session == self.session else { return .failure(Self.cancelledMessage) }
+            Log.app.error("No certificate could be observed on the pairing handshake; refusing to register.")
+            return .failure(String(localized: "KyPost couldn't read this server's security certificate, so it didn't pair. Check the connection and try again. Nothing was sent."))
+        }
+        if let expectedPin, observed != expectedPin {
+            Log.app.error("Relay certificate does not match the expected pin; refusing to register.")
+            return .failure(storedPin != nil
+                ? Self.storedPinMismatchMessage(host: host)
+                : String(localized: "This server's certificate does not match the pairing link. Nothing was sent. Do not pair on this network."))
+        }
+        // A session that ended during the probe sends nothing at all.
+        guard session == self.session else { return .failure(Self.cancelledMessage) }
+        connection.pin(observed)
+
+        let outcome = await connection.register(
+            deviceToken: deviceToken,
+            params: params,
+            deviceId: deviceId
+        )
+        return await storeRegistration(outcome, params: params, deviceId: deviceId, pin: observed, session: session)
+    }
+
+    static func replacesStoredPinMessage(host: String) -> String {
+        String(localized: "This pairing link carries a different certificate pin from the one this device already holds for \(host). If the server's certificate was replaced, remove the pairing in Settings → Connection first, then open the link again. Nothing was sent.")
+    }
+
+    static func storedPinMismatchMessage(host: String) -> String {
+        String(localized: "\(host) presented a different certificate from the one this device pinned. If the server's certificate was replaced, remove the pairing in Settings → Connection first, then pair again. Otherwise the connection may be intercepted. Nothing was sent.")
+    }
+
+    /// Persists a successful registration. `pin` is the pin a pairing held
+    /// its connection to; nil for re-registration, which keeps the stored pin
+    /// for the same host and never captures one.
+    private func storeRegistration(
+        _ outcome: RegistrationOutcome,
+        params: PairingParams,
+        deviceId: String?,
+        pin: String?,
+        session: Int
+    ) async -> RegistrationOutcome {
+        // Checked before every write and after every await below: a reset
+        // can land while the response is in flight or while a step awaits.
+        guard session == self.session else { return .failure(Self.cancelledMessage) }
+        guard case .success(let response) = outcome else { return outcome }
+        // Routine re-registration of the same account (foreground, token
+        // refresh) must not restart the heartbeat's quiet clock: it proves
+        // the relay answers, not that APNs delivers, and resetting it on
+        // every foreground would postpone the heartbeat indefinitely.
+        //
+        // Pairing another account over this one, without an unpair first,
+        // replaces the account. An unreadable previous pairing counts as
+        // replaced: erasing a disposable cache is the safe direction.
+        let previous = Result { try securePairingStore.loadPairing() }
+        let previousPairing = try? previous.get()
+        let isSameAccount = previousPairing?.sub == params.sub && previousPairing?.srv == params.srv
+        let isRoutineReregistration = isSameAccount && pushSettingsStore.lastRegisteredAt != nil
+        // The same account, paired before `lastRegisteredAt` existed.
+        let isExistingPairingWithoutStamp = isSameAccount && pushSettingsStore.lastRegisteredAt == nil
+        let replacesAccount: Bool = switch previous {
+        case .success(let pairing?): pairing.sub != params.sub || pairing.srv != params.srv
+        case .success(nil): false
+        case .failure: true
+        }
+        // Stored only once the previous account is gone: a pairing saved
+        // over an incomplete teardown would list what was left under the
+        // new account. The previous pairing stays, so a retry runs the
+        // teardown again.
+        if replacesAccount, let onAccountReplaced, !(await onAccountReplaced()) {
+            return .failure(String(localized: "Registered, but this device could not erase the previous account's data, so the new pairing was not saved. Try again."))
+        }
+        guard session == self.session else { return .failure(Self.cancelledMessage) }
+        do {
+            // The pin is written with the pairing, under the same lock, and
+            // a pin for another host is dropped there. A pairing that
+            // demanded a pin and could not store one is undone rather than
+            // left on system trust while reporting success.
+            try securePairingStore.savePairing(Pairing(
+                sub: params.sub,
+                // Every successful register mints a brand-new secret
+                // server-side, invalidating whatever was stored before —
+                // persist unconditionally, never fall back to the
+                // previous value.
+                deviceSecret: response.deviceSecret ?? "",
+                srv: params.srv,
+                registrationUrl: params.reg,
+                pairingToken: params.pt,
+                lastDeviceId: response.deviceId ?? deviceId,
+                pairedAt: Date()
+            ), pinnedSpkiHash: pin)
+        } catch {
+            Log.app.error("Registered but could not save the pairing: \(error)")
+            return .failure(pin == nil
+                ? String(localized: "Registered but could not save the pairing: \(error.localizedDescription)")
+                : String(localized: "Paired, but this device could not store the pairing and the server's certificate pin, so the pairing was undone. Try again."))
+        }
+        pushSettingsStore.deliveryMode = response.deliveryMode ?? .push
+        if !isRoutineReregistration {
+            pushSettingsStore.lastRegisteredAt = Date()
+        }
+        pushSettingsStore.pullEndpoint = response
+            .resolvedPullEndpoint(srv: params.srv)?.absoluteString
+        // After every write above, so nothing here can interleave with them.
+        // Its banners are this pairing's, but the stamp just set says they
+        // predate it; record them before any heartbeat can pull them again.
+        if isExistingPairingWithoutStamp {
+            await reconcileExistingPairingPushes?()
+        }
+        if pin != nil, session == self.session {
+            // A new pairing: screens showing "not paired" load at once
+            // instead of waiting for their next timer.
+            NotificationCenter.default.post(name: .kyPostPaired, object: nil)
+        }
+        return outcome
+    }
+}
+
+extension Notification.Name {
+    /// Posted on the main actor after a pairing from a link is stored.
+    static let kyPostPaired = Notification.Name("kypost.paired")
 }

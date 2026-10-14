@@ -25,18 +25,12 @@ extension PairingParams: Identifiable {
     var id: String { "\(sub)|\(srv)" }
 }
 
-extension DesktopPairingParams: Identifiable {
-    var id: String { code }
-}
-
 @Observable
 @MainActor
 final class NavigationRouter {
     var selectedTab: AppTab = .inbox
     /// Presented pairing flow (from QR / deep link).
     var pairingParams: PairingParams?
-    /// Presented desktop pairing flow (kypost://desktop-pair deep link).
-    var desktopPairingParams: DesktopPairingParams?
     /// Presented in-app MFA approval fallback.
     var mfaRoute: MfaRoute?
     /// Message the inbox should open once loaded (from a notification tap).
@@ -102,8 +96,6 @@ final class NavigationRouter {
         switch action {
         case .openPairingFlow(let params):
             pairingParams = params
-        case .openDesktopPairingFlow(let params):
-            desktopPairingParams = params
         case .openEmail(let messageId):
             selectedTab = .inbox
             pendingMessageId = messageId
@@ -125,7 +117,6 @@ final class NavigationRouter {
     /// left on screen for the cover to lose a race against.
     func dismissPresentedRoutes() {
         pairingParams = nil
-        desktopPairingParams = nil
         mfaRoute = nil
         composeRequest = nil
     }

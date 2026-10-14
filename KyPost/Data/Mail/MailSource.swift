@@ -377,6 +377,8 @@ enum MailOutcome: Equatable, Sendable {
         case .responseTooLarge: "The server sent more data than this app will accept."
         case .certificateMismatch: error.errorDescription
             ?? "The server's security certificate changed — re-pair the device."
+        case .pinUnreadable: error.errorDescription
+            ?? "KyPost couldn't read this server's certificate pin — try again."
         case .server(statusCode: 502): "Couldn't reach the mail server — try again shortly."
         case .server(let statusCode): "The server returned an error (status \(statusCode))."
         case .transport(let description): description

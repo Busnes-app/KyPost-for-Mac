@@ -119,7 +119,11 @@ enum SecurityWipeSteps {
         })
         steps.append(WipeStep("pairing") {
             try graph.securePairingStore.clear()
+            // A desktop session token an older build stored.
             try graph.desktopSessionStore.clear()
+            // Relay responses and cookies an older build's `.default` relay
+            // session left in the process-wide stores.
+            PinnedSessionDelegate.purgeLegacySharedHTTPState()
         })
 
         // Explicit, and not left to the defaults sweep below: under Hostile

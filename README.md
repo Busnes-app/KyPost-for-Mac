@@ -67,11 +67,15 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
   behind user presence. Background mail checks and MFA approvals then wait
   until you open and unlock the app. On an iPhone this covers all background
   delivery. On a Mac it applies while the screen is locked.
-- **Always on**: TOFU certificate pinning. The app pins the key of the relay
-  at the *first* pairing and never re-pins it silently afterward. After the
-  app pins a host, the check fails closed, so the app refuses a certificate
-  that it cannot hash. If the certificate changes, pair again in
-  Settings → Connection. The app also applies these protections. Sender HTML
+- **Always on**: certificate pinning. Pairing pins the relay's key on the
+  pairing's own connection, before any credential is sent: the link's `pin=`
+  when it has one, otherwise the key that first handshake presents. A pairing
+  that cannot read the key fails. The app never re-pins silently afterward,
+  and a link cannot replace a stored pin. The pin is bound to its host and
+  fails closed: a key the app cannot hash, or a pin it cannot read from the
+  Keychain, refuses the connection. If the certificate changes, remove the
+  pairing in Settings → Connection and pair again. Relay responses are never
+  cached on disk. The app also applies these protections. Sender HTML
   renders with JavaScript off and remote content blocked. Navigation out of
   the message is denied by default, so a redirect cannot beacon home past the
   block. The app computes PGP fingerprints locally from the key bytes, so it
@@ -95,9 +99,9 @@ Its one external dependency is **GopenPGP** — the same OpenPGP implementation 
 1. Open `KyPost.xcodeproj` in Xcode.
 2. Select the *KyPost* scheme and your destination (My Mac, or an iOS device or simulator).
 3. Build and run.
-4. Pair the device. In the web frontend, open **Notifications → Pair Desktop App**. On iOS, scan the mobile pairing QR code. The `kypost://native-pair?...` deep link registers the device and stores the credentials in the Keychain.
+4. Pair the device. In the web frontend, open **Settings → Security → Devices** and choose **Pair a new device**. On a Mac, click **Pair this device**: the browser opens a `kypost://native-pair?...` link in KyPost, which asks you to confirm the server. If nothing opens, the page shows the link; paste it in Settings → Connection → **Paste Pairing Link…**. On iOS, scan the QR code. Pairing registers the device and stores its credentials and the server's certificate pin in the Keychain.
 
-Until you pair a device, the inbox shows a prompt that directs you to Settings → Connection.
+Until you pair, the inbox says how: on a Mac it gives the web steps above, and on iOS it points to Settings → Connection.
 
 ## Architecture
 
@@ -154,9 +158,6 @@ The network-facing tests run against a stubbed `HTTPClient`. They need no backen
   live relay.** They are covered by unit tests against fakes, so the wire
   contracts for `/api/pgp/recipients/resolve`, `/api/mail/send-pgp` and
   `/api/mail/pgp-payload` are unverified in practice.
-- **Desktop pairing is half-built.** `kypost://desktop-pair` registers this
-  computer and stores the session token it gets back, but no request sends that
-  token yet.
 - **The release workflow has not run end to end.** `release.yml` signs
   automatically with an App Store Connect API key and uploads both platforms,
   but no tag has exercised it yet. Its one-time setup (the `release`

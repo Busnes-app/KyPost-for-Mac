@@ -700,10 +700,16 @@ private final class GatedAuthenticator: DeviceAuthenticating, @unchecked Sendabl
         router.handle(.openMfaApproval(challenge))
         #expect(router.mfaRoute == nil)
 
-        router.handle(.openDesktopPairingFlow(
-            DesktopPairingParams(code: String(repeating: "a", count: 32), srv: "https://x.example")
-        ))
-        #expect(router.desktopPairingParams == nil)
+        router.handle(.openPairingFlow(PairingParams(sub: "u", srv: "https://x.example", pt: "p")))
+        #expect(router.pairingParams == nil)
+    }
+
+    /// Desktop pairing is gone: its link opens nothing.
+    @Test func aDesktopPairLinkIsNotRouted() {
+        let router = makeRouter(locked: false)
+        router.handleURL(URL(string: "kypost://desktop-pair?code=\(String(repeating: "a", count: 32))&srv=https://x.example")!)
+        #expect(router.pairingParams == nil)
+        #expect(DeepLinkHandler().handle(URL(string: "kypost://desktop-pair?code=c&srv=https://x.example")!) == nil)
     }
 
     @Test func theDeferredActionReplaysOnUnlock() {
@@ -729,7 +735,6 @@ private final class GatedAuthenticator: DeviceAuthenticating, @unchecked Sendabl
         router.dismissPresentedRoutes()
         #expect(router.mfaRoute == nil)
         #expect(router.pairingParams == nil)
-        #expect(router.desktopPairingParams == nil)
     }
 
     @Test func routingWorksNormallyWhileUnlocked() {

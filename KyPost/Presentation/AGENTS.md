@@ -51,6 +51,17 @@ Domain.
   confirmation step; otherwise it goes through `router.handle`, which defers it
   until unlock. A link the screen never took (it was dismissed first) goes to
   the router when the last pairing screen disappears, so it is never stranded.
+- **An unpaired Mac says exactly how to pair** (`PairingInstructions`): on the
+  web, Settings → Security → Devices → Pair a new device → Pair this device,
+  which opens a `kypost://native-pair` link. The wording follows KyPost-Server
+  `frontend/src/pages/security/PairingPanel.tsx`; change both together. The
+  inbox empty state and Settings → Connection use it; Settings → Connection
+  offers only "Paste Pairing Link…" (the native `PushPairingView`, for the
+  link the web page shows when the browser could not open it). There is no
+  desktop pairing screen.
+- **A new pairing reloads the Mac window at once.** `MacRootView` observes
+  `.kyPostPaired` and loads the inbox, its subfolders and a contact sync,
+  rather than leaving "not paired" up until the 90 s refresh.
 - **Notification history renders nothing while locked or after an abandoned
   wipe.** `NotificationHistorySections` (iOS Settings → Notifications →
   Notification History; macOS Notifications tab) shows sender and subject
