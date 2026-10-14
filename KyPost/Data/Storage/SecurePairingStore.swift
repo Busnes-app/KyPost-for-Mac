@@ -59,16 +59,43 @@ final class SecurePairingStore: @unchecked Sendable {
         static let lastDeviceId = "lastDeviceId"
         static let pairedAtTimestamp = "pairedAtTimestamp"
         static let pinnedSpkiHash = "pinnedSpkiHash"
+        /// The lowercased host `pinnedSpkiHash` was captured on. A pin stored
+        /// before this key existed has none and belongs to the stored srv.
+        static let pinnedSpkiHost = "pinnedSpkiHost"
         static let all = [
             sub, deviceSecret, srv, registrationUrl, pairingToken,
-            lastDeviceId, pairedAtTimestamp, pinnedSpkiHash,
+            lastDeviceId, pairedAtTimestamp, pinnedSpkiHash, pinnedSpkiHost,
         ]
     }
 
-    /// Keychain accounts the pinned session's nonisolated delegate reads
-    /// straight off KeychainStorage (it runs off the main actor).
-    nonisolated static let pinnedSpkiHashKey = Key.pinnedSpkiHash
-    nonisolated static let srvKey = Key.srv
+    /// The pin stored for `host`, or nil when none is stored for it. Static
+    /// and nonisolated because the pinned session's delegate reads it straight
+    /// off KeychainStorage on every handshake, off the main actor.
+    ///
+    /// Throws on any Keychain error other than "not found". The caller must
+    /// treat that as "cannot check", never as "no pin" — the second reading
+    /// silently hands a pinned host to system trust.
+    nonisolated static func pinnedSpkiHash(in keychain: KeychainStorage, forHost host: String) throws -> String? {
+        guard let pin = try keychain.string(forKey: Key.pinnedSpkiHash), !pin.isEmpty,
+              let pinnedHost = try pinnedHost(in: keychain),
+              pinnedHost == host.lowercased()
+        else { return nil }
+        return pin
+    }
+
+    /// The host the stored pin is bound to. A pin from before pins were
+    /// bound was captured on the stored srv, which is the host it was always
+    /// enforced against.
+    private nonisolated static func pinnedHost(in keychain: KeychainStorage) throws -> String? {
+        if let bound = try keychain.string(forKey: Key.pinnedSpkiHost), !bound.isEmpty {
+            return bound.lowercased()
+        }
+        return try keychain.string(forKey: Key.srv).flatMap(Self.host(ofServer:))
+    }
+
+    nonisolated static func host(ofServer srv: String) -> String? {
+        URL(string: srv)?.host()?.lowercased()
+    }
 
     private let keychain: KeychainStorage
     private weak var storedSecretGate: (any PairingSecretGate)?
@@ -107,16 +134,47 @@ final class SecurePairingStore: @unchecked Sendable {
     /// Held across the whole multi-key write so a concurrent `loadPairing`
     /// cannot observe a half-written pairing — the exact "new subject pointing
     /// at the previous server" state the unwind below exists to prevent.
-    func savePairing(_ pairing: Pairing) throws {
+    ///
+    /// The certificate pin goes with the host. `pinnedSpkiHash` is stored
+    /// bound to this pairing's host. Without one, a stored pin is kept only
+    /// if it is bound to this same host; a pin for any other host is removed,
+    /// so changing servers never leaves the old server's key in force (which
+    /// locked the device out) or lets a later handshake adopt a key.
+    func savePairing(_ pairing: Pairing, pinnedSpkiHash: String? = nil) throws {
         lock.lock()
         defer { lock.unlock() }
         retired = nil
         do {
+            let previousPinHost = try Self.pinnedHost(in: keychain)
             try writePairing(pairing)
+            try writePin(pinnedSpkiHash, for: pairing, previousPinHost: previousPinHost)
         } catch {
             try? clear()
             throw error
         }
+    }
+
+    private func writePin(_ pin: String?, for pairing: Pairing, previousPinHost: String?) throws {
+        let host = Self.host(ofServer: pairing.srv)
+        if let pin, !pin.isEmpty {
+            guard let host else { throw PinBindingError.unreadableHost }
+            try keychain.set(pin, forKey: Key.pinnedSpkiHash)
+            try keychain.set(host, forKey: Key.pinnedSpkiHost)
+        } else if let host, previousPinHost == host {
+            // Same host: keep it, and bind a legacy unbound pin while here.
+            if try keychain.string(forKey: Key.pinnedSpkiHash) != nil {
+                try keychain.set(host, forKey: Key.pinnedSpkiHost)
+            }
+        } else {
+            try keychain.remove(Key.pinnedSpkiHash)
+            try keychain.remove(Key.pinnedSpkiHost)
+        }
+    }
+
+    enum PinBindingError: Error {
+        /// A pin was given for a pairing whose server has no readable host,
+        /// so there is nothing to bind it to.
+        case unreadableHost
     }
 
     private func writePairing(_ pairing: Pairing) throws {
@@ -233,18 +291,40 @@ final class SecurePairingStore: @unchecked Sendable {
         try keychain.set(secret, forKey: Key.deviceSecret)
     }
 
-    /// The relay's leaf SPKI SHA-256, captured at pairing (TOFU pinning).
-    /// Cleared with the pairing, so "clear pairing and re-pair" is the
-    /// recovery path for a legitimate certificate rotation.
-    var pinnedSpkiHash: String? {
-        try? keychain.string(forKey: Key.pinnedSpkiHash)
+    /// The pin stored for `host` (see the static form). Throws on a Keychain
+    /// error; nil only when nothing is stored for that host.
+    func pinnedSpkiHash(forHost host: String) throws -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return try Self.pinnedSpkiHash(in: keychain, forHost: host)
     }
 
-    func setPinnedSpkiHash(_ hash: String?) throws {
+    /// The relay's leaf SPKI SHA-256 for the stored pairing's host, captured
+    /// at pairing. Display only (Settings → Security): nil reads as "Not
+    /// pinned", including when the Keychain would not answer. Cleared with the
+    /// pairing, so "remove the pairing and re-pair" is the recovery path for
+    /// a legitimate certificate rotation.
+    var pinnedSpkiHash: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let srv = try? keychain.string(forKey: Key.srv),
+              let host = Self.host(ofServer: srv)
+        else { return nil }
+        return try? Self.pinnedSpkiHash(in: keychain, forHost: host)
+    }
+
+    /// Stores `hash` bound to `host`, or removes the pin when `hash` is nil.
+    /// Pairing stores its pin through `savePairing`; this is for tests and
+    /// repair.
+    func setPinnedSpkiHash(_ hash: String?, forHost host: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
         if let hash {
             try keychain.set(hash, forKey: Key.pinnedSpkiHash)
+            try keychain.set(host.lowercased(), forKey: Key.pinnedSpkiHost)
         } else {
             try keychain.remove(Key.pinnedSpkiHash)
+            try keychain.remove(Key.pinnedSpkiHost)
         }
     }
 

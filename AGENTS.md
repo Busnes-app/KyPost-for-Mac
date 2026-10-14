@@ -731,6 +731,34 @@ old sentence edited out.
   mail found only by search and not cached opens through `/api/mail/body` with no decrypt
   path, like older mail.
 
+### Pairing and relay certificate pinning (`Domain/UseCases/DeviceRegistrationService.swift`, `Data/Networking/PinnedSessionDelegate|RelayPairingConnection`, `Data/Storage/SecurePairingStore.swift`)
+
+- **Every client pairs with `kypost://native-pair`.** Desktop pairing
+  (`kypost://desktop-pair`) is removed: its session token was never sent by
+  anything. Its link opens nothing; `DesktopSessionStore` survives only to
+  erase a token an older build stored (unpair, wipe, failed-unlock reset).
+- **The pin is bound to its host** (`pinnedSpkiHost`; an unbound legacy pin
+  belongs to the stored srv). `savePairing(_:pinnedSpkiHash:)` writes it with
+  the pairing, and saving another host without a pin removes it.
+- **A pairing pins its own connection before anything is sent.** Pin
+  expected = the link's `pin=`, else the pin stored for that host. A link pin
+  differing from a stored one is refused (remove the pairing in Settings →
+  Connection first) — never swapped in. `RelayPairingConnection` (own
+  ephemeral session and delegate) probes; the probed hash must match the
+  expected pin, or becomes the pin when there is none; no hash fails the
+  pairing. The registration then rides that connection, held to that pin.
+- **Never arm a pin on the shared `relaySession` delegate.** It enforces
+  stored pins only, read through `SecurePairingStore.pinnedSpkiHash(in:forHost:)`.
+  **`reregisterIfPaired` never captures a pin**; it rides the shared session.
+- **A pin lookup that throws refuses the handshake** (`PinFailure.unreadable`
+  → `NetworkError.pinUnreadable`); only "not found" means unpinned. Never
+  `try?` a pin read on an enforcement path.
+- **Relay sessions are `relaySessionConfiguration()`**: ephemeral, no
+  `URLCache`, no cookies. `HTTPClient(session:)` has no default — never hand a
+  relay client `URLSession.shared`. Redirects must keep scheme https, host and
+  effective port.
+- A pairing (not a re-registration) posts `.kyPostPaired` once stored.
+
 ### Relay error mapping (`Data/Mail/MailSource.swift`)
 
 - `NetworkError.from` sees a status code and a body, never headers. Anything

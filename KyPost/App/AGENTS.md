@@ -21,7 +21,8 @@ graph at runtime (`AppEnvironment.rebuild`), so:
 - `SingletonGraph.shutdown()` must stop any new long-lived task or resource
   a graph child owns (pollers, monitors, auto-refresh loops, and
   `relaySession`, whose delegate-backed `URLSession` holds its delegate and
-  connection pool until `invalidateAndCancel()`). If you add one, add its
+  connection pool until `invalidateAndCancel()`; it is ephemeral, with no
+  cache or cookies — see the root pinning contract). If you add one, add its
   stop call there, or the superseded graph keeps writing to a database the
   app no longer shows — or, worse, keeps relay connections open through the
   Hostile Location Protection swap that was meant to close them.
@@ -69,8 +70,11 @@ contract.
 
 **Leaving an account is one list, `AccountTeardown`** (enrollment vault,
 session and pending reports; notification history and pull cursor; recipient
-pins; mail signature; cached mail and cursors; the inbox's held actions and
-rows). `SettingsViewModel.unpair` runs it after clearing the pairing, and a
+pins; mail signature; cached mail and cursors; the relay responses and cookies
+an older build's `.default` relay session left in `URLCache.shared` and
+`HTTPCookieStorage.shared`; the inbox's held actions and rows).
+`SettingsViewModel.unpair` runs it after clearing the pairing (and an older
+build's desktop session token), and a
 registration that stores a pairing for another `sub` or server over the
 current one runs it first (`DeviceRegistrationService.onAccountReplaced`,
 wired to `SingletonGraph.makeAccountTeardown`); an unreadable previous
@@ -106,15 +110,17 @@ local store is always disposable.
 
 `AppEnvironment.resetAfterFailedUnlock` is the app lock's only escape hatch,
 offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true. It
-erases rather than bypasses: gated secret, pairing, desktop session, both lock
+erases rather than bypasses: gated secret, pairing and pin, an older build's
+desktop session token, the legacy shared URL cache and cookies, both lock
 flags, store, photos, temp attachments, delivered notifications, drafts, the
 mail signature. Keep
 it that way — anything that unlocks *without* erasing is a bypass.
 
 ## URL schemes
 
-`KyPost/Info.plist` declares two `CFBundleURLTypes`: `kypost` (pairing,
-desktop pairing, the iOS KyIdentity return) and `mailto`, which is what lets
+`KyPost/Info.plist` declares two `CFBundleURLTypes`: `kypost` (`native-pair`
+pairing and the iOS KyIdentity return; `desktop-pair` is no longer routed)
+and `mailto`, which is what lets
 macOS offer KyPost as the default mail app. iOS cannot become the default mail
 app without Apple's entitlement, so there a `mailto:` is handled only if
 something opens one here. Both arrive through `onOpenURL` →
@@ -288,7 +294,7 @@ Four seams carry it, and each one defaults to the real path:
 
 - `MailRepository(overrideSource:)` — serves `DemoMailSource` and **skips the
   pairing guard in `refreshFolder`**. Without it an unpaired build paints
-  "Pair this device (Settings → Connection) to load mail" over every shot.
+  the not-paired notice (`PairingInstructions.inbox`) over every shot.
 - `PgpSendService.preload(hasIdentity:protection:accountAddress:)` — installs
   a bootstrap answer so compose offers Encrypt/Sign. Nothing in a shipping
   build may decide custody locally; this is the only caller.

@@ -324,6 +324,7 @@ final class AppEnvironment {
         graph.credentialGateService.removeAll()
         try? graph.securePairingStore.clear()
         try? graph.desktopSessionStore.clear()
+        PinnedSessionDelegate.purgeLegacySharedHTTPState()
         // This path promises the device comes back "as if reinstalled". An
         // envelope that survived it would be the account's private key left on
         // a device whose pairing and lock were both just erased.

@@ -70,6 +70,7 @@ struct MacPreferencesView: View {
 // MARK: - Connection
 
 private struct ConnectionPane: View {
+    @Environment(ThemeManager.self) private var themeManager
     @Bindable var viewModel: SettingsViewModel
     @State private var showPairingSheet = false
     @State private var showUnpairConfirmation = false
@@ -100,8 +101,9 @@ private struct ConnectionPane: View {
                         }
                     }
                 } else {
-                    Text("Pair this Mac with your KyPost account to load mail.")
+                    Text(PairingInstructions.macConnection)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             } header: {
                 Text("Relay")
@@ -113,40 +115,17 @@ private struct ConnectionPane: View {
                         Button("Test Connection") {
                             Task { await viewModel.testConnection() }
                         }
-                        Button("Re-pair…") { showPairingSheet = true }
+                        Button("Paste Pairing Link…") { showPairingSheet = true }
                         Spacer()
                         Button("Remove Pairing", role: .destructive) {
                             showUnpairConfirmation = true
                         }
                     } else {
-                        Button("Pair This Mac…") { showPairingSheet = true }
-                            .buttonStyle(.borderedProminent)
+                        // The native pairing screen, for the link the web
+                        // page shows when the browser could not open it.
+                        Button("Paste Pairing Link…") { showPairingSheet = true }
                         Spacer()
                     }
-                }
-            }
-
-            if let session = viewModel.desktopSession {
-                Section {
-                    if let email = session.userEmail {
-                        LabeledContent("Account", value: email)
-                    }
-                    LabeledContent(
-                        "Signed in",
-                        value: session.pairedAt.formatted(date: .abbreviated, time: .shortened)
-                    )
-                    LabeledContent(
-                        "Expires",
-                        value: session.expiresAt.formatted(date: .abbreviated, time: .shortened)
-                    )
-                    HStack {
-                        Spacer()
-                        Button("Forget This Computer", role: .destructive) {
-                            Task { await viewModel.forgetDesktopPairing() }
-                        }
-                    }
-                } header: {
-                    Text("Desktop Session")
                 }
             }
 
@@ -159,7 +138,8 @@ private struct ConnectionPane: View {
         }
         .formStyle(.grouped)
         .sheet(isPresented: $showPairingSheet) {
-            DesktopPairingView(initialParams: nil)
+            PushPairingView(initialParams: nil)
+                .environment(\.theme, themeManager.palette)
         }
         .confirmationDialog(
             "Unpair this device?",
@@ -171,7 +151,7 @@ private struct ConnectionPane: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the device from your account's paired devices on the server and clears its local pairing. You'll need to scan a new QR code or pass a new link to pair again.")
+            Text("This removes the device from your account's paired devices on the server and clears its local pairing and certificate pin. To pair again, open a new pairing link from KyPost on the web.")
         }
     }
 }

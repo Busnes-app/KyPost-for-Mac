@@ -414,68 +414,38 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
     }
 }
 
-/// Records pin arming across the actor hop into the stub transport.
-/// `@unchecked Sendable` with a lock rather than a captured `var`: the
-/// transport callback is `@Sendable` and runs off the main actor.
-private final class PinArmingRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var currentlyArmed: String?
-    private var atRequest: String?
-
-    func arm(_ pin: String?) {
-        lock.lock()
-        defer { lock.unlock() }
-        currentlyArmed = pin
-    }
-
-    func snapshotAtRequest() {
-        lock.lock()
-        defer { lock.unlock() }
-        atRequest = currentlyArmed
-    }
-
-    var armed: String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return currentlyArmed
-    }
-
-    /// What was armed at the moment the registration POST left. Nil means
-    /// nothing was armed yet — the regression this guards against.
-    var armedAtRequest: String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return atRequest
-    }
-}
-
 // MARK: - DeviceRegistrationService
 
-// DeviceRegistrationService is @MainActor: `inFlight` and the pin-capture
-// closures are unsynchronised mutable state, and every production caller
-// already runs there.
+// DeviceRegistrationService is @MainActor: `inFlight` is unsynchronised
+// mutable state, and every production caller already runs there.
 @MainActor
 @Suite struct DeviceRegistrationServiceTests {
     private struct Environment {
         var service: DeviceRegistrationService
         var pairingStore: SecurePairingStore
         var settings: PushSettingsStore
+        /// Every pairing connection the service opened, in order.
+        var connections: StubPairingConnections
     }
 
-    private func makeEnvironment(client: HTTPClient, paired: Bool = false) throws -> Environment {
+    private func makeEnvironment(
+        client: HTTPClient,
+        paired: Bool = false,
+        observed: String? = "hash-observed"
+    ) throws -> Environment {
         let (defaults, keychain) = scratchStores()
         let pairingStore = SecurePairingStore(keychain: keychain)
         if paired {
             try pairingStore.savePairing(makePairing())
         }
         let settings = PushSettingsStore(defaults: defaults)
-        let service = DeviceRegistrationService(
-            client: NativeRegistrationClient(httpClient: client),
-            securePairingStore: pairingStore,
-            pushSettingsStore: settings
+        let connections = StubPairingConnections(client: client, observed: observed)
+        let service = makeRegistrationService(
+            client: client, pairingStore: pairingStore, settings: settings, connections: connections
         )
-        return Environment(service: service, pairingStore: pairingStore, settings: settings)
+        return Environment(service: service, pairingStore: pairingStore, settings: settings, connections: connections)
     }
+
 
     private let params = PairingParams(sub: "u1", srv: server, pt: "pt-1")
 
@@ -618,118 +588,123 @@ private final class PinArmingRecorder: @unchecked Sendable {
         #expect(outcome == nil)
     }
 
-    // MARK: - TOFU pinning capture
+    // MARK: - Certificate pinning at pairing
 
-    @Test func theFirstSuccessfulPairingPinsTheObservedKey() async throws {
+    private let relayHost = "relay.example.com"
+
+    /// Trust on first use, tied to the pairing's own connection: the probe's
+    /// hash becomes the pin before the registration goes out, and that is
+    /// the pin stored.
+    @Test func theFirstPairingPinsTheProbedKeyBeforeRegistering() async throws {
         let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
-        let env = try makeEnvironment(client: stubClient(json: json))
-        env.service.observedSpkiHash = { host in
-            host == "relay.example.com" ? "hash-first" : nil
+        let env = try makeEnvironment(client: stubClient(json: json), observed: "hash-first")
+
+        let outcome = await env.service.pair(params: params, deviceToken: "t")
+
+        guard case .success = outcome else {
+            Issue.record("Expected success, got \(outcome)")
+            return
         }
-
-        _ = await env.service.pair(params: params, deviceToken: "t")
-
-        #expect(env.pairingStore.pinnedSpkiHash == "hash-first")
+        let connection = try #require(env.connections.last)
+        #expect(connection.host == relayHost)
+        #expect(connection.initialPin == nil)
+        #expect(connection.pinAtRegister == .some("hash-first"))
+        #expect(connection.isClosed)
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-first")
     }
 
-    /// Trust on FIRST use, not on every use. `performPair` also runs on every
-    /// foreground and APNs token refresh, so re-pinning here would silently
-    /// adopt whatever key was last seen — one interception would become a
-    /// permanent pin for the attacker's key and lock out the real relay.
-    @Test func reregistrationNeverRepinsAnAlreadyPinnedRelay() async throws {
-        let json = #"{"ok": true, "deviceId": "dev-8"}"#
-        let env = try makeEnvironment(client: stubClient(json: json), paired: true)
-        try env.pairingStore.setPinnedSpkiHash("hash-first")
-        env.service.observedSpkiHash = { _ in "hash-attacker" }
+    /// No hash, no pairing. Pairing unpinned and hoping a later handshake
+    /// supplies one is exactly the capture this replaces.
+    @Test func aPairingWithNoObservableHandshakeFails() async throws {
+        let posts = Box<Int>(0)
+        let env = try makeEnvironment(client: stubClient { request in
+            if request.httpMethod == "POST" { posts.mutate { $0 += 1 } }
+        }, observed: nil)
+
+        let outcome = await env.service.pair(params: params, deviceToken: "t")
+
+        guard case .failure = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(posts.value == 0)
+        #expect(try env.pairingStore.loadPairing() == nil)
+        #expect(env.connections.last?.isClosed == true)
+    }
+
+    /// The registration rides the pairing's connection, never the shared
+    /// session background sync uses — that is where a pin the link supplied
+    /// would otherwise have leaked.
+    @Test func aPairingNeverRidesTheSharedSession() async throws {
+        let sharedRequests = Box<Int>(0)
+        let shared = stubClient { _ in sharedRequests.mutate { $0 += 1 } }
+        let (defaults, keychain) = scratchStores()
+        let connections = StubPairingConnections(
+            client: stubClient(json: #"{"ok": true, "deviceId": "dev-7"}"#)
+        )
+        let service = makeRegistrationService(
+            client: shared,
+            pairingStore: SecurePairingStore(keychain: keychain),
+            settings: PushSettingsStore(defaults: defaults),
+            connections: connections
+        )
+        var pinned = params
+        pinned.pin = "hash-observed"
+
+        _ = await service.pair(params: pinned, deviceToken: "t")
+
+        #expect(sharedRequests.value == 0)
+        #expect(connections.last?.registrations == 1)
+    }
+
+    /// Re-registration runs on every foreground and APNs token refresh. A
+    /// pin captured there would be whatever that network presented.
+    @Test func reregistrationNeverCapturesAFirstPin() async throws {
+        let env = try makeEnvironment(client: stubClient(json: #"{"ok": true, "deviceId": "dev-8"}"#), paired: true)
 
         _ = await env.service.reregisterIfPaired(deviceToken: "t2")
 
-        #expect(env.pairingStore.pinnedSpkiHash == "hash-first")
+        #expect(env.connections.opened.isEmpty)
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == nil)
+    }
+
+    @Test func reregistrationKeepsTheStoredPin() async throws {
+        let env = try makeEnvironment(client: stubClient(json: #"{"ok": true, "deviceId": "dev-8"}"#), paired: true)
+        try env.pairingStore.setPinnedSpkiHash("hash-first", forHost: relayHost)
+
+        _ = await env.service.reregisterIfPaired(deviceToken: "t2")
+
+        #expect(env.connections.opened.isEmpty)
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-first")
+        #expect(PairingParams(pairing: makePairing()).pin == nil)
     }
 
     // MARK: - Server-published pin (`pin=`)
 
     /// The registration POST discloses the pairing token and the push
-    /// endpoint and receives the device secret. A pin applied after that
-    /// response lands has missed everything it exists to protect, so the
-    /// ordering — not merely the final stored value — is the contract.
-    @Test func theLinkPinIsArmedBeforeTheRegistrationRequestGoesOut() async throws {
+    /// endpoint and receives the device secret, so the link's pin must hold
+    /// the connection from its first handshake, not from after the response.
+    @Test func theLinkPinHoldsThePairingConnectionFromItsFirstHandshake() async throws {
         let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
-        let recorder = PinArmingRecorder()
-        // Snapshotting from inside the transport is what makes this an
-        // ordering assertion rather than a final-state one: move the arming
-        // to after the POST and every other expectation here still passes.
-        let client = stubClient(json: json, onRequest: { _ in recorder.snapshotAtRequest() })
-        let env = try makeEnvironment(client: client)
-        env.service.setPendingPin = { pin, _ in recorder.arm(pin) }
-        env.service.probeSpkiHash = { _ in "hash-from-link" }
+        let env = try makeEnvironment(client: stubClient(json: json), observed: "hash-from-link")
 
         var pinned = params
         pinned.pin = "hash-from-link"
         _ = await env.service.pair(params: pinned, deviceToken: "t")
 
-        #expect(recorder.armedAtRequest == "hash-from-link")
-        // …and disarmed once the attempt ends, so a pin never outlives the
-        // pairing attempt that supplied it.
-        #expect(recorder.armed == nil)
+        let connection = try #require(env.connections.last)
+        #expect(connection.initialPin == "hash-from-link")
+        #expect(connection.pinAtRegister == .some("hash-from-link"))
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-from-link")
     }
 
-    /// The link pin, not the key the handshake happened to present. Trusting
-    /// the observed value here would make `pin=` decorative.
-    @Test func aSuccessfulPinnedPairingPersistsTheLinkPin() async throws {
-        let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
-        let env = try makeEnvironment(client: stubClient(json: json))
-        env.service.observedSpkiHash = { _ in "hash-observed" }
-        env.service.probeSpkiHash = { _ in "hash-from-link" }
-
-        var pinned = params
-        pinned.pin = "hash-from-link"
-        _ = await env.service.pair(params: pinned, deviceToken: "t")
-
-        #expect(env.pairingStore.pinnedSpkiHash == "hash-from-link")
-    }
-
-    /// Re-scanning a link is how a certificate renewal is meant to recover,
-    /// so a link pin overwrites an existing one. This is safe only because
-    /// `PairingParams(pairing:)` passes nil, which the next test locks down.
-    @Test func aLinkPinReplacesAnAlreadyStoredPin() async throws {
-        let json = #"{"ok": true, "deviceId": "dev-9", "deviceSecret": "s-9"}"#
-        let env = try makeEnvironment(client: stubClient(json: json), paired: true)
-        try env.pairingStore.setPinnedSpkiHash("hash-old")
-        env.service.probeSpkiHash = { _ in "hash-renewed" }
-
-        var pinned = params
-        pinned.pin = "hash-renewed"
-        _ = await env.service.pair(params: pinned, deviceToken: "t")
-
-        #expect(env.pairingStore.pinnedSpkiHash == "hash-renewed")
-    }
-
-    /// If re-registration synthesised a pin from the stored pairing, the
-    /// overwrite above would fire on every foreground and a stored value
-    /// would keep re-arming itself. It must carry none.
-    @Test func reregistrationCarriesNoLinkPin() async throws {
-        let env = try makeEnvironment(client: stubClient(), paired: true)
-        var sawPin: String?
-        env.service.setPendingPin = { pin, _ in sawPin = pin }
-
-        _ = await env.service.reregisterIfPaired(deviceToken: "t")
-
-        #expect(sawPin == nil)
-        #expect(PairingParams(pairing: makePairing()).pin == nil)
-    }
-
-    /// Arming a pin is not the same as enforcing one. The delegate's
-    /// server-trust callback fires once per CONNECTION, so a registration on a
-    /// pooled or resumed connection is never compared against the armed pin.
     /// The pairing token must not leave until a live handshake has shown the
-    /// relay actually presents that key.
+    /// relay actually presents the link's key.
     @Test func aRelayPresentingTheWrongKeyIsRefusedBeforeAnythingIsSent() async throws {
         let posts = Box<Int>(0)
         let env = try makeEnvironment(client: stubClient { request in
             if request.httpMethod == "POST" { posts.mutate { $0 += 1 } }
-        })
-        env.service.probeSpkiHash = { _ in "hash-the-relay-really-has" }
+        }, observed: "hash-the-relay-really-has")
 
         var pinned = params
         pinned.pin = "hash-from-link"
@@ -740,19 +715,16 @@ private final class PinArmingRecorder: @unchecked Sendable {
             return
         }
         #expect(posts.value == 0, "the pairing token must not be sent to a relay failing the pin")
+        #expect(env.connections.last?.registrations == 0)
         #expect(try env.pairingStore.loadPairing() == nil)
-        #expect(env.pairingStore.pinnedSpkiHash == nil)
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == nil)
     }
 
-    /// No observable handshake is not "assume it was fine". It is the same
-    /// fail-open the TOFU path already guards against, and on this path the
-    /// link explicitly asked for a pin.
     @Test func anUnobservableHandshakeRefusesRatherThanPairingUnpinned() async throws {
         let posts = Box<Int>(0)
         let env = try makeEnvironment(client: stubClient { request in
             if request.httpMethod == "POST" { posts.mutate { $0 += 1 } }
-        })
-        env.service.probeSpkiHash = { _ in nil }
+        }, observed: nil)
 
         var pinned = params
         pinned.pin = "hash-from-link"
@@ -766,44 +738,130 @@ private final class PinArmingRecorder: @unchecked Sendable {
         #expect(try env.pairingStore.loadPairing() == nil)
     }
 
-    /// A hostile link cannot install a pin the relay does not present, which
-    /// would lock this device out of the real relay until it was unpaired.
-    @Test func aPinTheRelayDoesNotPresentNeverReplacesTheStoredOne() async throws {
-        let env = try makeEnvironment(client: stubClient(), paired: true)
-        try env.pairingStore.setPinnedSpkiHash("hash-real-relay")
-        env.service.probeSpkiHash = { _ in "hash-real-relay" }
+    /// A link cannot replace a pin this device already holds for the host.
+    /// Removing the pairing is the documented rotation recovery; a link that
+    /// swapped the pin in would let whoever crafts links re-pin the relay.
+    @Test func aLinkPinThatDiffersFromTheStoredPinIsRefused() async throws {
+        let env = try makeEnvironment(client: stubClient(), paired: true, observed: "hash-renewed")
+        try env.pairingStore.setPinnedSpkiHash("hash-old", forHost: relayHost)
 
         var pinned = params
-        pinned.pin = "hash-attacker-chose"
-        _ = await env.service.pair(params: pinned, deviceToken: "t")
+        pinned.pin = "hash-renewed"
+        let outcome = await env.service.pair(params: pinned, deviceToken: "t")
 
-        #expect(env.pairingStore.pinnedSpkiHash == "hash-real-relay")
+        guard case .failure(let message) = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(message.contains("Settings → Connection"))
+        #expect(env.connections.opened.isEmpty, "refused before any connection")
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-old")
+        #expect(try env.pairingStore.loadPairing()?.pairingToken == "pt")
     }
 
-    /// A relay that publishes no pin still pairs, and still records the TOFU
-    /// hash — 0.3.x relays and anyone terminating TLS in front of the app.
-    @Test func anUnpinnedLinkStillFallsBackToTrustOnFirstUse() async throws {
-        let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
-        let env = try makeEnvironment(client: stubClient(json: json))
-        env.service.observedSpkiHash = { _ in "hash-observed" }
+    @Test func aLinkPinMatchingTheStoredPinPairs() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-9", "deviceSecret": "s-9"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true, observed: "hash-same")
+        try env.pairingStore.setPinnedSpkiHash("hash-same", forHost: relayHost)
 
-        _ = await env.service.pair(params: params, deviceToken: "t")
+        var pinned = params
+        pinned.pin = "hash-same"
+        let outcome = await env.service.pair(params: pinned, deviceToken: "t")
 
-        #expect(env.pairingStore.pinnedSpkiHash == "hash-observed")
+        guard case .success = outcome else {
+            Issue.record("Expected success, got \(outcome)")
+            return
+        }
+        #expect(env.connections.last?.initialPin == "hash-same")
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-same")
+    }
+
+    /// A link without a pin to an already pinned host is held to the stored
+    /// pin, not re-trusted on first use.
+    @Test func aStoredPinGovernsALinkWithoutOne() async throws {
+        let posts = Box<Int>(0)
+        let env = try makeEnvironment(client: stubClient { request in
+            if request.httpMethod == "POST" { posts.mutate { $0 += 1 } }
+        }, paired: true, observed: "hash-attacker")
+        try env.pairingStore.setPinnedSpkiHash("hash-real-relay", forHost: relayHost)
+
+        let outcome = await env.service.pair(params: params, deviceToken: "t")
+
+        guard case .failure(let message) = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(message.contains("Settings → Connection"))
+        #expect(env.connections.last?.initialPin == "hash-real-relay")
+        #expect(posts.value == 0)
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-real-relay")
+    }
+
+    /// Moving to another server leaves the old server's pin behind and pins
+    /// the new one on its own first handshake.
+    @Test func pairingAnotherServerReplacesTheOldHostsPin() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-9", "deviceSecret": "s-9"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true, observed: "hash-other")
+        try env.pairingStore.setPinnedSpkiHash("hash-old", forHost: relayHost)
+
+        let outcome = await env.service.pair(
+            params: PairingParams(sub: "u1", srv: "https://other.example.com", pt: "pt-2"),
+            deviceToken: "t"
+        )
+
+        guard case .success = outcome else {
+            Issue.record("Expected success, got \(outcome)")
+            return
+        }
+        #expect(env.connections.last?.initialPin == nil)
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: "other.example.com") == "hash-other")
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == nil)
     }
 
     /// Clearing the pairing is the documented rotation recovery, so the next
     /// pairing must be free to pin again.
     @Test func pinningResumesAfterThePairingIsCleared() async throws {
         let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
-        let env = try makeEnvironment(client: stubClient(json: json), paired: true)
-        try env.pairingStore.setPinnedSpkiHash("hash-first")
-        env.service.observedSpkiHash = { _ in "hash-rotated" }
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true, observed: "hash-rotated")
+        try env.pairingStore.setPinnedSpkiHash("hash-first", forHost: relayHost)
 
         try env.pairingStore.clear()
         _ = await env.service.pair(params: params, deviceToken: "t")
 
-        #expect(env.pairingStore.pinnedSpkiHash == "hash-rotated")
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-rotated")
+    }
+
+    // MARK: - Announcing a pairing
+
+    /// Screens showing "not paired" load as soon as a pairing lands; a
+    /// routine re-registration is not a new pairing and stays quiet.
+    @Test func onlyANewPairingIsAnnounced() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-7", "deviceSecret": "s-7"}"#
+        let env = try makeEnvironment(client: stubClient(json: json))
+        let announced = Box(0)
+        let observation = NotificationObservation(center: .default, name: .kyPostPaired) {
+            announced.mutate { $0 += 1 }
+        }
+
+        _ = await env.service.pair(params: params, deviceToken: "t")
+        #expect(announced.value == 1)
+
+        _ = await env.service.reregisterIfPaired(deviceToken: "t2")
+        #expect(announced.value == 1)
+        withExtendedLifetime(observation) {}
+    }
+
+    @Test func aRefusedPairingIsNotAnnounced() async throws {
+        let env = try makeEnvironment(client: stubClient(), observed: nil)
+        let announced = Box(0)
+        let observation = NotificationObservation(center: .default, name: .kyPostPaired) {
+            announced.mutate { $0 += 1 }
+        }
+
+        _ = await env.service.pair(params: params, deviceToken: "t")
+
+        #expect(announced.value == 0)
+        withExtendedLifetime(observation) {}
     }
 
     /// Re-registration must carry the stored deviceId so the server updates
@@ -844,10 +902,10 @@ private final class PinArmingRecorder: @unchecked Sendable {
             try pairingStore.savePairing(makePairing())
         }
         return PushPairingViewModel(
-            registrationService: DeviceRegistrationService(
-                client: NativeRegistrationClient(httpClient: stubClient()),
-                securePairingStore: pairingStore,
-                pushSettingsStore: PushSettingsStore(defaults: defaults)
+            registrationService: makeRegistrationService(
+                client: stubClient(),
+                pairingStore: pairingStore,
+                settings: PushSettingsStore(defaults: defaults)
             ),
             pushSettingsStore: PushSettingsStore(defaults: defaults),
             securePairingStore: pairingStore
@@ -897,12 +955,10 @@ private final class PinArmingRecorder: @unchecked Sendable {
         let (defaults, keychain) = scratchStores()
         let pairingStore = SecurePairingStore(keychain: keychain)
         let viewModel = PushPairingViewModel(
-            registrationService: DeviceRegistrationService(
-                client: NativeRegistrationClient(
-                    httpClient: stubClient(json: #"{"ok": true, "deviceId": "dev-7"}"#)
-                ),
-                securePairingStore: pairingStore,
-                pushSettingsStore: PushSettingsStore(defaults: defaults)
+            registrationService: makeRegistrationService(
+                client: stubClient(json: #"{"ok": true, "deviceId": "dev-7"}"#),
+                pairingStore: pairingStore,
+                settings: PushSettingsStore(defaults: defaults)
             ),
             pushSettingsStore: PushSettingsStore(defaults: defaults),
             securePairingStore: pairingStore
@@ -920,6 +976,23 @@ private final class PinArmingRecorder: @unchecked Sendable {
         viewModel.present(params: params)
         viewModel.reset()
         #expect(viewModel.state == .idle)
+    }
+}
+
+// MARK: - What an unpaired device says
+
+@Suite struct PairingInstructionsTests {
+    /// Mail needs the native pairing, and the web's "Pair this device" button
+    /// is what emits its link; the Mac says exactly that.
+    @Test func theMacNamesTheWebPageAndTheNativePairLink() {
+        #if os(macOS)
+        for text in [PairingInstructions.inbox, PairingInstructions.macConnection] {
+            #expect(text.contains("Settings → Security → Devices"))
+            #expect(text.contains("Pair this device"))
+            #expect(text.contains("kypost://native-pair"))
+            #expect(!text.contains("desktop-pair"))
+        }
+        #endif
     }
 }
 
@@ -942,10 +1015,10 @@ private final class PinArmingRecorder: @unchecked Sendable {
             return (Data(#"{"ok": true, "deviceId": "dev-7"}"#.utf8), response)
         }
         let (defaults, keychain) = scratchStores()
-        return DeviceRegistrationService(
-            client: NativeRegistrationClient(httpClient: client),
-            securePairingStore: SecurePairingStore(keychain: keychain),
-            pushSettingsStore: PushSettingsStore(defaults: defaults)
+        return makeRegistrationService(
+            client: client,
+            pairingStore: SecurePairingStore(keychain: keychain),
+            settings: PushSettingsStore(defaults: defaults)
         )
     }
 

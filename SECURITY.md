@@ -110,11 +110,39 @@ there until you remove them.
 ### Certificate pinning
 
 KyPost is self-hosted with a per-user server URL, so there is no certificate to hardcode.
-The server's SPKI pin is captured once at pairing time and enforced on every later
-connection (`Data/Networking/PinnedSessionDelegate.swift`).
+A pin is the SHA-256 of the server's leaf SubjectPublicKeyInfo. It is stored in the
+Keychain bound to the host it was seen on (`Data/Storage/SecurePairingStore.swift`), and
+every connection to that host must present that key
+(`Data/Networking/PinnedSessionDelegate.swift`).
 
-**This is trust-on-first-use.** It detects a certificate that changes after pairing. It
-cannot detect an attacker already in position *at* pairing. Pair over a network you
+- **Pairing has its own connection** (`Data/Networking/RelayPairingConnection.swift`).
+  It probes the server first. The key that handshake presents must match the link's
+  `pin=` if it has one, or else the pin already stored for that host; with neither, it
+  becomes the pin. The registration, which sends the pairing token and receives the
+  device secret, then rides that same connection, held to that pin. If no key can be
+  read, nothing is sent and the pairing fails. The shared session that mail and
+  background sync use only ever enforces stored pins.
+- **A link cannot replace a pin.** If the host already has a pin and the link carries a
+  different one, or the server presents a different key, the pairing is refused. If the
+  certificate was legitimately replaced, remove the pairing in Settings → Connection,
+  then pair again.
+- **Re-registration never captures a pin.** A pairing that an older build left without
+  one stays unpinned until it is removed and paired again. Settings → Security shows
+  whether the relay is pinned.
+- **Changing servers drops the old pin.** Saving a pairing for another host removes the
+  previous host's pin, and the new server is pinned from its own pairing handshake.
+- **It fails closed.** On a pinned host the app refuses a key it cannot hash, and a
+  Keychain error while reading the pin refuses the connection rather than falling back to
+  system trust.
+- **Redirects stay on the origin.** A redirect to another host, another port or plain
+  http is refused, so the device-secret header never follows one.
+- **Relay responses are not cached.** Relay sessions are ephemeral, with no response
+  cache and no cookie store. Unpair and the security wipe also empty the process-wide URL
+  cache and cookie store that the relay session of earlier builds wrote to.
+
+**Without `pin=` this is trust-on-first-use.** It detects a certificate that changes
+after pairing. It cannot detect an attacker already in position *at* pairing. The web
+app adds `pin=` only when the server terminates TLS itself. Pair over a network you
 trust.
 
 ### Pairing credentials
