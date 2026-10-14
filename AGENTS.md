@@ -344,8 +344,10 @@ is the server's pin, not this device's.
   `cid:`. Markup inside an HTML comment or a raw-text/RCDATA
   element (`script`, `style`, `textarea`, `title`, `xmp`, `iframe`,
   `noembed`, `noframes`, `plaintext`) is text, as an HTML parser reads it: it
-  is never rewritten and spends no budget. `data:` images render with `loadsSubresources` off (verified against
-  WebKit), so remote content stays blocked.
+  is never rewritten and spends no budget. `data:` images render under the
+  reader's remote-content block (`loadsSubresources` off plus
+  `RemoteContentBlocker`, which exempts only `data:` and `about:`;
+  `RemoteContentBlockingTests`), so remote content stays blocked.
   **The scan must stay linear on any input** (`MarkupScanner`): no
   backtracking pattern over an open-ended tag or body; malformed markup made
   the old single regex slow down quadratically. Tag names match as ICU
@@ -611,6 +613,18 @@ old sentence edited out.
 - Un-gestured navigations stay blocked regardless of scheme: a
   `<meta http-equiv="refresh">` is plain HTML and a main-frame navigation, so
   neither the JavaScript switch nor `loadsSubresources` touches it.
+- **Remote content is blocked by a content rule list, not only a flag**
+  (`RemoteContentBlocker`, `EmailBodyWebView.makePage`). Every reader page
+  — server-rendered and decrypted alike — gets the block-all list (exempt:
+  `data:`, `about:`) before its first load; "Load Remote Content" builds a
+  page without it for that message's HTML only. No list, no render (fail
+  closed). `RemoteContentBlockingTests` renders every beacon vector through
+  the reader's own page and counts zero fetches: over loopback HTTP where a
+  listener is allowed (iOS Simulator, CI) — the sandboxed macOS host may not
+  listen, and must not gain a network-server entitlement for a test — and
+  through a URL scheme handler everywhere. Measured 2026-10-13: over HTTP
+  `loadsSubresources = false` alone already stopped every vector, so the list
+  is defence in depth there; it is what stops custom-scheme loads.
 
 ### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
 
@@ -717,8 +731,12 @@ old sentence edited out.
   same pair **together with that row's OpenPGP state** — a result carries
   none, and dropping it hides a cached verdict or turns a client-protected row
   into a server fetch), and Reply All uses the result's own `sentTo`/`cc` —
-  the body endpoint carries none. `InboxViewModel.email(for:)` (macOS pop-out
-  readers) prefers the folder row but takes the result's To/Cc.
+  the body endpoint carries none. `InboxViewModel.email(for:)` prefers the
+  folder row but takes the result's To/Cc. A macOS pop-out reader resolves
+  its row once through `resolveEmail(for:)`: the list's row, else the row it
+  was opened with (`rememberForWindow`, memory only, dropped by
+  `forgetAccount`), else the cache — so a folder switch or search never
+  blanks it. An uncached result's window does not survive a relaunch.
 - **Results land only while their submission is the newest and their query
   and folder are still on screen.** A failure says why and shows the folder
   list — never an older query's results. The search ends on clearing or
@@ -959,8 +977,10 @@ When the user requests a durable behavior change, record it here or in the relev
   (`AppEnvironment` / `SingletonGraph.shared` aliasing), lifecycle/lock
   ordering at launch, the pull poll as push-mode heartbeat.
 - `KyPost/Presentation/AGENTS.md` — SwiftUI views, view models, and
-  components: theming and font contracts, MainActor isolation rules, compose
-  recipient tokens and contact search, and the macOS/iOS input deviations.
+  components: theming, contrast and font contracts (and the recorded palette
+  deviations from web/Android), MainActor isolation rules, compose recipient
+  tokens and contact search, the macOS Message menu, and the macOS/iOS input
+  deviations.
 
 ## Product icon
 

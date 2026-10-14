@@ -12,6 +12,19 @@ struct KyPostCommands: Commands {
     let router: NavigationRouter
 
     @Environment(\.openWindow) private var openWindow
+    @FocusedValue(\.readerMessageCommands) private var readerCommands
+    @FocusedValue(\.listMessageCommands) private var listCommands
+
+    /// The Message menu's target in the key window; every item disabled when
+    /// nothing is selected or open, the app is locked, or it is unpaired.
+    private var message: MessageCommands {
+        MessageCommands.resolve(
+            reader: readerCommands,
+            list: listCommands,
+            isLocked: SingletonGraph.shared.appLockManager.isLocked,
+            isPaired: SingletonGraph.shared.securePairingStore.isPaired
+        )
+    }
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
@@ -28,10 +41,11 @@ struct KyPostCommands: Commands {
         }
 
         CommandMenu("Mailbox") {
+            // ⇧⌘N as in Apple Mail ("Get All New Mail"); ⌘R is Reply.
             Button("Refresh Inbox") {
                 Task { await SingletonGraph.shared.inboxViewModel.refresh() }
             }
-            .keyboardShortcut("r")
+            .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Button("Sync Contacts") {
                 Task { await SingletonGraph.shared.contactsViewModel.sync() }
@@ -44,6 +58,34 @@ struct KyPostCommands: Commands {
                 Task { await SingletonGraph.shared.pullPollingScheduler.pollNow() }
             }
         }
+
+        // Apple Mail's shortcuts. Delete carries no menu key equivalent on
+        // purpose: a bare ⌫ here would fire while typing in the search field.
+        // ⌫ reaches the list through `onDeleteCommand` and a reader through
+        // its own handling (`EmailDetailView`). The relay has no "unread"
+        // action, so there is no Mark as Unread.
+        CommandMenu("Message") {
+            item("Reply", message.reply)
+                .keyboardShortcut("r")
+            item("Reply All", message.replyAll)
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            item("Forward", message.forward)
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+            Divider()
+            item("Archive", message.archive)
+                .keyboardShortcut("a", modifiers: [.command, .control])
+            item("Move to Junk", message.junk)
+                .keyboardShortcut("j", modifiers: [.command, .shift])
+            item("Mark as Read", message.markRead)
+                .keyboardShortcut("u", modifiers: [.command, .shift])
+            Divider()
+            item("Delete", message.delete)
+        }
+    }
+
+    private func item(_ title: LocalizedStringKey, _ action: (() -> Void)?) -> some View {
+        Button(title) { action?() }
+            .disabled(action == nil)
     }
 }
 #endif

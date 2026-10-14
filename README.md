@@ -11,7 +11,7 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 - **Inbox with keyword tabs** — the relay sorts mail into tabs and labels. You set the tab visibility in the settings.
 - **Server folders** — Inbox and its subfolders, Drafts, Junk, Sent, Trash, and Archive with subfolders. On macOS these folders are in the sidebar. On iOS they are in the folder menu on the Inbox screen.
 - **HTML email rendering** — a themed WebKit reader on both platforms. Links open in the default browser. The app renders plain-text messages natively.
-- **macOS features** — a three-pane split view, pop-out email windows (double-click or right-click a message), a preview pane you can turn on and off, drag-and-drop of emails onto sidebar folders to move them, menu-bar commands (⌘N compose, ⌘R refresh, ⌘⇧S contact sync), and a native Preferences window (⌘,).
+- **macOS features** — a three-pane split view, pop-out email windows (double-click or right-click a message; each keeps its message when the main window changes folder, and a restored one reopens it from the cache), a preview pane you can turn on and off, drag-and-drop of emails onto sidebar folders to move them, and a native Preferences window (⌘,). Apple Mail's shortcuts, in the Message menu: Reply ⌘R, Reply All ⇧⌘R, Forward ⇧⌘F, Archive ⌃⌘A, Move to Junk ⇧⌘J, Mark as Read ⇧⌘U, and ⌫ to delete in the list or a pop-out reader. They act on the selection or the open message and are off while nothing is selected, the app is locked, or it is not paired. There is no Mark as Unread: the relay has no unread action. Elsewhere: ⌘N new email, ⇧⌘N refresh, ⇧⌘S contact sync. A failed attachment download, Save As or mark-as-read is said in a toast.
 - **Compose and send** through the relay.
 - **Push notifications** (APNs) for new mail and MFA challenges. A polling fallback also runs (90 s in the foreground, background refresh on iOS).
 - **MFA approval** — approve login challenges from a notification tap.
@@ -19,7 +19,7 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 - **PGP key exchange with QR** — share your public key in person. *My QR Code* makes a pickup link that expires in 2 minutes. *Scan to add contact key* reads the link of another person, shows their fingerprint for out-of-band confirmation, and saves the key to a contact. iOS scans with the camera and accepts a pasted link as a fallback. macOS accepts only a pasted link, because it has no VisionKit scanner.
 - **Encryption state on every message** — a message that the server decrypted says so, and you can then see that the server read your mail. A message only your own key can open says that too; on a device you enrolled it decrypts here. The decrypted body is never stored; it lives only while the message is on screen. Previewing a decrypted attachment writes it to a temporary file, deleted when the preview closes, when the message closes, and by the security wipe; saving one writes it where you choose. For a server-custody account the app holds no private key at all. For a client-custody account it holds one only after you deliberately run device enrollment, sealed in the Secure Enclave and released on user presence; enabling Hostile Location Protection or resetting a stranded app lock destroys it, and neither brings it back. See `docs/E2E_PGP.md` in the server repo.
 - **Encrypted and signed send** — for an account whose key the server holds, the Encrypt and Sign flags travel with the message, and the relay does the OpenPGP work. If a recipient has no usable key, the relay refuses first and asks you. If you confirm, the relay mails a one-time link to the recipient. It also stores the plaintext of that message on your server for up to 7 days, together with the named recipients. For an account whose key the server does not hold, a device you enrolled encrypts and signs on the device itself (PGP/MIME, each Bcc recipient gets a separate ciphertext, and the Sent copy is encrypted to your own key). On a device that is not enrolled, the app saves the draft on the server and webmail takes over.
-- **17 themes** — the palettes match the web and Android apps exactly. The default theme is **Busnes Light**; a theme you already chose is kept.
+- **17 themes** — the palettes match the web and Android apps, except where a color did not reach WCAG AA contrast (4.5:1) and was changed here: Patina Ky's text, the error/success/warning text on light themes, secondary text, the reader's link color on pale-accent themes, and the button text on Coffee and Polished Ky. `KyPost/Presentation/AGENTS.md` lists each one. The default theme is **Busnes Light**; a theme you already chose is kept.
 
 ### Security (Settings → Security)
 
@@ -63,7 +63,12 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
   app pins a host, the check fails closed, so the app refuses a certificate
   that it cannot hash. If the certificate changes, pair again in
   Settings → Connection. The app also applies these protections. Sender HTML
-  renders with JavaScript off and remote content blocked. Navigation out of
+  renders with JavaScript off and remote content blocked: subresource loading
+  is off and a WebKit content rule list refuses every load the message makes
+  except the app's own inline images, so preconnect, prefetch, `<a ping>`,
+  CSS fonts and imports, `srcset` and posters fetch nothing. A test renders
+  every one of these against a local server and counts zero requests. "Load
+  Remote Content" lifts the block for that message only. Navigation out of
   the message is denied by default, so a redirect cannot beacon home past the
   block. The app computes PGP fingerprints locally from the key bytes, so it
   refuses a relay that lies. The local store carries a backup exclusion.
