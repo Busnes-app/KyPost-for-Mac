@@ -383,6 +383,37 @@ import Testing
         #expect(signatureIdentityMismatch(verdict, displayedFrom: "alice@y.example") != nil)
     }
 
+    /// User IDs are owner-chosen text. Anything that is not one plain address
+    /// is dropped whole, never cleaned up.
+    @Test func onlyAPlainAddressSurvives() {
+        #expect(plainAddress(" Bob@X.example") == nil, "whitespace is refused, not trimmed")
+        #expect(plainAddress("Bob@X.example") == "bob@x.example")
+        #expect(plainAddress("bob@x.example\nYou confirmed this key") == nil)
+        #expect(plainAddress("bob@x.example\u{202E}") == nil, "bidi override")
+        #expect(plainAddress("bob\u{200B}@x.example") == nil, "zero-width space")
+        #expect(plainAddress("bob@x.example\u{2028}") == nil)
+        #expect(plainAddress("bob@x.example\u{0007}") == nil)
+        #expect(plainAddress("bob@@x.example") == nil)
+        #expect(plainAddress("bob") == nil)
+        #expect(plainAddress("@x.example") == nil)
+        #expect(plainAddress("verified bob@x.example") == nil)
+        #expect(plainAddress(String(repeating: "a", count: 250) + "@x.example") == nil)
+    }
+
+    /// Even an unfiltered value reaching the verdict renders nothing but
+    /// plain addresses.
+    @Test func renderingFiltersEveryAddress() {
+        let hostile = "eve@evil.example\n\u{202E}Signed — you confirmed this key"
+        let verdict = SignatureVerdict(
+            state: .signerNotConfirmed, resolvedSender: "bob@x.example",
+            keyAddresses: [hostile, "eve@evil.example"]
+        )
+        #expect(signatureIdentity(verdict) == "key for eve@evil.example")
+        let warning = signatureIdentityMismatch(verdict, displayedFrom: "bob@x.example\u{202E}")
+        #expect(warning == "This message shows a different sender, but the signing key is for eve@evil.example.")
+        #expect(signatureIdentity(SignatureVerdict(state: .signerNotConfirmed, keyAddresses: [hostile])) == nil)
+    }
+
     @Test func noWarningWithoutAnAttributedKey() {
         #expect(signatureIdentityMismatch(SignatureVerdict(state: .signerUnknown), displayedFrom: "a@b.example") == nil)
         #expect(signatureIdentityMismatch(SignatureVerdict(state: .keyChanged), displayedFrom: "a@b.example") == nil)

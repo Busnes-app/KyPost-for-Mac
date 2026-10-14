@@ -248,15 +248,42 @@ nonisolated func signatureIsAlarming(_ state: PgpSignatureState) -> Bool {
     state == .keyChanged || state == .invalid
 }
 
+/// `text` lowercased if it is one plain address, else nil.
+///
+/// User IDs are free-form UTF-8 the key's owner chose, and these values go
+/// into the trust line and the warning. Anything that is not obviously one
+/// address — whitespace, control or format (Cf: bidi overrides, zero-width)
+/// characters, not exactly one `@`, over 254 characters — is **dropped,
+/// never cleaned up**: a repaired string is still the attacker's wording.
+nonisolated func plainAddress(_ text: String) -> String? {
+    let lowered = text.lowercased()
+    guard !lowered.isEmpty, lowered.count <= 254,
+          lowered.filter({ $0 == "@" }).count == 1,
+          !lowered.hasPrefix("@"), !lowered.hasSuffix("@")
+    else { return nil }
+    for scalar in lowered.unicodeScalars {
+        switch scalar.properties.generalCategory {
+        case .control, .format, .spaceSeparator, .lineSeparator, .paragraphSeparator,
+             .unassigned, .privateUse, .surrogate:
+            return nil
+        default:
+            if scalar.properties.isWhitespace { return nil }
+        }
+    }
+    return lowered
+}
+
 /// The identity a sender verdict is shown with: the pinned address for a
 /// confirmed key, otherwise only what the signing key says about itself. The
 /// server's resolved sender is never shown as an identity it did not earn.
+/// Every address shown passes `plainAddress` here too, whatever its source.
 nonisolated func signatureIdentity(_ verdict: SignatureVerdict) -> String? {
-    if verdict.state == .verifiedConfirmed, !verdict.resolvedSender.isEmpty {
-        return verdict.resolvedSender
+    if verdict.state == .verifiedConfirmed, let pinned = plainAddress(verdict.resolvedSender) {
+        return pinned
     }
-    guard !verdict.keyAddresses.isEmpty else { return nil }
-    return "key for \(verdict.keyAddresses.joined(separator: ", "))"
+    let named = verdict.keyAddresses.compactMap(plainAddress)
+    guard !named.isEmpty else { return nil }
+    return "key for \(named.joined(separator: ", "))"
 }
 
 /// A warning when the address the message shows is not one the signature is
@@ -268,10 +295,12 @@ nonisolated func signatureIdentity(_ verdict: SignatureVerdict) -> String? {
 nonisolated func signatureIdentityMismatch(_ verdict: SignatureVerdict, displayedFrom: String) -> String? {
     let from = RecipientPinStore.normalized(displayedFrom)
     guard !from.isEmpty else { return nil }
-    var bound = Set(verdict.keyAddresses.map(RecipientPinStore.normalized))
+    var bound = Set(verdict.keyAddresses.compactMap(plainAddress))
     switch verdict.state {
     case .verifiedConfirmed:
-        bound.insert(RecipientPinStore.normalized(verdict.resolvedSender))
+        if let pinned = plainAddress(RecipientPinStore.normalized(verdict.resolvedSender)) {
+            bound.insert(pinned)
+        }
     case .verifiedSeenBefore, .signerNotConfirmed:
         break
     case .keyChanged, .invalid:
@@ -280,8 +309,10 @@ nonisolated func signatureIdentityMismatch(_ verdict: SignatureVerdict, displaye
     case .none, .unsigned, .unchecked, .signerUnknown:
         return nil
     }
-    bound.remove("")
     guard !bound.contains(from) else { return nil }
     let named = bound.isEmpty ? "no address" : bound.sorted().joined(separator: ", ")
-    return "This message shows \(displayedFrom), but the signing key is for \(named)."
+    // The From is the display parser's output: shown only if it too is one
+    // plain address.
+    let shown = plainAddress(from) ?? "a different sender"
+    return "This message shows \(shown), but the signing key is for \(named)."
 }

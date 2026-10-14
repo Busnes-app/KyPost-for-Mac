@@ -186,9 +186,9 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         var seen = Set<String>()
         return identities.compactMap { identity in
             // Go's default JSON field name is `Email`; accept either case.
+            // Owner-chosen text: anything not one plain address is dropped.
             let raw = (identity["Email"] ?? identity["email"]) as? String ?? ""
-            let email = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard !email.isEmpty, seen.insert(email).inserted else { return nil }
+            guard let email = plainAddress(raw), seen.insert(email).inserted else { return nil }
             return email
         }
     }

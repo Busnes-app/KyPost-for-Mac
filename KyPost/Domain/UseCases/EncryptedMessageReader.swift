@@ -250,7 +250,8 @@ nonisolated struct EncryptedMessageReader: Sendable {
             else { return false }
             return candidate.caseInsensitiveCompare(signed) == .orderedSame
         }
-        let keyAddresses = signingKey.map { crypto.userIDAddresses(ofArmoredPublicKey: $0.publicKey) } ?? []
+        let keyAddresses = (signingKey.map { crypto.userIDAddresses(ofArmoredPublicKey: $0.publicKey) } ?? [])
+            .compactMap(plainAddress)
 
         let sender = RecipientPinStore.normalized(payload.resolvedSender)
         if state == .signerNotConfirmed, !sender.isEmpty, keyAddresses.contains(sender) {

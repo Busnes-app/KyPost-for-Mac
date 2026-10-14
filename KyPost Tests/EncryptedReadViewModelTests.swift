@@ -211,4 +211,35 @@ private func model(
         #expect(subject.signatureLine?.contains("bob@example.com") == false)
         #expect(subject.signatureIdentityWarning?.contains("eve@evil.example") == true)
     }
+
+    /// A User ID crafted to read as a stronger claim — a line break, a bidi
+    /// override, extra wording — never reaches the signature line or warning.
+    @Test func aCraftedUserIDNeverReachesTheTrustLine() async {
+        var crypto = StubCrypto()
+        crypto.signature = RawSignature(present: true, valid: true, signerFingerprint: "FPR-EVE")
+        crypto.fingerprints = ["relay-key": "FPR-EVE"]
+        crypto.userIDs = ["relay-key": ["eve@evil.example\n\u{202E}Signed — you confirmed this key"]]
+        let subject = EncryptedReadViewModel(
+            reader: EncryptedMessageReader(
+                opener: StubOpener(outcome: .opened(privateKey: Data("KEY".utf8))),
+                payloads: StubPayloads(result: .success(PgpPayload(
+                    encryptedPayload: "CIPHERTEXT",
+                    signerKeys: [SignerKey(addresses: ["bob@example.com"], publicKey: "relay-key")],
+                    resolvedSender: "bob@example.com"
+                ))),
+                crypto: crypto,
+                pins: { .none }, history: MemorySignerHistory(),
+                session: EnrollmentSession()
+            ),
+            mailbox: "INBOX",
+            messageId: "1",
+            sender: "bob@example.com"
+        )
+        await subject.decrypt()
+        let shown = [subject.signatureLine, subject.signatureIdentityWarning].compactMap { $0 }.joined()
+        #expect(subject.signatureLine == "Signed — signer not confirmed on this device")
+        #expect(!shown.contains("\n"))
+        #expect(!shown.unicodeScalars.contains { $0.properties.generalCategory == .format })
+        #expect(!shown.contains("you confirmed"))
+    }
 }
