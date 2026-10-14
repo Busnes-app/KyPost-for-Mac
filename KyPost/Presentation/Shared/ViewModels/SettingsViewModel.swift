@@ -79,6 +79,9 @@ final class SettingsViewModel {
     /// this view model — the inbox's held list actions, rows on screen, and
     /// in-flight refreshes (`InboxViewModel.forgetAccount`).
     private let onUnpaired: (() -> Void)?
+    /// `SingletonGraph.erasePreservedStoreStep`: a store file kept under an
+    /// in-memory session belongs to the account being left too.
+    private let erasePreservedStore: (() -> Bool)?
     /// What Settings → Connection shows instead of the stored pairing. Set
     /// only by the DEBUG screenshot graph (`SingletonGraph.pairingDisplayOverride`);
     /// display text and nothing else — `isPaired`, unpair, Fix Notifications
@@ -96,6 +99,7 @@ final class SettingsViewModel {
         deviceRegistrationService: DeviceRegistrationService,
         deregisterDeviceUseCase: DeregisterDeviceUseCase,
         pushNotificationDispatcher: PushNotificationDispatcher,
+        erasePreservedStore: (() -> Bool)?,
         enrollmentVault: EnrollmentVault? = nil,
         appLockManager: AppLockManager? = nil,
         pushRepository: PushRepository? = nil,
@@ -114,6 +118,7 @@ final class SettingsViewModel {
         self.deviceRegistrationService = deviceRegistrationService
         self.deregisterDeviceUseCase = deregisterDeviceUseCase
         self.pushNotificationDispatcher = pushNotificationDispatcher
+        self.erasePreservedStore = erasePreservedStore
         self.enrollmentVault = enrollmentVault
         self.appLockManager = appLockManager
         self.pushRepository = pushRepository
@@ -175,6 +180,7 @@ final class SettingsViewModel {
         // Everything else the account left on this device — the same list a
         // pairing to another account runs.
         let tornDown = await AccountTeardown(
+            erasePreservedStore: erasePreservedStore,
             enrollmentVault: enrollmentVault,
             pushRepository: pushRepository,
             recipientPinStore: recipientPinStore,

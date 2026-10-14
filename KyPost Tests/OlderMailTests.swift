@@ -562,6 +562,7 @@ private func makeViewModel(_ h: Harness) -> InboxViewModel {
         // Whether the mail erase had happened yet when the inbox was told.
         let cursorAtFirstCall = Box<[String]>([])
         let complete = await AccountTeardown(
+            erasePreservedStore: nil,
             mailRepository: h.repository,
             forgetInbox: {
                 cursorAtFirstCall.mutate { $0.append(h.cursor) }

@@ -129,7 +129,10 @@ final class MailRepository {
         // switch — a delta would only list what changed since, and the folder
         // would stay empty until the daily resync.
         let holdsRows = try await emailDAO.hasRows(folder: folder)
-        let wantsFullWindow = forceFullResync || !holdsRows
+        // An empty full window over cached mail is confirmed by a second one
+        // before anything is pruned (`EmailDAO.awaitsEmptyWindowConfirmation`).
+        let confirmingEmpty = await emailDAO.awaitsEmptyWindowConfirmation(folder: folder)
+        let wantsFullWindow = forceFullResync || !holdsRows || confirmingEmpty
             || cursorStore?.shouldForceFullResync(pairingId: pairingId, folder: folder) ?? true
         let since = wantsFullWindow
             ? ""
@@ -430,6 +433,9 @@ final class MailRepository {
         do {
             let warning = try await makeSource().send(email: email)
             return warning.isEmpty ? .success : .sentWithWarning(warning)
+        } catch where MailOutcome.sendOutcomeUnknown(error) {
+            let detail = (error as? NetworkError).map(MailOutcome.message(for:)) ?? error.localizedDescription
+            return .mayHaveBeenSent(detail)
         } catch {
             return MailOutcome.from(error)
         }

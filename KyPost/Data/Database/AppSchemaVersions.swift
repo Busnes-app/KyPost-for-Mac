@@ -21,7 +21,10 @@
 //  change to a live @Model — even an additive one with a default — therefore
 //  needs a snapshot of the old shape here plus a new version and stage, or
 //  every existing store fails to open with "Cannot use staged migration with
-//  an unknown model version" and the app crashes at launch.
+//  an unknown model version" and the app crashes at launch. Each version must
+//  list the snapshot of every entity *as it was at that version*, never a
+//  live model that changed later. `SchemaMigrationTests` builds a store at
+//  every version and opens it with this plan; add the new version there too.
 //
 
 import Foundation
@@ -202,10 +205,11 @@ enum AppSchemaV3: VersionedSchema {
     static var models: [any PersistentModel.Type] {
         // EmailEntity gained the five pgp columns here and the V4 columns
         // later, so it needs its own snapshot below. ContactEntity gained
-        // pendingPgpKey here and has not changed since, so V3 shares the live
-        // model.
+        // pendingPgpKey here and isSelf at V6, so V3 takes the V5 snapshot.
+        // It listed the live ContactEntity until 2026-10: every V3 store then
+        // matched no version, failed to open, and was deleted at launch.
         [
-            AppSchemaV3.EmailEntity.self, ContactEntity.self,
+            AppSchemaV3.EmailEntity.self, AppSchemaV5.ContactEntity.self,
             PushNotificationEntity.self, KeywordEntity.self,
         ]
     }

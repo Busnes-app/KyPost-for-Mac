@@ -60,6 +60,14 @@ actor PushNotificationDAO {
         return true
     }
 
+    func contains(seq: Int) throws -> Bool {
+        var descriptor = FetchDescriptor<PushNotificationEntity>(
+            predicate: #Predicate { $0.seq == seq }
+        )
+        descriptor.fetchLimit = 1
+        return try !modelContext.fetch(descriptor).isEmpty
+    }
+
     func contains(messageId: String) throws -> Bool {
         guard !messageId.isEmpty else { return false }
         var descriptor = FetchDescriptor<PushNotificationEntity>(

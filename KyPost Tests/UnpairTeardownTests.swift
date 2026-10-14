@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import SwiftData
 import Testing
 @testable import KyPost
 
@@ -49,10 +50,41 @@ import Testing
             deviceRegistrationService: graph.deviceRegistrationService,
             deregisterDeviceUseCase: graph.deregisterDeviceUseCase,
             pushNotificationDispatcher: graph.pushNotificationDispatcher,
+            erasePreservedStore: graph.erasePreservedStoreStep,
             enrollmentVault: graph.enrollmentVault,
             pushRepository: graph.pushRepository,
             mailSignatureStore: graph.mailSignatureStore
         )
+    }
+
+    /// A session running in memory over a store it kept (a recoverable open
+    /// failure) clears only the in-memory copy on unpair. The kept file holds
+    /// the account's mail and must not reopen under the next pairing.
+    @Test func unpairingErasesAStoreKeptUnderAnInMemorySession() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "kypost-unpair-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "store.sqlite")
+        _ = try {
+            let kept = try AppDatabase(url: url)
+            let context = ModelContext(kept.container)
+            context.insert(EmailEntity(from: Email(
+                serverId: "a-1", folder: "INBOX", senderName: "A", senderEmail: "a@x",
+                subject: "Account A's mail", body: "A's body", keywords: [],
+                receivedAt: Date(), read: false, starred: false
+            )))
+            try context.save()
+        }()
+
+        let graph = try makeGraph()
+        graph.preservedStoreURL = url
+        await makeViewModel(graph).unpair()
+
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(AppDatabase.storeMayOpen(defaults: graph.userDefaults, at: url))
+        let reopened = try AppDatabase(url: url)
+        #expect(try ModelContext(reopened.container).fetch(FetchDescriptor<EmailEntity>()).isEmpty)
     }
 
     /// The envelope is the account's private key sealed to *this* Mac. Left

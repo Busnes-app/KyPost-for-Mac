@@ -22,6 +22,7 @@ struct SettingsView: View {
         deviceRegistrationService: SingletonGraph.shared.deviceRegistrationService,
         deregisterDeviceUseCase: SingletonGraph.shared.deregisterDeviceUseCase,
         pushNotificationDispatcher: SingletonGraph.shared.pushNotificationDispatcher,
+        erasePreservedStore: SingletonGraph.shared.erasePreservedStoreStep,
         enrollmentVault: SingletonGraph.shared.enrollmentVault,
         appLockManager: SingletonGraph.shared.appLockManager,
         pushRepository: SingletonGraph.shared.pushRepository,

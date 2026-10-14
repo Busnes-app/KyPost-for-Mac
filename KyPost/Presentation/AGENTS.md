@@ -108,7 +108,9 @@ Domain.
   changes.
 - **The contacts list carries `ContactSyncBanner`** on both platforms
   (`safeAreaInset`), re-evaluated each minute because a change turns "stuck"
-  by age alone. Retry is `ContactsViewModel.sync()`. vCard export goes through
+  by age alone. Retry is `ContactsViewModel.sync()`. It also says when a
+  reconcile kept Apple Contacts cards rather than delete more than half of
+  them (`withheldCardDeletes`). vCard export goes through
   `VCardShareMenu` only — it owns the Hostile Location Protection refusal.
 - **Loosening a Security picker re-authenticates; tightening does not.** A
   longer lock delay or a higher wipe threshold (or Never) goes through
@@ -158,7 +160,9 @@ Domain.
   the same prompt; macOS answers `windowShouldClose` through
   `WindowCloseGuard`. Both are proxies that forward every other delegate call
   to SwiftUI's. Closes the app forces (Hostile Location Protection, wipe) never
-  ask.
+  ask. Quitting on macOS asks once for every open compose: each registers in
+  `OpenComposeRegistry` on appear, and `applicationShouldTerminate` shows the
+  same Discard / Keep editing question as an alert.
 - **A compose open when the lock engages stays, covered, and sends nothing.**
   The iOS shell owns the one compose sheet (`MailShellState.compose`, below),
   outside the router, so `dismissPresentedRoutes` cannot reach it and the
@@ -390,6 +394,13 @@ Domain.
 - **A relay `warning` on a 200 means the message was sent.** Show it as a
   notice, keep the window open, and leave Send disabled (`isSent`) — a retry
   duplicates the message. Never pattern-match the warning's wording.
+- **A send with no trustworthy answer may have gone out**
+  (`MailOutcome.mayHaveBeenSent`: timeout, dropped connection, 5xx). Compose
+  says to check Sent, sets `sendOutcomeUnknown`, and keeps Send, pickup and
+  webmail hand-off disabled; the only way on is the explicit "Not in Sent —
+  Send Again" (`sendAgainAfterUncertainOutcome`), which reuses the same
+  `idempotencyKey`. Any definite answer mints a new key, so a corrected
+  message is never the refused request's duplicate.
 - **Entry points own `isSending`, and claim it before their first `await`.**
   `send`, `confirmPickupFallback` and `handOffToWebmail` set it immediately
   after their `!isSending, !isSent, !didSend` guard; `deliver` and `handOff`

@@ -75,7 +75,8 @@ and must do so before `appLockManager.lockAfterGrace()` (a grace period
 does not extend the undo window) — see the root "Inbox list actions"
 contract.
 
-**Leaving an account is one list, `AccountTeardown`** (enrollment vault,
+**Leaving an account is one list, `AccountTeardown`** (a store file kept
+under an in-memory session, enrollment vault,
 session and pending reports; notification history and pull cursor; recipient
 pins; mail signature; cached mail and cursors; the relay responses and cookies
 an older build's `.default` relay session left in `URLCache.shared` and
@@ -110,10 +111,27 @@ it there made `onLaunch` assign a closure that calls `onLaunch`, reassigning
 the property from inside `rebuild` while that same property was being invoked,
 and re-ran `requestAuthorization` on every toggle.
 
-`AppEnvironment.shared` never traps on a bad store. A `ModelContainer` that
-will not open falls back to deleting the store files, then to an in-memory
-container; only an invalid *schema* is fatal. Mail lives on the server, so the
-local store is always disposable.
+`AppEnvironment.shared` never traps on a bad store, and does not delete one
+it might still read. A `ModelContainer` that will not open is deleted (and
+the contact cursor reset) only when `AppDatabase.openFailureDisposition` says
+this build can never read it; otherwise the file is kept and the session runs
+in memory. Such a graph has `preservedStoreURL` set, and every
+`AccountTeardown` — replacement and Settings → unpair alike, through the
+required `erasePreservedStore` argument (`erasePreservedStoreStep`) — erases
+the kept file too (`AppDatabase.erasePreservedStore`):
+the steps clear only the in-memory copy, and the file would reopen with the
+left account's mail. A delete that fails leaves `store.pendingErase` set, and
+`makeLaunchGraph` erases the file before opening it (`storeMayOpen`), or runs
+in memory if it still cannot. Only an invalid *schema* is fatal. The store holds unsynced
+contacts and the rows Apple Contacts cards are linked to, so it is not
+disposable (root "The local store"). Every site that deletes the store files
+also resets `contactCursorStore`.
+
+**Quitting on macOS** (`applicationShouldTerminate`, `QuitPreparation`) asks
+the compose Discard question when any open compose has something to lose
+(`OpenComposeRegistry`), then commits held list actions and replies
+`.terminateLater` until the relay answers or 10 s pass. Cancelling the quit
+leaves held actions undoable.
 
 `AppEnvironment.resetAfterFailedUnlock` is the app lock's only escape hatch,
 offered by `UnlockView` once `AppLockManager.shouldOfferReset` is true (and
@@ -271,12 +289,20 @@ and `PullHeartbeatPolicy.decide` says whether a tick touches the network:
   alerted twice; pulled MFA is never stored and is raised only within the
   server's 5-minute window — measured when the banner is raised, not at tick
   start — as a detail-free tap-to-open banner.
-- `pollNow` is single-flight. The iOS refresh task is armed whenever paired.
+- **Fetch, present, then record** (`PushRepository.fetchPull` /
+  `recordPulled` / `commitPull`). History is the record of what was
+  presented: an entry is recorded after its banner was raised, and the cursor
+  moves only after the whole batch was. A poll cut short in between fetches
+  the same entries again; the banner id is `pull-<seq>`, so one raised twice
+  replaces itself. `pullOnce` (no presentation) does all three at once.
+- `pollNow` is single-flight. The iOS refresh task is armed whenever paired,
+  and its `expirationHandler` cancels the poll in flight
+  (`cancelInFlightPoll`) and the task's own work.
   `PullPollingScheduler.shutdown` (graph teardown) cancels the poll in flight
   as well as the cadence; backgrounding only stops the cadence. A cancelled
-  poll persists and presents nothing: `PushNotificationDAO.insert` itself
-  refuses a cancelled caller, so an insert queued on the actor at shutdown
-  does not land.
+  poll records nothing further and does not move the cursor:
+  `PushNotificationDAO.insert` itself refuses a cancelled caller, so an insert
+  queued on the actor at shutdown does not land.
 - History shows 30 rows (`PushNotificationDAO.historyLimit`). Rows pushed past
   that keep only their message id, seq and time for
   `deliveryIdRetention` (the heartbeat window) and are then deleted; they are
@@ -366,7 +392,8 @@ Rules:
 - `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (`AppEnvironmentTests`, `SecurityTests`, `SecurityWipeTests`,
   `SecurityWipeStepsTests`, `AppLockResetAndHostileTests`,
-  `PullHeartbeatTests`).
+  `PullHeartbeatTests`, `SchemaMigrationTests` for the store-open policy,
+  `DataLossTests` for `QuitPreparation`).
 - The rebuild path is exercised end-to-end by toggling Hostile Location
   Protection in Settings → Security on a paired build.
 

@@ -132,6 +132,14 @@ final class PullPollingScheduler {
     /// still delivers its banners.
     func shutdown() {
         stopForegroundPolling()
+        cancelInFlightPoll()
+    }
+
+    /// Cancels the poll in flight, if any; the cadence is untouched. For the
+    /// iOS background task's expiration handler: the system suspends the app
+    /// right after it, and a poll cancelled here has neither recorded nor
+    /// advanced past what it did not present.
+    func cancelInFlightPoll() {
         inFlight?.cancel()
         inFlight = nil
     }
@@ -196,7 +204,11 @@ final class PullPollingScheduler {
             pushSettingsStore.lastHeartbeatAttemptAt = now
         }
         do {
-            let batch = try await pushRepository.pullOnce(
+            // Fetch, present, then record: history dedupes on what was
+            // presented, and the cursor moves only after every banner was
+            // raised. A poll cut short (shutdown, a background task expiring)
+            // fetches the same entries again instead of losing them.
+            let batch = try await pushRepository.fetchPull(
                 now: now,
                 minCreatedAt: heartbeat ? now.addingTimeInterval(-PullHeartbeatPolicy.heartbeatWindow) : nil
             )
@@ -217,7 +229,10 @@ final class PullPollingScheduler {
             for notification in batch.mail {
                 guard stillCurrent() else { return }
                 await present(.mail(notification))
+                try await pushRepository.recordPulled(notification, session: batch.session, now: now)
             }
+            guard stillCurrent() else { return }
+            try pushRepository.commitPull(batch, now: now)
         } catch is CancellationError {
             // Shut down or unpaired mid-pull; nothing was kept.
         } catch MailSourceError.notPaired {

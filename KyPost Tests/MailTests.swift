@@ -1302,10 +1302,14 @@ private func makeOutgoing(
         other.folder = "Archive"
         try await dao.replaceFolderSnapshot(folder: "INBOX", emails: [email("inboxRow")])
         try await dao.replaceFolderSnapshot(folder: "Archive", emails: [other])
-        try await dao.applyDelta(
-            folder: "INBOX", emails: [], updatedIds: [], removedIds: [],
-            pruneAgainstEmails: true
-        )
+        // An empty full window prunes only once a second one confirms it
+        // (EmailDAO.unconfirmedEmptyWindows).
+        for _ in 0..<2 {
+            try await dao.applyDelta(
+                folder: "INBOX", emails: [], updatedIds: [], removedIds: [],
+                pruneAgainstEmails: true
+            )
+        }
         #expect(try await dao.getEmail(folder: "INBOX", serverId: "inboxRow") == nil)
         #expect(try await dao.getEmail(folder: "Archive", serverId: "elsewhere") != nil)
     }
