@@ -40,58 +40,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  # The macOS compile check runs alongside the iOS tests rather than after
+  # them; serially it added about 3 minutes to every run. `test`, at the end,
+  # gathers both into the one check the ruleset requires.
+  ios-tests:
     # macos-26, not macos-15: the macos-15 images top out at Xcode 26.3 /
     # SDK 26.3. The deployment target is 26.0 now, but it was 26.5 when the
     # first run hit a target newer than the SDK, and the newest Xcode 26 is
     # what release.yml archives with.
     runs-on: macos-26
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@v7
 
       - name: Select Xcode
-        # This project needs Xcode 26 — README pins the deployment target at
-        # macOS/iOS 26.0. The first cut selected `/Applications/Xcode_16.app`,
-        # which exists on the image and builds nothing here: xcodebuild exited
-        # 70 rather than saying the SDK was too old.
-        #
-        # Chosen by globbing rather than a literal path, because the images
-        # carry several 26.x and rename them as they update; pinning an exact
-        # one means CI breaks on an image refresh rather than on a code change.
-        run: |
-          set -euo pipefail
-          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$XCODE" ]; then
-            echo "::error::No Xcode 26.x on this runner image; this project cannot build without one."
-            ls -d /Applications/Xcode* || true
-            exit 1
-          fi
-          sudo xcode-select -s "$XCODE"
-          xcodebuild -version
-
-          # Check the SDKs actually satisfy the deployment targets, and say so
-          # plainly if they do not. Without this the failure is `xcodebuild`
-          # exiting 70 with no indication that the toolchain is the problem —
-          # which is exactly how the first run read.
-          for pair in "macosx:MACOSX_DEPLOYMENT_TARGET" "iphoneos:IPHONEOS_DEPLOYMENT_TARGET"; do
-            sdk_name=${pair%%:*}
-            setting=${pair##*:}
-            SDK=$(xcrun --sdk "$sdk_name" --show-sdk-version)
-            TARGET=$(grep -m1 -oE "$setting = [0-9.]+" \
-              KyPost.xcodeproj/project.pbxproj | grep -oE '[0-9.]+$')
-            echo "$sdk_name SDK $SDK, deployment target $TARGET"
-            if [ "$(printf '%s\n%s\n' "$TARGET" "$SDK" | sort -V | tail -1)" != "$SDK" ]; then
-              echo "::error::$sdk_name SDK $SDK is older than this project's deployment target $TARGET. Use a runner image carrying a newer Xcode."
-              exit 1
-            fi
-          done
+        run: .github/scripts/select-xcode.sh
 
       - name: Pick a simulator
         # Resolved from what the image actually has rather than pinned to a
         # device name. The runner images add and retire devices between
         # refreshes, and a missing name fails as "Unable to find a destination",
         # which reads like a project fault rather than an image change.
+        #
+        # Not booted early to overlap the build. Tried: on these 3-core runners
+        # the boot competes with the compiler, and the build went from 2.6 to
+        # 8.5 and then 11 minutes, more than the boot it hid.
         run: |
           set -euo pipefail
           UDID=$(xcrun simctl list devices available --json \
@@ -121,13 +95,42 @@ jobs:
             -destination "platform=iOS Simulator,id=${SIMULATOR_UDID}" \
             -only-testing:"KyPost Tests"
 
+  macos-build:
+    # The tests run on the simulator; this is the compile check for the other
+    # platform, and it catches the failure mode that caused this workflow to be
+    # written — `main` not building. Signing is disabled because nothing is
+    # executed here.
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Select Xcode
+        run: .github/scripts/select-xcode.sh
+
       - name: Build for macOS
-        # The tests already ran on the simulator; this is the compile check for
-        # the other platform, and it catches the failure mode that caused this
-        # workflow to be written — `main` not building. Signing is disabled
-        # because nothing is executed here.
         run: |
           .github/scripts/run-xcodebuild.sh build-for-testing \
             -scheme KyPost \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO
+
+  test:
+    # The one check the main ruleset requires, by this name. It used to be the
+    # whole workflow; now it passes only when both jobs above passed, so the
+    # ruleset needs no change and a red macOS build still blocks a merge.
+    # `always()` so it reports failure, rather than "skipped", when one fails.
+    if: always()
+    needs: [ios-tests, macos-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Require both jobs
+        env:
+          IOS: ${{ needs.ios-tests.result }}
+          MACOS: ${{ needs.macos-build.result }}
+        run: |
+          echo "ios-tests: $IOS, macos-build: $MACOS"
+          [ "$IOS" = success ] && [ "$MACOS" = success ]
