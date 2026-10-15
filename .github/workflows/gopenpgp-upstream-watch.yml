@@ -38,16 +38,37 @@ jobs:
           # Proton tags both `vX.Y.Z` and `vX.Y.Z-proton`. The plain tag is the
           # library release; the -proton suffix carries their own patches and is
           # not what a third-party consumer should track.
-          LATEST=$(gh release list --repo ProtonMail/gopenpgp --limit 30 \
-            --json tagName --jq '[.[] | select(.tagName | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0].tagName')
+          #
+          # The highest release of the pinned major, by version — not the
+          # newest by date. Proton maintains v2 alongside v3, and taking the
+          # first listed release proposed v2.11.1 (published a day after
+          # v3.5.2) as a "bump" from v3.4.1: a major-version downgrade. A new
+          # major is an API change the app has to be ported to, never a pin bump.
+          MAJOR=${GOPENPGP_VERSION%%.*}
+          LATEST=$(gh release list --repo ProtonMail/gopenpgp --limit 100 \
+              --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName' \
+            | grep -E "^${MAJOR}\.[0-9]+\.[0-9]+$" | sort -V | tail -1 || true)
 
           echo "pinned=$GOPENPGP_VERSION" >> "$GITHUB_OUTPUT"
           echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
-          if [ -z "$LATEST" ] || [ "$LATEST" = "$GOPENPGP_VERSION" ]; then
+          HIGHER=$(printf '%s\n%s\n' "$GOPENPGP_VERSION" "$LATEST" | sort -V | tail -1)
+          if [ -z "$LATEST" ] || [ "$LATEST" = "$GOPENPGP_VERSION" ] || [ "$HIGHER" != "$LATEST" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Pinned $GOPENPGP_VERSION; highest $MAJOR release upstream: ${LATEST:-none}. Nothing to do."
+            exit 0
           fi
+
+          # A pull request already open for this version is left alone. The
+          # action below force-pushes its branch, which would throw away
+          # whatever a person has added to that PR since.
+          OPEN=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+            --head "chore/gopenpgp-$LATEST" --json number --jq 'length')
+          if [ "$OPEN" != "0" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "A pull request for $LATEST is already open; leaving it alone."
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Bump the pin
         if: steps.check.outputs.changed == 'true'
