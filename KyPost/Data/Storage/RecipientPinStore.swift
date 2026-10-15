@@ -47,10 +47,15 @@ nonisolated struct FirstSeenSigner: Codable, Equatable, Sendable {
 /// The on-device signer history the reader computes continuity from.
 protocol SignerKeyHistory: Sendable {
     func firstSeenFingerprint(for address: String) -> String?
-    /// Records `fingerprint` for `address` unless one is already recorded.
-    /// History is never overwritten: a different key later is `keyChanged`,
-    /// and only a QR pin supersedes it.
-    func recordFirstSeen(_ fingerprint: String, for address: String)
+    /// Advanced by every clear (unpair, the security wipe). A read takes it
+    /// before it fetches and hands it back to `recordFirstSeen`.
+    var generation: UInt64 { get }
+    /// Records `fingerprint` for `address` unless one is already recorded, or
+    /// the history was cleared since `generation` was read — a read that
+    /// outlives the account's teardown must not write the erased history
+    /// back. History is never overwritten: a different key later is
+    /// `keyChanged`, and only a QR pin supersedes it.
+    func recordFirstSeen(_ fingerprint: String, for address: String, ifGeneration generation: UInt64)
 }
 
 final class RecipientPinStore: @unchecked Sendable, SignerKeyHistory {
@@ -62,6 +67,7 @@ final class RecipientPinStore: @unchecked Sendable, SignerKeyHistory {
     private let lock = NSLock()
     private var memoryPins: [String: RecipientPin] = [:]
     private var memoryHistory: [String: FirstSeenSigner] = [:]
+    private var historyGeneration: UInt64 = 0
 
     init(defaults: UserDefaults, hostileLocation: HostileLocationProtectionStore) {
         self.defaults = defaults
@@ -128,6 +134,7 @@ final class RecipientPinStore: @unchecked Sendable, SignerKeyHistory {
 
     func clear() {
         lock.lock(); defer { lock.unlock() }
+        historyGeneration &+= 1
         memoryPins = [:]
         memoryHistory = [:]
         defaults.removeObject(forKey: Self.key)
@@ -151,11 +158,19 @@ final class RecipientPinStore: @unchecked Sendable, SignerKeyHistory {
         return historyLocked()[Self.normalized(address)]?.fingerprint
     }
 
-    func recordFirstSeen(_ fingerprint: String, for address: String) {
+    var generation: UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        return historyGeneration
+    }
+
+    func recordFirstSeen(_ fingerprint: String, for address: String, ifGeneration generation: UInt64) {
         let target = Self.normalized(address)
         let value = fingerprint.uppercased()
         guard !target.isEmpty, !value.isEmpty else { return }
+        // The check and the write share the lock `clear()` takes, so a clear
+        // cannot land between them.
         lock.lock(); defer { lock.unlock() }
+        guard generation == historyGeneration else { return }
         var history = historyLocked()
         guard history[target] == nil else { return }
         history[target] = FirstSeenSigner(fingerprint: value, firstSeen: Date())

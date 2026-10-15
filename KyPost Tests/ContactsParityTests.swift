@@ -735,8 +735,8 @@ private struct ContactsEnvironment {
     @Test func theFirstSeenKeyIsNeverOverwritten() {
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         let store = RecipientPinStore(defaults: defaults, hostileLocation: HostileLocationProtectionStore(defaults: defaults))
-        store.recordFirstSeen("aa11", for: " Bob@Example.invalid ")
-        store.recordFirstSeen("BB22", for: "bob@example.invalid")
+        store.recordFirstSeen("aa11", for: " Bob@Example.invalid ", ifGeneration: store.generation)
+        store.recordFirstSeen("BB22", for: "bob@example.invalid", ifGeneration: store.generation)
         #expect(store.firstSeenFingerprint(for: "BOB@example.invalid") == "AA11")
         #expect(defaults.data(forKey: "contacts.signerFirstSeen") != nil)
     }
@@ -746,7 +746,7 @@ private struct ContactsEnvironment {
         let hostile = HostileLocationProtectionStore(defaults: defaults)
         hostile.enabled = true
         let store = RecipientPinStore(defaults: defaults, hostileLocation: hostile)
-        store.recordFirstSeen("AA11", for: "bob@example.invalid")
+        store.recordFirstSeen("AA11", for: "bob@example.invalid", ifGeneration: store.generation)
         #expect(store.firstSeenFingerprint(for: "bob@example.invalid") == "AA11")
         #expect(defaults.data(forKey: "contacts.signerFirstSeen") == nil)
     }
@@ -755,11 +755,22 @@ private struct ContactsEnvironment {
     @Test func clearingTakesTheHistoryWithThePins() {
         let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
         let store = RecipientPinStore(defaults: defaults, hostileLocation: HostileLocationProtectionStore(defaults: defaults))
-        store.recordFirstSeen("AA11", for: "bob@example.invalid")
+        store.recordFirstSeen("AA11", for: "bob@example.invalid", ifGeneration: store.generation)
         store.clearPersisted()
         #expect(defaults.data(forKey: "contacts.signerFirstSeen") == nil)
-        store.recordFirstSeen("AA11", for: "bob@example.invalid")
+        store.recordFirstSeen("AA11", for: "bob@example.invalid", ifGeneration: store.generation)
         store.clear()
         #expect(store.firstSeenFingerprint(for: "bob@example.invalid") == nil)
+    }
+
+    /// A write that started before a clear is dropped, not applied after it.
+    @Test func aWriteFromBeforeAClearIsDropped() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let store = RecipientPinStore(defaults: defaults, hostileLocation: HostileLocationProtectionStore(defaults: defaults))
+        let before = store.generation
+        store.clear()
+        store.recordFirstSeen("AA11", for: "bob@example.invalid", ifGeneration: before)
+        #expect(store.firstSeenFingerprint(for: "bob@example.invalid") == nil)
+        #expect(defaults.data(forKey: "contacts.signerFirstSeen") == nil)
     }
 }

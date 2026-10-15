@@ -82,9 +82,28 @@ final class MemorySignerHistory: SignerKeyHistory, @unchecked Sendable {
         entries[RecipientPinStore.normalized(address)]
     }
 
-    func recordFirstSeen(_ fingerprint: String, for address: String) {
+    var generation: UInt64 = 0
+
+    func recordFirstSeen(_ fingerprint: String, for address: String, ifGeneration generation: UInt64) {
+        guard generation == self.generation else { return }
         let key = RecipientPinStore.normalized(address)
         if entries[key] == nil { entries[key] = fingerprint.uppercased() }
+    }
+}
+
+/// Holds every fetch open until the test releases it, so a teardown can land
+/// while a read is in flight.
+private final class GatedPayloads: PgpPayloadSource, @unchecked Sendable {
+    let result: PgpPayloadResult
+    let started = Box(false)
+    let released = Box(false)
+
+    init(_ result: PgpPayloadResult) { self.result = result }
+
+    func fetch(mailbox: String, messageId: String) async throws -> PgpPayloadResult {
+        started.value = true
+        while !released.value { await Task.yield() }
+        return result
     }
 }
 
@@ -409,6 +428,60 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
             payload: payload, history: MemorySignerHistory(["bob@example.com": "FPR-BOB"])
         ))
         #expect(verdict.state == .keyChanged)
+    }
+
+    /// A read still in flight when the account is torn down (unpair, the
+    /// security wipe) must not write the erased history back — on disk, or in
+    /// memory under Hostile Location Protection. The control read, with no
+    /// teardown, shows the same read does record.
+    @Test(arguments: [false, true])
+    func aReadThatOutlivesATeardownDoesNotRestoreHistory(hostile: Bool) async throws {
+        let defaults = try #require(UserDefaults(suiteName: "tests.\(UUID().uuidString)"))
+        let hostileStore = HostileLocationProtectionStore(defaults: defaults)
+        hostileStore.enabled = hostile
+        let store = RecipientPinStore(defaults: defaults, hostileLocation: hostileStore)
+        let payload = PgpPayload(
+            signaturePayload: "SIG",
+            signedPartBase64: mimeBody.base64EncodedString(),
+            signerKeys: [SignerKey(addresses: ["bob@example.com"], publicKey: "relay-key")],
+            resolvedSender: "bob@example.com"
+        )
+        let crypto = FakeCrypto(
+            signature: RawSignature(present: true, valid: true, signerFingerprint: "FPR-BOB"),
+            fingerprints: ["relay-key": "FPR-BOB"],
+            userIDs: ["relay-key": ["bob@example.com"]]
+        )
+
+        func gatedRead(tearingDown: Bool) async {
+            let payloads = GatedPayloads(.success(payload))
+            let reader = EncryptedMessageReader(
+                opener: FakeOpener(outcome: .opened(privateKey: Data("KEY".utf8))),
+                payloads: payloads,
+                crypto: crypto,
+                pins: { .none },
+                history: store,
+                session: freshSession()
+            )
+            let read = Task {
+                await reader.read(mailbox: "INBOX", messageId: "1", sender: "bob@example.com", unlockIfNeeded: true)
+            }
+            while !payloads.started.value { await Task.yield() }
+            if tearingDown { store.clear() }
+            payloads.released.value = true
+            guard case .decrypted(_, let verdict) = await read.value else {
+                Issue.record("expected the read to finish")
+                return
+            }
+            #expect(verdict.state == .signerNotConfirmed)
+        }
+
+        await gatedRead(tearingDown: true)
+        #expect(store.firstSeenFingerprint(for: "bob@example.com") == nil)
+        #expect(defaults.data(forKey: "contacts.signerFirstSeen") == nil)
+
+        await gatedRead(tearingDown: false)
+        #expect(store.firstSeenFingerprint(for: "bob@example.com") == "FPR-BOB")
+        #expect((defaults.data(forKey: "contacts.signerFirstSeen") != nil) == !hostile)
     }
 
     // MARK: - The signed-but-not-encrypted path
