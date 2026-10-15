@@ -7,7 +7,9 @@
 //  own directory under the attachments staging root, so the security wipe and
 //  the Hostile Location Protection purge (`InboxViewModel.attachmentTempRoot`)
 //  already cover it, and the reader deletes its own files when the preview
-//  closes and when the screen goes away.
+//  closes and when the screen goes away. A crash skips that, so every launch
+//  also sweeps the root before any scene exists
+//  (`KyPostApp.sweepStaleAttachmentFiles`).
 //
 
 import Foundation
