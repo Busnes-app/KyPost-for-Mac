@@ -13,7 +13,8 @@ name: Build GopenPGP XCFramework
 # gopenpgp module* (otherwise `x/mobile` is not in its dependency graph and the
 # bind refuses), the framework binds six packages rather than just `crypto`,
 # and it needs `-tags mobile,ios`. Calling their script means their packaging
-# decisions cannot drift away from ours.
+# decisions cannot drift away from ours. The one patch applied to it, adding a
+# linker flag, is in its own step below and fails loudly if it stops applying.
 
 on:
   workflow_dispatch:
@@ -116,17 +117,66 @@ jobs:
           check-latest: true
           cache: false
 
+      # The one change made to upstream's script: bake GODEBUG=asyncpreemptoff=1
+      # into the embedded Go runtime. Without it the runtime's SIGURG
+      # preemption signal lands on a thread whose sigaltstack non-Go code has
+      # removed and the process dies ("signal 16 received on thread with no
+      # signal stack / non-Go code disabled sigaltstack"). Setting the
+      # environment variable from the app is too late: the c-archive runtime
+      # initialises from an image constructor, before `main`. A `godebug`
+      # directive is not an option either; cmd/go only accepts the keys in
+      # internal/godebugs, and asyncpreemptoff is not one of them.
+      #
+      # `-X=runtime.godebugDefault=` is the string the runtime parses in
+      # schedinit before any Go code runs. cmd/go adds its own `-X` for that
+      # symbol only when the main module's go version needs compatibility
+      # defaults; gomobile's generated module uses the toolchain's version, so
+      # it adds none, and user ldflags come after it anyway (the last -X wins).
+      # The verify step below fails the job if the value is not in a slice.
+      - name: Bake asyncpreemptoff into the Go runtime
+        if: steps.state.outputs.publish == 'true'
+        working-directory: gopenpgp
+        run: |
+          set -euo pipefail
+          FROM='-ldflags="-s -w "'
+          TO='-ldflags="-s -w -X=runtime.godebugDefault=asyncpreemptoff=1"'
+          # Exactly one match, or upstream changed the line and this patch
+          # would silently not apply.
+          [ "$(grep -cF -- "$FROM" build.sh)" = 1 ] || {
+            echo "::error::build.sh no longer has exactly one $FROM; update this step."
+            exit 1
+          }
+          sed -i '' "s|$FROM|$TO|" build.sh
+          grep -nF -- "$TO" build.sh
+
       - name: Build with upstream's script
         if: steps.state.outputs.publish == 'true'
         working-directory: gopenpgp
         run: |
           set -euo pipefail
           chmod +x build.sh
+          go version
           # `apple` builds ios,iossimulator,macos into dist/apple. This app is
           # macOS/iOS universal, and a framework missing a slice fails at link
           # time on whichever platform was omitted rather than here.
           ./build.sh apple
           find dist -maxdepth 3
+
+      - name: Verify the runtime default is in every slice
+        if: steps.state.outputs.publish == 'true'
+        working-directory: gopenpgp/dist/apple
+        run: |
+          set -euo pipefail
+          # The linker stores the -X value as its own string, once per arch.
+          FOUND=0
+          while IFS= read -r BIN; do
+            ARCHS=$(lipo -archs "$BIN" | wc -w | tr -d ' ')
+            HITS=$(strings -a "$BIN" | grep -c '^asyncpreemptoff=1$' || true)
+            echo "$BIN: $ARCHS arch(s), $HITS baked default(s)"
+            [ "$HITS" = "$ARCHS" ] || { echo "::error::$BIN is missing the baked GODEBUG default"; exit 1; }
+            FOUND=$((FOUND + 1))
+          done < <(find gopenpgp.xcframework -type f -name Gopenpgp)
+          [ "$FOUND" = 3 ] || { echo "::error::expected 3 slices, found $FOUND"; exit 1; }
 
       - name: Package and checksum
         if: steps.state.outputs.publish == 'true'
@@ -169,7 +219,10 @@ jobs:
           # rather than inline expressions for the same reason.
           cat > "$RUNNER_TEMP/notes.md" <<'NOTE'
           Built from ProtonMail/gopenpgp using that repository's own
-          `build.sh apple`.
+          `build.sh apple`, with one change: its `-ldflags` also carry
+          `-X=runtime.godebugDefault=asyncpreemptoff=1`, which turns off the
+          Go runtime's signal-based preemption in every process that links
+          this framework.
 
           SPM binaryTarget checksum (SHA-256 of the zip):
           NOTE

@@ -98,7 +98,7 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 
 The app uses SwiftData for persistence, URLSession for networking, and WebKit for rendering.
 
-Its one external dependency is **GopenPGP** — the same OpenPGP implementation Proton uses — consumed as a binary XCFramework through the local package in `Dependencies/GopenPGP`. That binary is built from source by `.github/workflows/gopenpgp-xcframework.yml`, from the upstream tag pinned in `Dependencies/gopenpgp.env`, using upstream's own `build.sh`; `Package.swift` pins its SHA-256, so the bytes cannot change without that line changing. Nothing outside `KyPost/Domain/Security/PgpCrypto.swift` and its conforming types may reference the library.
+Its one external dependency is **GopenPGP** — the same OpenPGP implementation Proton uses — consumed as a binary XCFramework through the local package in `Dependencies/GopenPGP`. That binary is built from source by `.github/workflows/gopenpgp-xcframework.yml`, from the upstream tag pinned in `Dependencies/gopenpgp.env`, using upstream's own `build.sh` plus one linker flag (`GODEBUG` default `asyncpreemptoff=1`) that keeps the embedded Go runtime's preemption signal from crashing the app; `Package.swift` pins its SHA-256, so the bytes cannot change without that line changing. Nothing outside `KyPost/Domain/Security/PgpCrypto.swift` and its conforming types may reference the library.
 
 ## Getting started
 

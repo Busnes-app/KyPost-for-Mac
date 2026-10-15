@@ -7,7 +7,10 @@
 //
 //  The binary is built by .github/workflows/gopenpgp-xcframework.yml from
 //  ProtonMail/gopenpgp at the tag pinned in Dependencies/gopenpgp.env, using
-//  upstream's own build.sh. The checksum below was verified against the
+//  upstream's own build.sh, plus a linker default of GODEBUG
+//  asyncpreemptoff=1 baked into the Go runtime (see the workflow's "Bake
+//  asyncpreemptoff" step: without it the runtime crashes the process that
+//  links it). The checksum below was verified against the
 //  published asset independently of the workflow that produced it — the first
 //  release's notes quoted a different hash than the asset actually had,
 //  because two runs raced.
@@ -31,8 +34,8 @@ let package = Package(
         // gomobile gave the framework, and it is what source files import.
         .binaryTarget(
             name: "gopenpgp",
-            url: "https://github.com/Busness-app/KyPost-for-Mac/releases/download/gopenpgp-v3.4.1/gopenpgp.xcframework.zip",
-            checksum: "e7ea91a82ec3773cea07a0d14e749105bbaa25b9d8597448cc39c0ff6928b9cf"
+            url: "https://github.com/Busnes-app/KyPost-for-Mac/releases/download/gopenpgp-v3.5.2/gopenpgp.xcframework.zip",
+            checksum: "ed2ad1463b4dc54149c45dc13a9800c15f9eb1ea0c83609b543476c03663c852"
         ),
     ]
 )
