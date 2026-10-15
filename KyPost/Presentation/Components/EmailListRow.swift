@@ -99,7 +99,7 @@ struct EmailListRow: View {
                     // relay sent none — in the device's zone.
                     Text(InboxRules.rowDate(email.receivedAt, now: today))
                         .font(AppFont.ui(12))
-                        .foregroundStyle(theme.ink.opacity(0.7))
+                        .foregroundStyle(theme.secondaryInk)
                 }
                 HStack(spacing: 5) {
                     if isPhishing {
@@ -112,7 +112,7 @@ struct EmailListRow: View {
                     if let symbol = pgpRowSymbol(rowPgpState) {
                         Image(systemName: symbol)
                             .font(AppFont.ui(12))
-                            .foregroundStyle(theme.ink.opacity(0.8))
+                            .foregroundStyle(theme.secondaryInk)
                     }
                     Text(email.subject)
                         .font(AppFont.ui(14, weight: email.read ? .regular : .medium))
@@ -121,7 +121,7 @@ struct EmailListRow: View {
                     if email.hasAttachments {
                         Image(systemName: "paperclip")
                             .font(AppFont.ui(11))
-                            .foregroundStyle(theme.ink.opacity(0.7))
+                            .foregroundStyle(theme.secondaryInk)
                     }
                 }
                 .accessibilityElement(children: .combine)

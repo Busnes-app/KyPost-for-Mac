@@ -20,11 +20,16 @@ import Testing
         let unfinished: AsyncStream<TipJarTransactionUpdate>.Continuation
     }
 
-    private func makeHarness() -> Harness {
+    private struct StoreUnavailable: Error {}
+
+    private func makeHarness(productsFail: Bool = false) -> Harness {
         let (updates, updatesContinuation) = AsyncStream<TipJarTransactionUpdate>.makeStream()
         let (unfinished, unfinishedContinuation) = AsyncStream<TipJarTransactionUpdate>.makeStream()
         let store = TipJarStore(source: TipJarTransactionSource(
-            loadProducts: { _ in [] },
+            loadProducts: { _ in
+                if productsFail { throw StoreUnavailable() }
+                return []
+            },
             updates: { updates },
             unfinished: { unfinished }
         ))
@@ -86,6 +91,29 @@ import Testing
         await harness.store.start()
 
         #expect(finished.value == ["left-over"])
+        harness.updates.finish()
+    }
+
+    // The tip section shows one status line. It used to print a failed load
+    // twice: once as the empty-list fallback, once as the error.
+    @Test func aFailedLoadShowsItsErrorOnce() async {
+        let harness = makeHarness(productsFail: true)
+        harness.unfinished.finish()
+        await harness.store.start()
+
+        let error = harness.store.errorMessage
+        #expect(error != nil)
+        #expect(harness.store.statusMessage == error)
+        harness.updates.finish()
+    }
+
+    @Test func anEmptyCatalogueSaysTipsAreUnavailable() async {
+        let harness = makeHarness()
+        harness.unfinished.finish()
+        await harness.store.start()
+
+        #expect(harness.store.errorMessage == nil)
+        #expect(harness.store.statusMessage == String(localized: "Tips are not available right now."))
         harness.updates.finish()
     }
 }

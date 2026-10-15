@@ -129,7 +129,10 @@ final class MailRepository {
         // switch — a delta would only list what changed since, and the folder
         // would stay empty until the daily resync.
         let holdsRows = try await emailDAO.hasRows(folder: folder)
-        let wantsFullWindow = forceFullResync || !holdsRows
+        // An empty full window over cached mail is confirmed by a second one
+        // before anything is pruned (`EmailDAO.awaitsEmptyWindowConfirmation`).
+        let confirmingEmpty = await emailDAO.awaitsEmptyWindowConfirmation(folder: folder)
+        let wantsFullWindow = forceFullResync || !holdsRows || confirmingEmpty
             || cursorStore?.shouldForceFullResync(pairingId: pairingId, folder: folder) ?? true
         let since = wantsFullWindow
             ? ""
@@ -202,6 +205,13 @@ final class MailRepository {
     /// it — for offline/instant display.
     func cachedFolder(_ folder: String, limit: Int? = nil) async throws -> [Email] {
         try await emailDAO.getFolder(folder: folder, limit: limit)
+    }
+
+    /// The cached row for one message, in or out of the window; nil when
+    /// this device holds none. What a reader window falls back to once the
+    /// main list no longer shows its message.
+    func cachedEmail(_ key: MailRowKey) async throws -> Email? {
+        try await emailDAO.getEmail(folder: key.folder, serverId: key.serverId)
     }
 
     /// How many results one search asks for.
@@ -430,6 +440,9 @@ final class MailRepository {
         do {
             let warning = try await makeSource().send(email: email)
             return warning.isEmpty ? .success : .sentWithWarning(warning)
+        } catch where MailOutcome.sendOutcomeUnknown(error) {
+            let detail = (error as? NetworkError).map(MailOutcome.message(for:)) ?? error.localizedDescription
+            return .mayHaveBeenSent(detail)
         } catch {
             return MailOutcome.from(error)
         }
@@ -512,7 +525,7 @@ nonisolated func rsvpRefusedBeforeSending(_ error: Error) -> Bool {
     switch error {
     case NetworkError.badRequest, NetworkError.unauthorized, NetworkError.conflict,
          NetworkError.rateLimited, NetworkError.serviceUnavailable,
-         NetworkError.certificateMismatch, NetworkError.invalidURL:
+         NetworkError.certificateMismatch, NetworkError.pinUnreadable, NetworkError.invalidURL:
         true
     case MailSourceError.notPaired, MailSourceError.credentialUnavailable,
          MailSourceError.invalidServerURL, MailSourceError.notConfigured,

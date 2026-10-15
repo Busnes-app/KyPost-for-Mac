@@ -3,8 +3,14 @@
 //  KyPost
 //
 //  The durable half of device enrollment: a Secure Enclave P-256 key that
-//  requires user presence, and the account's sealed private key re-sealed
-//  under it. Swift port of kypost-android's pgp/EnrollmentVault.kt.
+//  requires user presence, and the account's private key sealed under it.
+//  Swift port of kypost-android's pgp/EnrollmentVault.kt.
+//
+//  **Nothing here stores key material in the clear.** The record's material
+//  is sealed to the device key (ECIES, AES-GCM) before it reaches the
+//  Keychain, and only a Secure Enclave private-key operation under the key's
+//  `.userPresence` access control opens it. Reading the Keychain item alone
+//  yields ciphertext.
 //
 
 import CryptoKit
@@ -39,13 +45,37 @@ nonisolated struct KeyringAcknowledgement: Equatable, Sendable {
     var fingerprint: String
 }
 
-/// One sealed record, written as **one** Keychain item.
+/// What a record says about itself without its key material. Stored in the
+/// clear beside the sealed material, because the launch-time report and the
+/// enrollment marker need it without a presence prompt.
+nonisolated struct VaultRecordHeader: Equatable, Sendable {
+    var kind: VaultRecordKind
+    var identityFingerprint: String
+    /// The keyring's generation; nil for legacy armor.
+    var materialGeneration: UInt64?
+
+    var acknowledgement: KeyringAcknowledgement? {
+        guard kind == .keyring, let materialGeneration else { return nil }
+        return KeyringAcknowledgement(
+            materialGeneration: materialGeneration,
+            fingerprint: identityFingerprint
+        )
+    }
+}
+
+/// One record, written as **one** Keychain item.
 ///
 /// One item is what makes replacement atomic: `SecItemUpdate` on a single
 /// item either lands or leaves the old bytes, so a failed write can never
 /// leave new material beside an old fingerprint, or a keyring under a legacy
 /// kind. The earlier layout stored the key and its fingerprint as two items
 /// written one after the other.
+///
+/// `encoded()` is the plaintext form (format 1). It is what gets sealed to
+/// the device key, header included, so the clear header on disk cannot be
+/// swapped onto other material. On disk the plaintext form exists only from
+/// builds before the seal, and the first presence-checked open re-seals it
+/// (`EnrollmentVault.openRecord`).
 nonisolated struct VaultRecord: Equatable, Sendable, CustomStringConvertible {
     var kind: VaultRecordKind
     var material: Data
@@ -55,41 +85,54 @@ nonisolated struct VaultRecord: Equatable, Sendable, CustomStringConvertible {
 
     var description: String { "VaultRecord(\(kind), redacted)" }
 
-    var acknowledgement: KeyringAcknowledgement? {
-        guard kind == .keyring, let materialGeneration else { return nil }
-        return KeyringAcknowledgement(
-            materialGeneration: materialGeneration,
-            fingerprint: identityFingerprint
+    var header: VaultRecordHeader {
+        VaultRecordHeader(
+            kind: kind,
+            identityFingerprint: identityFingerprint,
+            materialGeneration: materialGeneration
         )
     }
 
-    private static let magic = Data("KPVR".utf8)
-    private static let format: UInt8 = 1
+    var acknowledgement: KeyringAcknowledgement? { header.acknowledgement }
 
-    /// `magic || format || kind || uint64BE(generation) || uint16BE(len fp) || fp || material`
-    func encoded() -> Data {
-        var data = Self.magic
-        data.append(Self.format)
-        data.append(kind.rawValue)
-        let generation = materialGeneration ?? 0
+    static let magic = Data("KPVR".utf8)
+    /// Material in the clear. Read for migration only; never written to disk.
+    static let plainFormat: UInt8 = 1
+    /// Material sealed to the device key (`VaultKeySealing`).
+    static let sealedFormat: UInt8 = 2
+
+    /// `magic || format || kind || uint64BE(generation) || uint16BE(len fp) || fp || tail`
+    static func encode(_ header: VaultRecordHeader, format: UInt8, tail: Data) -> Data {
+        var data = magic
+        data.append(format)
+        data.append(header.kind.rawValue)
+        let generation = header.materialGeneration ?? 0
         for shift in stride(from: 56, through: 0, by: -8) {
             data.append(UInt8(truncatingIfNeeded: generation >> UInt64(shift)))
         }
-        let fingerprint = Data(identityFingerprint.utf8)
+        let fingerprint = Data(header.identityFingerprint.utf8)
         data.append(bigEndianUInt16(fingerprint.count))
         data.append(fingerprint)
-        data.append(material)
+        data.append(tail)
         return data
     }
 
-    static func decode(_ data: Data) -> VaultRecord? {
+    /// The plaintext form. The caller zeroes it.
+    func encoded() -> Data {
+        Self.encode(header, format: Self.plainFormat, tail: material)
+    }
+
+    /// Splits either format into its header and its tail — the material, or
+    /// the sealed blob.
+    static func parse(_ data: Data) -> (format: UInt8, header: VaultRecordHeader, tail: Data)? {
         let bytes = [UInt8](data)
-        let header = magic.count + 2 + 8 + 2
-        guard bytes.count > header,
+        let headerLength = magic.count + 2 + 8 + 2
+        guard bytes.count > headerLength,
               Data(bytes[0..<magic.count]) == magic,
-              bytes[magic.count] == format,
+              bytes[magic.count] == plainFormat || bytes[magic.count] == sealedFormat,
               let kind = VaultRecordKind(rawValue: bytes[magic.count + 1])
         else { return nil }
+        let format = bytes[magic.count]
         var index = magic.count + 2
         let generation = bytes[index..<(index + 8)].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         index += 8
@@ -100,11 +143,22 @@ nonisolated struct VaultRecord: Equatable, Sendable, CustomStringConvertible {
         else { return nil }
         index += length
         if kind == .keyring, generation == 0 { return nil }
-        return VaultRecord(
+        let header = VaultRecordHeader(
             kind: kind,
-            material: Data(bytes[index...]),
             identityFingerprint: fingerprint,
             materialGeneration: kind == .keyring ? generation : nil
+        )
+        return (format, header, Data(bytes[index...]))
+    }
+
+    /// The plaintext form only.
+    static func decode(_ data: Data) -> VaultRecord? {
+        guard let parsed = parse(data), parsed.format == plainFormat else { return nil }
+        return VaultRecord(
+            kind: parsed.header.kind,
+            material: parsed.tail,
+            identityFingerprint: parsed.header.identityFingerprint,
+            materialGeneration: parsed.header.materialGeneration
         )
     }
 }
@@ -114,18 +168,119 @@ nonisolated enum EnrollmentVaultError: Error, Equatable {
     /// the lock screen, so a device without one cannot hold a meaningful one.
     /// The honest outcome, not a degradation.
     case noDeviceCredential
-    /// The Secure Enclave refused. On a Mac without one this is terminal.
+    /// The Secure Enclave refused, or this device has none.
     case unavailable
     case keychain(OSStatus)
     case notEnrolled
     /// The user dismissed the authentication prompt. Not an error — the caller
     /// goes back to offering the action.
     case cancelled
-    /// A record exists and does not decode. Never overwritten blind.
+    /// A record exists and does not decode, or its sealed header does not
+    /// match the clear one. Never overwritten blind.
     case unreadableRecord
 }
 
-/// Holds the device keypair and the re-sealed envelope.
+/// The device-key boundary: what seals a record at rest and what opens it.
+///
+/// Sealing uses the device key's **public** half and never prompts. Opening
+/// is a Secure Enclave private-key operation under the key's `.userPresence`
+/// access control, so it *is* the presence check — there is no other path to
+/// the material. A protocol so the vault's migration and prompt policy are
+/// unit tests; `DeviceKeySealing` is the only production conformer.
+nonisolated protocol VaultKeySealing: Sendable {
+    func seal(_ plaintext: Data) throws -> Data
+    /// Prompts unless `context` already authenticated. Throws
+    /// `EnrollmentVaultError.cancelled` when the user dismissed the prompt.
+    func open(_ sealed: Data, context: LAContext) throws -> Data
+}
+
+/// ECIES to the enrollment device key: an ephemeral P-256 key agreement, the
+/// X9.63 KDF with SHA-256, and AES-GCM — Security framework's
+/// `eciesEncryptionCofactorVariableIVX963SHA256AESGCM`, so no hand-rolled
+/// construction.
+///
+/// The same key opens enrollment envelopes (HKDF, its own domain strings);
+/// reusing it means existing installs migrate without a second key, and the
+/// wipe's one key deletion covers both. A second key would add nothing: both
+/// uses need the same Secure Enclave operation under the same presence check.
+nonisolated struct DeviceKeySealing: VaultKeySealing {
+    let keyTag: Data
+
+    static let algorithm = SecKeyAlgorithm.eciesEncryptionCofactorVariableIVX963SHA256AESGCM
+
+    func seal(_ plaintext: Data) throws -> Data {
+        guard let key = try loadDeviceKey(tag: keyTag, context: nil),
+              let publicKey = SecKeyCopyPublicKey(key)
+        else { throw EnrollmentVaultError.notEnrolled }
+        var error: Unmanaged<CFError>?
+        guard let sealed = SecKeyCreateEncryptedData(
+            publicKey, Self.algorithm, plaintext as CFData, &error
+        ) as Data? else {
+            _ = error?.takeRetainedValue()
+            throw EnrollmentVaultError.unavailable
+        }
+        return sealed
+    }
+
+    func open(_ sealed: Data, context: LAContext) throws -> Data {
+        guard let key = try loadDeviceKey(tag: keyTag, context: context) else {
+            throw EnrollmentVaultError.notEnrolled
+        }
+        var error: Unmanaged<CFError>?
+        guard let plaintext = SecKeyCreateDecryptedData(
+            key, Self.algorithm, sealed as CFData, &error
+        ) as Data? else {
+            throw vaultError(from: error?.takeRetainedValue())
+        }
+        return plaintext
+    }
+}
+
+/// The device key by tag. With `context`, operations on the returned key use
+/// that `LAContext`, so an already-authenticated context does not prompt.
+nonisolated func loadDeviceKey(tag: Data, context: LAContext?) throws -> SecKey? {
+    var query: [String: Any] = [
+        kSecClass as String: kSecClassKey,
+        kSecAttrApplicationTag as String: tag,
+        kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+        kSecReturnRef as String: true,
+    ]
+    if let context { query[kSecUseAuthenticationContext as String] = context }
+    var item: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &item)
+    switch status {
+    case errSecSuccess:
+        guard let key = item else { return nil }
+        // swiftlint:disable:next force_cast
+        return (key as! SecKey)
+    case errSecItemNotFound:
+        return nil
+    default:
+        throw EnrollmentVaultError.keychain(status)
+    }
+}
+
+/// Maps a failed device-key operation. **Only cancellation reads as
+/// cancelled** — the user's, the system's, or this app's own invalidation of
+/// the context when the lock engaged mid-prompt. `errSecAuthFailed` is an
+/// authentication that was attempted and rejected, a different event with a
+/// different remedy.
+nonisolated func vaultError(from error: CFError?) -> EnrollmentVaultError {
+    guard let error else { return .unavailable }
+    let code = CFErrorGetCode(error)
+    let domain = CFErrorGetDomain(error) as String
+    if domain == LAErrorDomain {
+        let cancelled: Set<Int> = [
+            LAError.userCancel.rawValue, LAError.systemCancel.rawValue, LAError.appCancel.rawValue,
+        ]
+        return cancelled.contains(code) ? .cancelled : .unavailable
+    }
+    if code == Int(errSecUserCanceled) { return .cancelled }
+    if domain == NSOSStatusErrorDomain { return .keychain(OSStatus(code)) }
+    return .unavailable
+}
+
+/// Holds the device keypair and the sealed record.
 ///
 /// **The allowed authenticators include the device passcode on purpose**, so
 /// the key survives a biometric enrollment change. Biometry-only would
@@ -141,15 +296,28 @@ nonisolated enum EnrollmentVaultError: Error, Equatable {
 nonisolated final class EnrollmentVault: @unchecked Sendable {
     private let keyTag: Data
     private let keychain: any SecureItemStoring
+    private let sealing: any VaultKeySealing
+    /// The authenticated context reused across opens until the app locks.
+    let presence: PresenceContext
     private let lock = NSLock()
 
     /// Separate from the pairing store's service so a device unpair does not
     /// silently take the enrollment with it, and vice versa.
     static let defaultKeyTag = "org.kysecurity.mail.enrollment.deviceKey"
 
-    init(keychain: any SecureItemStoring, keyTag: String = EnrollmentVault.defaultKeyTag) {
+    /// The prompt's reason line, wherever the vault raises it.
+    static var presenceReason: String { String(localized: "Unlock your encryption key") }
+
+    init(
+        keychain: any SecureItemStoring,
+        keyTag: String = EnrollmentVault.defaultKeyTag,
+        sealing: (any VaultKeySealing)? = nil,
+        presence: PresenceContext = .shared
+    ) {
         self.keychain = keychain
         self.keyTag = Data(keyTag.utf8)
+        self.sealing = sealing ?? DeviceKeySealing(keyTag: Data(keyTag.utf8))
+        self.presence = presence
     }
 
     private enum Key {
@@ -186,15 +354,18 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
     func ensureDeviceKey() throws -> SecKey {
         lock.lock()
         defer { lock.unlock() }
-        if let existing = try loadDeviceKeyLocked() { return existing }
+        if let existing = try loadDeviceKey(tag: keyTag, context: nil) { return existing }
         guard hasDeviceCredential else { throw EnrollmentVaultError.noDeviceCredential }
         return try generateDeviceKeyLocked()
     }
 
-    func deviceKey() throws -> SecKey {
+    /// The device key. With `context`, its operations use that `LAContext`.
+    func deviceKey(context: LAContext? = nil) throws -> SecKey {
         lock.lock()
         defer { lock.unlock() }
-        guard let key = try loadDeviceKeyLocked() else { throw EnrollmentVaultError.notEnrolled }
+        guard let key = try loadDeviceKey(tag: keyTag, context: context) else {
+            throw EnrollmentVaultError.notEnrolled
+        }
         return key
     }
 
@@ -205,27 +376,6 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
               let data = SecKeyCopyExternalRepresentation(publicKey, nil) as Data?
         else { throw EnrollmentVaultError.unavailable }
         return data
-    }
-
-    private func loadDeviceKeyLocked() throws -> SecKey? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: keyTag,
-            kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
-            kSecReturnRef as String: true,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        switch status {
-        case errSecSuccess:
-            guard let key = item else { return nil }
-            // swiftlint:disable:next force_cast
-            return (key as! SecKey)
-        case errSecItemNotFound:
-            return nil
-        default:
-            throw EnrollmentVaultError.keychain(status)
-        }
     }
 
     private func generateDeviceKeyLocked() throws -> SecKey {
@@ -248,12 +398,19 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
                 kSecAttrAccessControl as String: access,
             ] as [String: Any],
         ]
-        // The Secure Enclave is the intent; a Mac without one still gets a
-        // keychain-resident key under the same access control rather than
-        // refusing enrollment outright.
-        if isSecureEnclaveAvailable {
+        // The Secure Enclave is required: every device this app supports has
+        // one (macOS 26 runs only on Apple silicon and T2 Macs), so a device
+        // without one is refused rather than given a software key under a
+        // weaker claim. The Simulator alone has none, and keeps a
+        // keychain-resident key under the same access control for development.
+        #if targetEnvironment(simulator)
+        if SecureEnclave.isAvailable {
             attributes[kSecAttrTokenID as String] = kSecAttrTokenIDSecureEnclave
         }
+        #else
+        guard SecureEnclave.isAvailable else { throw EnrollmentVaultError.unavailable }
+        attributes[kSecAttrTokenID as String] = kSecAttrTokenIDSecureEnclave
+        #endif
 
         var error: Unmanaged<CFError>?
         guard let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) else {
@@ -263,32 +420,34 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
         return key
     }
 
-    private var isSecureEnclaveAvailable: Bool {
-        SecureEnclave.isAvailable
-    }
+    // MARK: - Record
 
-    // MARK: - Envelope
-
-    /// True when this device holds an envelope it could open.
+    /// True when this device holds a record it could open.
     var isEnrolled: Bool {
         ((try? keychain.data(forKey: Key.record)) ?? nil) != nil
             || ((try? keychain.data(forKey: Key.envelope)) ?? nil) != nil
     }
 
-    /// Replaces the record, durably and atomically, or throws and leaves the
-    /// previous one exactly as it was.
+    /// Seals the record to the device key and replaces the stored one,
+    /// durably and atomically, or throws and leaves the previous one exactly
+    /// as it was. Never prompts: sealing uses the public half.
     ///
     /// A successful store is a new delivery: a pending teardown no longer
     /// describes the device, so this is the one event that supersedes the
     /// teardown marker (key regeneration and `destroy` leave it alone).
     func store(_ record: VaultRecord) throws {
-        lock.lock()
-        defer { lock.unlock() }
         var encoded = record.encoded()
         defer { encoded.resetBytes(in: 0..<encoded.count) }
-        try keychain.setData(encoded, forKey: Key.record)
+        let sealed = try sealing.seal(encoded)
+        lock.lock()
+        defer { lock.unlock() }
+        try keychain.setData(
+            VaultRecord.encode(record.header, format: VaultRecord.sealedFormat, tail: sealed),
+            forKey: Key.record
+        )
         // The new record wins on every read, so a failed removal of the old
-        // layout costs nothing but a stale item that `destroy` still removes.
+        // layout costs nothing but a stale item that the next open and
+        // `destroy` both remove again.
         try? keychain.remove(Key.envelope)
         try? keychain.remove(Key.fingerprint)
         try? keychain.remove(Key.teardownReport)
@@ -303,34 +462,147 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
         ))
     }
 
-    /// The record on disk, or nil when there is none. **Throws** when the
-    /// Keychain will not answer or the record does not decode, so a caller
-    /// never seals over a record it could not classify.
-    func storedRecord() throws -> VaultRecord? {
+    /// What is stored, as read: sealed, or plaintext from an earlier build.
+    private enum StoredItem {
+        case sealed(VaultRecordHeader, blob: Data, raw: Data)
+        /// `raw` is nil for the two-item layout.
+        case plain(VaultRecord, raw: Data?)
+    }
+
+    private func storedItem() throws -> StoredItem? {
         if let data = try keychain.data(forKey: Key.record) {
-            guard let record = VaultRecord.decode(data) else {
+            guard let parsed = VaultRecord.parse(data) else {
                 throw EnrollmentVaultError.unreadableRecord
             }
-            return record
+            if parsed.format == VaultRecord.sealedFormat {
+                return .sealed(parsed.header, blob: parsed.tail, raw: data)
+            }
+            return .plain(VaultRecord(
+                kind: parsed.header.kind,
+                material: parsed.tail,
+                identityFingerprint: parsed.header.identityFingerprint,
+                materialGeneration: parsed.header.materialGeneration
+            ), raw: data)
         }
         guard let legacy = try keychain.data(forKey: Key.envelope) else { return nil }
         let fingerprint = try keychain.data(forKey: Key.fingerprint)
             .map { String(decoding: $0, as: UTF8.self) } ?? ""
-        return VaultRecord(kind: .legacyArmor, material: legacy, identityFingerprint: fingerprint)
+        return .plain(
+            VaultRecord(kind: .legacyArmor, material: legacy, identityFingerprint: fingerprint),
+            raw: nil
+        )
     }
 
-    func storedPrivateKey() throws -> Data {
-        guard let record = try storedRecord() else { throw EnrollmentVaultError.notEnrolled }
-        return record.material
+    /// The stored record's header, or nil when there is none. Never prompts.
+    /// **Throws** when the Keychain will not answer or the record does not
+    /// decode, so a caller never acts on a record it could not classify.
+    func storedHeader() throws -> VaultRecordHeader? {
+        switch try storedItem() {
+        case nil: nil
+        case .sealed(let header, _, _): header
+        case .plain(let record, _): record.header
+        }
+    }
+
+    /// Opens the stored record — **the presence-checked step**. Prompts once
+    /// per app unlock (`PresenceContext`); nil when there is none.
+    ///
+    /// A plaintext record from a build before the seal is migrated here: it
+    /// is sealed, the seal is opened under presence (which is both the check
+    /// and the proof the new item opens), and only then does the sealed item
+    /// replace it — the same single Keychain item, so plaintext and sealed
+    /// copies never coexist. A cancelled prompt changes nothing.
+    ///
+    /// Throws `cancelled` when the prompt was dismissed, and
+    /// `unreadableRecord` for a record that does not decode or whose sealed
+    /// header disagrees with the clear one.
+    func openRecord() throws -> VaultRecord? {
+        switch try storedItem() {
+        case nil:
+            return nil
+
+        case .sealed(let header, let blob, _):
+            var inner = try openUnderPresence(blob)
+            defer { inner.resetBytes(in: 0..<inner.count) }
+            guard let record = VaultRecord.decode(inner), record.header == header else {
+                throw EnrollmentVaultError.unreadableRecord
+            }
+            retireTwoItemLayout()
+            return record
+
+        case .plain(let record, let raw):
+            var encoded = record.encoded()
+            defer { encoded.resetBytes(in: 0..<encoded.count) }
+            let sealed = try sealing.seal(encoded)
+            var check = try openUnderPresence(sealed)
+            defer { check.resetBytes(in: 0..<check.count) }
+            guard check == encoded else { throw EnrollmentVaultError.unavailable }
+            try replacePlaintext(raw: raw, with: VaultRecord.encode(
+                record.header, format: VaultRecord.sealedFormat, tail: sealed
+            ))
+            return record
+        }
+    }
+
+    /// Writes the sealed migration only while the plaintext it was made from
+    /// is still what is stored: a ceremony that stored a newer record during
+    /// the prompt wins, and nothing is sealed over it.
+    private func replacePlaintext(raw: Data?, with sealedRecord: Data) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if let current = try keychain.data(forKey: Key.record) {
+            guard current == raw else { return }
+        } else if raw != nil {
+            return
+        }
+        try keychain.setData(sealedRecord, forKey: Key.record)
+        retireTwoItemLayoutLocked()
+    }
+
+    private func retireTwoItemLayout() {
+        lock.lock()
+        defer { lock.unlock() }
+        retireTwoItemLayoutLocked()
+    }
+
+    /// The plaintext two-item layout must not outlive the sealed record.
+    private func retireTwoItemLayoutLocked() {
+        guard ((try? keychain.data(forKey: Key.envelope)) ?? nil) != nil
+            || ((try? keychain.data(forKey: Key.fingerprint)) ?? nil) != nil
+        else { return }
+        try? keychain.remove(Key.envelope)
+        try? keychain.remove(Key.fingerprint)
+    }
+
+    /// One device-key open under the shared presence context. A held context
+    /// that stopped working is dropped and the open asked once more, fresh; a
+    /// dismissed prompt is never retried. An open that finishes after the app
+    /// locked is **cancelled** and its plaintext dropped: the lock wins.
+    private func openUnderPresence(_ blob: Data) throws -> Data {
+        let lease = presence.lease(reason: Self.presenceReason)
+        do {
+            return try finish(lease, sealing.open(blob, context: lease.context))
+        } catch EnrollmentVaultError.cancelled {
+            throw EnrollmentVaultError.cancelled
+        } catch where lease.wasHeld {
+            presence.discard(lease)
+            let fresh = presence.lease(reason: Self.presenceReason)
+            return try finish(fresh, sealing.open(blob, context: fresh.context))
+        }
+    }
+
+    private func finish(_ lease: PresenceContext.Lease, _ plaintext: Data) throws -> Data {
+        guard presence.keep(lease) else { throw EnrollmentVaultError.cancelled }
+        return plaintext
     }
 
     var identityFingerprint: String? {
-        ((try? storedRecord()) ?? nil)?.identityFingerprint
+        ((try? storedHeader()) ?? nil)?.identityFingerprint
     }
 
     /// What a keyring record acknowledges, or nil for legacy armor or none.
     func keyringAcknowledgement() -> KeyringAcknowledgement? {
-        ((try? storedRecord()) ?? nil)?.acknowledgement
+        ((try? storedHeader()) ?? nil)?.acknowledgement
     }
 
     // MARK: - Report markers
@@ -419,9 +691,9 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
     }
 
     /// Destroys everything. Called when Hostile Location Protection is turned
-    /// on, on unpair, and by a security wipe — a kept envelope after any of
-    /// those is the account's private key sitting on a device that is supposed
-    /// to hold nothing.
+    /// on, on unpair, by a security wipe, and by the failed-unlock reset — a
+    /// kept record after any of those is the account's private key sitting on
+    /// a device that is supposed to hold nothing.
     func destroy() {
         _ = destroyReportingFailures()
     }
@@ -430,10 +702,12 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
     ///
     /// `SecurityWipe` needs the names: a key surviving a wipe nobody chose is
     /// exactly what an incomplete result exists to report, and `destroy`'s
-    /// discarded errors cannot say so. The envelope is re-read afterwards
+    /// discarded errors cannot say so. The record is re-read afterwards
     /// rather than trusted to the delete's status — the claim being made is
     /// "the private key is gone", so it is worth checking.
     func destroyReportingFailures() -> [String] {
+        // The held context authenticates a key that is about to be gone.
+        presence.invalidate()
         lock.lock()
         defer { lock.unlock() }
         var failures: [String] = []

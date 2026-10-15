@@ -692,6 +692,44 @@ private let validPairingLink = URL(
         )])
     }
 
+    /// A hostile relay claiming `verified: true` and omitting `conflict`
+    /// decodes to a bare candidate key: the claim is not carried at all, so
+    /// nothing downstream can read it as a confirmation.
+    @Test func aRelaysVerifiedClaimIsNotDecoded() async throws {
+        let json = """
+        {
+          "encryptedPayload": "ciphertext",
+          "resolvedSender": "bob@example.com",
+          "signerKeys": [{
+            "addresses": ["bob@example.com"],
+            "publicKey": "eve-key",
+            "verified": true,
+            "source": "manual"
+          }]
+        }
+        """
+        let outcome = try await PgpPayloadClient(
+            httpClient: stubClient(status: 200, json: json),
+            serverUrl: "https://relay.example.com",
+            auth: auth
+        ).fetch(mailbox: "INBOX", messageId: "42")
+        guard case .success(let payload) = outcome else {
+            Issue.record("expected success, got \(outcome)")
+            return
+        }
+        #expect(payload.signerKeys == [SignerKey(
+            addresses: ["bob@example.com"], publicKey: "eve-key", source: "manual"
+        )])
+        // Fed to the verdict with no pin and no history, it is not confirmed.
+        let state = signatureState(
+            signature: RawSignature(present: true, valid: true, signerFingerprint: "FPR-EVE"),
+            signerKeys: payload.signerKeys,
+            trust: .firstSeen(nil),
+            fingerprint: { $0 == "eve-key" ? "FPR-EVE" : nil }
+        )
+        #expect(state == .signerNotConfirmed)
+    }
+
     /// The three status codes each map to their own row rather than a generic
     /// failure, because each is a different sentence to the reader.
     @Test(arguments: [

@@ -91,6 +91,13 @@ struct ContactDTO: Codable, Equatable, Sendable {
     var department: String?
     var customFields: [ContactCustomFieldDTO]?
     var pronouns: String?
+    /// Client correlation id: the local contact's `localId`, sent on a create
+    /// only. A relay that stores it and echoes it on the created contact lets
+    /// a create whose response was lost be matched exactly instead of by
+    /// content (`ContactSyncReconciliation`). The relay (KyPost-Server
+    /// `contactSyncChange`) ignores unknown fields today and echoes nothing,
+    /// so this is forward-compatible and inert until the server stores it.
+    var clientRef: String?
 
     var primaryEmail: String { emails?.first?.value ?? "" }
     var primaryPhone: String { phones?.first?.value ?? "" }

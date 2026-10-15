@@ -27,6 +27,9 @@ final class InboxViewModel {
     /// the sidebar's Inbox row *is* the folder and its keyword rows sit under
     /// it, so there is no All chip to hide.
     private let appliesAllTabSetting: Bool
+    /// Whether a reader window may resolve mail now (`MailAccessGate`): not
+    /// while the startup wipe check runs or an abandoned wipe blocks the app.
+    private let windowGate: @MainActor () -> Bool
 
     private(set) var folder = Config.defaultFolder
     private(set) var emails: [Email] = []
@@ -127,8 +130,10 @@ final class InboxViewModel {
         noticeDuration: Duration = .seconds(4),
         pushTapRefreshWait: Duration = .seconds(30),
         appliesAllTabSetting: Bool = InboxViewModel.platformHasTabStrip,
+        windowGate: @escaping @MainActor () -> Bool = { true },
         now: @escaping () -> Date = Date.init
     ) {
+        self.windowGate = windowGate
         self.mailRepository = mailRepository
         self.keywordRepository = keywordRepository
         self.initialRefreshErrorDelay = initialRefreshErrorDelay
@@ -334,22 +339,25 @@ final class InboxViewModel {
     /// refuses the rest.
     func deleteFolder(_ folder: String) async {
         let wasSelected = self.folder == folder
-        await folderMutation { await self.mailRepository.deleteFolder(folder) }
+        let deleted = await folderMutation { await self.mailRepository.deleteFolder(folder) }
         // Leaving the selection on a folder that no longer exists shows an
         // empty list with no explanation and no way back.
-        if wasSelected, errorMessage == nil {
+        if wasSelected, deleted {
             await selectFolder(StandardFolder.inbox)
         }
     }
 
-    private func folderMutation(_ body: () async -> MailOutcome) async {
+    /// A refusal is a toast: `errorMessage` renders only over an empty list,
+    /// so beside a folder full of mail it was never seen.
+    @discardableResult
+    private func folderMutation(_ body: () async -> MailOutcome) async -> Bool {
         let outcome = await body()
         if let message = outcome.userMessage {
-            errorMessage = message
-        } else {
-            errorMessage = nil
-            await loadSubfolders()
+            showNotice(message)
+            return false
         }
+        await loadSubfolders()
+        return true
     }
 
     // MARK: - List actions (undoable)
@@ -480,6 +488,7 @@ final class InboxViewModel {
         inboxSubfolders = []
         archiveSubfolders = []
         topLevelFolders = []
+        windowRows = [:]
         hasLoaded = false
         resetForFolder(Config.defaultFolder, tab: nil)
         endSearch(dismissingField: true)
@@ -590,7 +599,9 @@ final class InboxViewModel {
         do {
             try await mailRepository.markRead(messageIds: serverIds, from: requested)
         } catch {
-            errorMessage = "Could not mark as read: \(error.localizedDescription)"
+            // A toast, not `errorMessage`: that one replaces an empty list,
+            // and this list is not empty — the failure would never show.
+            showNotice(Self.readerFailure("Couldn't mark as read", error).message)
             await refresh()
         }
     }
@@ -653,7 +664,7 @@ final class InboxViewModel {
             guard requested == folder else { return true }
             loadedFolder = nil
             connectionNotice = nil
-            errorMessage = "Pair this device (Settings → Connection) to load mail."
+            errorMessage = PairingInstructions.inbox
         } catch {
             guard generation == accountGeneration else { return false }
             guard requested == folder else { return true }
@@ -711,7 +722,7 @@ final class InboxViewModel {
             delayedRefreshErrorTask?.cancel()
             delayedRefreshErrorTask = nil
             connectionNotice = nil
-            errorMessage = "Pair this device (Settings → Connection) to load mail."
+            errorMessage = PairingInstructions.inbox
         } catch {
             // The delayed task reports the persistent failure at 90 seconds.
         }
@@ -750,8 +761,14 @@ final class InboxViewModel {
         connectionNotice = nil
     }
 
-    func markRead(_ email: Email) async {
-        try? await mailRepository.markRead(serverId: email.serverId, folder: email.folder)
+    /// Marks the opened message read. The reader shows the failure: the
+    /// list's own error line only appears over an empty list.
+    func markRead(_ email: Email) async throws(ReaderFailure) {
+        do {
+            try await mailRepository.markRead(serverId: email.serverId, folder: email.folder)
+        } catch {
+            throw Self.readerFailure("Couldn't mark this message as read", error)
+        }
         if let index = emails.firstIndex(where: { $0.id == email.id }) {
             emails[index].read = true
         }
@@ -772,6 +789,35 @@ final class InboxViewModel {
             row.cc = result.cc
         }
         return row
+    }
+
+    /// Rows handed to a reader window, by (folder, id). The main list empties
+    /// on every folder switch and search; a window must not go blank because
+    /// of it. Dropped by `forgetAccount`.
+    private var windowRows: [MailRowKey: Email] = [:]
+
+    /// Remembers `email` for a reader window about to open on it, so the
+    /// window resolves it even after the list moved on (`resolveEmail`).
+    func rememberForWindow(_ email: Email) {
+        windowRows[email.id] = self.email(for: email.id) ?? email
+    }
+
+    /// The row a reader window shows, independent of what the main list is
+    /// showing now: the list's row when it is still there, else the row the
+    /// window was opened with, else the cached row — which is how a restored
+    /// window finds its message after a relaunch. Nil only when none of the
+    /// three has it (an uncached search result after a relaunch, or mail of
+    /// a forgotten account), and always nil while `windowGate` is shut: a
+    /// window macOS restores at launch must not show cached mail before the
+    /// startup wipe check, or behind an abandoned wipe.
+    func resolveEmail(for key: MailRowKey) async -> Email? {
+        guard windowGate() else { return nil }
+        if let row = email(for: key) ?? windowRows[key] { return row }
+        let account = accountGeneration
+        guard let cached = try? await mailRepository.cachedEmail(key),
+              account == accountGeneration, windowGate()
+        else { return nil }
+        return cached
     }
 
     /// Prepares the list for a notification tap and returns its target.
@@ -916,8 +962,10 @@ final class InboxViewModel {
         )
     }
 
-    /// Raw bytes of one attachment (for Save As…), or nil on failure.
-    func attachmentData(_ attachment: EmailAttachment, of email: Email) async -> Data? {
+    /// Raw bytes of one attachment (Save As…, Forward, the invite card). The
+    /// failure is the reader's to show — it used to land in `errorMessage`,
+    /// which only renders over an empty list, so nobody saw it.
+    func attachmentData(_ attachment: EmailAttachment, of email: Email) async throws(ReaderFailure) -> Data {
         do {
             return try await mailRepository.downloadAttachment(
                 folder: email.folder,
@@ -925,19 +973,17 @@ final class InboxViewModel {
                 index: attachment.index
             )
         } catch {
-            errorMessage = "Could not download attachment: \(error.localizedDescription)"
-            return nil
+            throw Self.readerFailure("Couldn't download \(attachment.name)", error)
         }
     }
 
     /// Downloads one attachment to a temporary file and returns its URL
-    /// (for Quick Look / opening externally), or nil on failure.
-    func downloadAttachment(_ attachment: EmailAttachment, of email: Email) async -> URL? {
+    /// (for Quick Look / opening externally).
+    func downloadAttachment(_ attachment: EmailAttachment, of email: Email) async throws(ReaderFailure) -> URL {
         guard let cacheKey = Self.attachmentCacheComponent(for: email) else {
-            errorMessage = "Could not download attachment: invalid message id"
-            return nil
+            throw ReaderFailure(message: String(localized: "Couldn't download \(attachment.name): the message id is not valid."))
         }
-        guard let data = await attachmentData(attachment, of: email) else { return nil }
+        let data = try await attachmentData(attachment, of: email)
         do {
             let directory = Self.attachmentTempRoot
                 .appending(path: "\(cacheKey)/\(attachment.index)")
@@ -955,9 +1001,18 @@ final class InboxViewModel {
             try data.write(to: file)
             return file
         } catch {
-            errorMessage = "Could not download attachment: \(error.localizedDescription)"
-            return nil
+            throw ReaderFailure(message: String(
+                localized: "Couldn't open \(attachment.name): it could not be saved for preview on this device."
+            ))
         }
+    }
+
+    /// The sentence a reader shows for a failed mail call: what failed, then
+    /// the relay's own reason. Never a raw transport description.
+    static func readerFailure(_ what: String, _ error: any Error) -> ReaderFailure {
+        let reason = MailOutcome.from(error).userMessage
+            ?? String(localized: "Unable to connect to the mail server.")
+        return ReaderFailure(message: "\(what). \(reason)")
     }
 
     /// Root of the Quick Look staging area for downloaded attachments.
@@ -1044,4 +1099,10 @@ final class InboxViewModel {
             selectedTab = tabs.first?.name
         }
     }
+}
+
+/// Why a reader action (an attachment, mark-read, Save As) failed, as the
+/// sentence the reader shows.
+nonisolated struct ReaderFailure: Error, Equatable, Sendable {
+    let message: String
 }

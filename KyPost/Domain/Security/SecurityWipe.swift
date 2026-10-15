@@ -56,15 +56,16 @@ nonisolated enum WipeResult: Equatable, Sendable {
 
 @MainActor
 final class SecurityWipe {
-    /// How many times an incomplete wipe may be resumed at startup before the
-    /// app stops retrying.
+    /// How many runs one wipe gets — the first, then two resumes at later
+    /// launches — before the app stops retrying. The third failed run is the
+    /// one that abandons.
     ///
     /// Without a ceiling, a step that fails *permanently* means the app wipes
     /// itself on every launch, forever, with no way for the user past it.
     /// Three rides out a transient failure — a file held open, a provider
     /// briefly unavailable — and is few enough that a permanent one surfaces as
     /// a reported problem rather than a brick.
-    static let maxResumes = 3
+    static let maxAttempts = 3
 
     private let state: WipeStateStore
 
@@ -81,10 +82,17 @@ final class SecurityWipe {
     /// machine is presumed hostile — so its side effect was to switch off the
     /// one feature that exists for that situation. A wipe may destroy data; it
     /// must not change posture.
+    ///
+    /// `release` runs last and **only when every step succeeded** — it is what
+    /// lets the app come back unlocked (`SecurityWipeSteps.releaseLock`). A
+    /// wipe that could not delete everything leaves the lock in place, so no
+    /// path presents an unlocked app over data that is still here. Its own
+    /// failure makes the run incomplete.
     func run(
         steps: [WipeStep],
         hostileLocationEnabled: Bool = false,
-        restoreHostileLocation: (() throws -> Void)? = nil
+        restoreHostileLocation: (() throws -> Void)? = nil,
+        release: WipeStep? = nil
     ) async -> WipeResult {
         // The marker goes down before anything is destroyed. A wipe interrupted
         // halfway is worse than one that never started, and this runs while an
@@ -115,6 +123,15 @@ final class SecurityWipe {
             }
         }
 
+        if failed.isEmpty, let release {
+            do {
+                try await release.run()
+            } catch {
+                failed.append(release.name)
+                Log.app.error("Wipe release step failed: \(release.name, privacy: .public) — \(error)")
+            }
+        }
+
         guard !failed.isEmpty else {
             state.clear()
             return .complete
@@ -126,7 +143,7 @@ final class SecurityWipe {
         // deletion failed, so the app has to keep knowing it. The marker and
         // the failed step names persist, and every later launch reports the
         // same permanent verdict.
-        let givingUp = state.attempts >= Self.maxResumes
+        let givingUp = state.attempts >= Self.maxAttempts
         state.recordFailure(steps: failed, abandoned: givingUp)
         return .incomplete(failedSteps: failed.sorted(), willRetry: !givingUp)
     }

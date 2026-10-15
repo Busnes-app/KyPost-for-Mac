@@ -12,7 +12,7 @@
 //
 //  It is also the only way to capture the app offline. `MailRepository`
 //  refuses to load anything without a stored pairing, so an unpaired build
-//  renders "Pair this device (Settings → Connection) to load mail" over the
+//  renders the not-paired notice (`PairingInstructions.inbox`) over the
 //  screen we are trying to photograph. DemoMailSource stands in for the
 //  relay so the capture never touches the network or the Keychain.
 //

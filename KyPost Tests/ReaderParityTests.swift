@@ -363,6 +363,7 @@ private struct PlaintextCrypto: PgpDecrypting {
         RawSignature()
     }
     func fingerprint(ofArmoredPublicKey key: String) -> String? { nil }
+    func userIDAddresses(ofArmoredPublicKey key: String) -> [String] { [] }
 }
 
 private let mixedMime = """
@@ -399,7 +400,7 @@ JVBERg==\r
                 opener: OpenedVault(),
                 payloads: OnePayload(resolvedSender: resolvedSender),
                 crypto: PlaintextCrypto(mime: mime),
-                pins: { .none },
+                pins: { .none }, history: MemorySignerHistory(),
                 session: EnrollmentSession()
             ),
             mailbox: "INBOX",
@@ -457,7 +458,7 @@ JVBERg==\r
                 opener: OpenedVault(),
                 payloads: GatedPayload(gate: gate),
                 crypto: PlaintextCrypto(mime: mixedMime),
-                pins: { .none },
+                pins: { .none }, history: MemorySignerHistory(),
                 session: EnrollmentSession()
             ),
             mailbox: "INBOX",

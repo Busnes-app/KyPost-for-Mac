@@ -20,11 +20,28 @@ actor EmailDAO {
     /// stored. In memory only: a fresh DAO starts with nothing in flight.
     private(set) var accountEpoch = 0
 
+    /// Folders whose last full window came back empty over a non-empty cached
+    /// window. One empty answer is not trusted to prune: a relay mid-restart,
+    /// an IMAP session that has not selected the mailbox yet, or a proxy
+    /// returning `{}` all look exactly like it, and pruning on it empties the
+    /// folder — the only copy of mail out of reach until the next refresh.
+    /// The folder is kept and the next refresh asks for the full window again
+    /// (`awaitsEmptyWindowConfirmation`); a second empty answer in a row prunes.
+    /// In memory: a relaunch asks again, which only costs one more refresh.
+    private var unconfirmedEmptyWindows: Set<String> = []
+
+    /// Whether `folder`'s last full window was an empty answer not yet
+    /// confirmed; `MailRepository.refreshFolder` asks for the full window again.
+    func awaitsEmptyWindowConfirmation(folder: String) -> Bool {
+        unconfirmedEmptyWindows.contains(folder)
+    }
+
     /// Erases every cached row, window and older mail, bodies included, for
     /// an unpair or a pairing to another account. Bumps the epoch first, so
     /// a write already in flight cannot land after the erase.
     func forgetAccount() throws {
         accountEpoch += 1
+        unconfirmedEmptyWindows = []
         try saving {
             for entity in try modelContext.fetch(FetchDescriptor<EmailEntity>()) {
                 modelContext.delete(entity)
@@ -162,13 +179,19 @@ actor EmailDAO {
     /// A full window is the newest mail. An absent row dated before all of it
     /// aged out unreported (a forgotten cursor, an older relay) and still
     /// exists, so it leaves the window rather than the cache; only absent rows
-    /// inside the window's range are pruned.
+    /// inside the window's range are pruned. An empty window over cached rows
+    /// prunes only when the next full window confirms it
+    /// (`unconfirmedEmptyWindows`).
     private func ageOutAndPrune(folder: String, window emails: [Email]) throws {
         let keep = Set(emails.map(\.serverId))
         let oldest = emails.map(\.receivedAt).filter(Email.isKnownDate).min()
         let rows = try modelContext.fetch(
             FetchDescriptor<EmailEntity>(predicate: #Predicate { $0.folder == folder && $0.inWindow })
         )
+        if emails.isEmpty, !rows.isEmpty, unconfirmedEmptyWindows.insert(folder).inserted {
+            return
+        }
+        unconfirmedEmptyWindows.remove(folder)
         for entity in rows where !keep.contains(entity.serverId) {
             if let oldest, entity.receivedAt < oldest {
                 entity.inWindow = false

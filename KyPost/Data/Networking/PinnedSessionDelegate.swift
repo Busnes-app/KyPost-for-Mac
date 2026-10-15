@@ -5,19 +5,27 @@
 //  TOFU certificate pinning for the relay connection (security-hardening
 //  plan, Task 9). kypost is self-hosted with a per-user srv URL captured
 //  at pairing, so a hardcoded pin can't work; instead the leaf SPKI
-//  SHA-256 seen during the pairing handshake is stored, and every later
-//  request to that host must present the same key.
+//  SHA-256 seen during the pairing handshake is stored, bound to the host
+//  it was seen on, and every later request to that host must present the
+//  same key.
 //
-//  Scope and limits, same as Android's: protects against MITM *after*
-//  pairing; the initial pairing trusts whatever srv URL the scanned code
-//  carried. Pin checks apply only to the paired relay host — scanned
-//  foreign key-exchange URLs (ScanPgpKeyView) get default TLS handling.
+//  Scope and limits, same as Android's: a pairing link without `pin=`
+//  trusts the srv URL it carried on its first handshake (system trust, and
+//  the key that handshake presented becomes the pin). Pin checks apply only
+//  to the pinned host — scanned foreign key-exchange URLs (ScanPgpKeyView)
+//  get default TLS handling.
 //
 //  Once a host is pinned the check fails closed: anything this delegate
 //  cannot hash is refused rather than waved through, because the party
 //  choosing the certificate is exactly the party a pin is meant to stop.
+//  So does a pin lookup that fails: a Keychain read error is not "no pin".
 //
-//  The delegate also refuses every cross-host redirect. Requests carry the
+//  The shared relay session's delegate (`SingletonGraph`) takes its pins
+//  from the Keychain only. A pairing attempt never arms a pin there; it
+//  gets its own session and delegate (`RelayPairingConnection`), so a pin a
+//  link or probe supplied never reaches background sync.
+//
+//  The delegate also refuses every cross-origin redirect. Requests carry the
 //  device secret in X-Kypost-Device-Secret, and URLSession only strips
 //  `Authorization` across origins — a custom header rides along. Without
 //  this, a relay answering `302 Location: https://elsewhere/` hands the
@@ -31,28 +39,31 @@ import os
 import Security
 
 nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-    /// The pin to enforce for a host, or nil for TOFU/default handling.
-    private let pinnedHash: @Sendable (_ host: String) -> String?
+    /// Why the last handshake with a host was refused.
+    enum PinFailure: Equatable, Sendable {
+        /// The host presented a key other than the pinned one, or one this
+        /// delegate cannot hash.
+        case mismatch
+        /// The pin could not be read, so nothing could be checked.
+        case unreadable
+    }
+
+    /// The pin to enforce for a host, or nil when that host has none. Throws
+    /// when the lookup itself failed, and the handshake is then refused.
+    private let pinnedHash: @Sendable (_ host: String) throws -> String?
 
     private let lock = NSLock()
     private var lastSeenByHost: [String: String] = [:]
-    /// Hosts whose last handshake failed the pin, so HTTPClient can map the
-    /// resulting URLError.cancelled to certificateMismatch. Per-host rather
+    /// Hosts whose last handshake was refused, and why, so HTTPClient can map
+    /// the resulting URLError.cancelled to the right error. Per-host rather
     /// than one session-wide flag: one delegate backs one URLSession backing
     /// every client, and a task cancelled for an ordinary reason (a view
     /// tearing down its request) also surfaces as URLError.cancelled — with a
     /// single Bool it would consume an unrelated host's pin failure and
     /// report interception on the wrong request.
-    private var pinFailedHosts: Set<String> = []
-    /// Pins armed for a pairing that has not been persisted yet, keyed by
-    /// lowercased host. The registration POST is the request that discloses
-    /// the pairing token and receives the device secret, so a link-supplied
-    /// pin has to be enforced on THAT handshake — by the time there is a
-    /// `Pairing` in the Keychain to read a pin from, the disclosure already
-    /// happened. In memory only, and cleared as soon as the attempt ends.
-    private var pendingPinsByHost: [String: String] = [:]
+    private var failureByHost: [String: PinFailure] = [:]
 
-    init(pinnedHash: @escaping @Sendable (_ host: String) -> String?) {
+    init(pinnedHash: @escaping @Sendable (_ host: String) throws -> String?) {
         self.pinnedHash = pinnedHash
     }
 
@@ -71,28 +82,22 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
         }
         let host = challenge.protectionSpace.host
         let observed = Self.spkiSHA256(of: trust)
-        // Both of these read outside the lock: `pinnedHash` goes to the
-        // Keychain, and holding a lock across that buys nothing.
-        let decision = Self.decision(pinned: pinToEnforce(forHost: host), observed: observed)
+        // Read outside the lock: `pinnedHash` goes to the Keychain, and
+        // holding a lock across that buys nothing.
+        let failure = Self.failure(lookup: Result { try pinnedHash(host) }, observed: observed)
 
         lock.lock()
         if let observed { lastSeenByHost[host] = observed }
-        switch decision {
-        case .refuse:
-            pinFailedHosts.insert(host)
-        case .proceed:
-            // A handshake that satisfies the pin clears any earlier failure,
-            // so a repaired certificate stops reporting a mismatch without
-            // needing a relaunch.
-            pinFailedHosts.remove(host)
-        }
+        // A handshake that satisfies the pin clears any earlier failure, so a
+        // repaired certificate stops reporting a mismatch without needing a
+        // relaunch.
+        failureByHost[host] = failure
         lock.unlock()
 
-        switch decision {
-        case .refuse:
-            completionHandler(.cancelAuthenticationChallenge, nil)
-        case .proceed:
+        if failure == nil {
             completionHandler(.performDefaultHandling, nil)
+        } else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
         }
     }
 
@@ -121,16 +126,31 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
         completionHandler(request)
     }
 
-    /// Pure so the rule is testable without a live redirect. Same host, still
-    /// https, both parseable — anything else is refused.
+    /// Pure so the rule is testable without a live redirect. Same host and
+    /// same effective port, still https, both parseable — anything else is
+    /// refused. Another port on the same host is another server, and the
+    /// device secret was not meant for it.
     static func allowsRedirect(from origin: URL?, to destination: URL?) -> Bool {
         guard
             let origin, let destination,
             destination.scheme?.lowercased() == "https",
             let originHost = origin.host()?.lowercased(),
-            let destinationHost = destination.host()?.lowercased()
+            let destinationHost = destination.host()?.lowercased(),
+            let originPort = effectivePort(of: origin),
+            let destinationPort = effectivePort(of: destination)
         else { return false }
-        return originHost == destinationHost
+        return originHost == destinationHost && originPort == destinationPort
+    }
+
+    /// The URL's explicit port, else its scheme's default; nil for a scheme
+    /// with neither.
+    private static func effectivePort(of url: URL) -> Int? {
+        if let port = url.port { return port }
+        switch url.scheme?.lowercased() {
+        case "https": return 443
+        case "http": return 80
+        default: return nil
+        }
     }
 
     enum PinDecision: Equatable {
@@ -156,86 +176,76 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
         return .proceed
     }
 
-    /// Arms `pin` for `host` for the duration of a pairing attempt, or clears
-    /// it when `pin` is nil. A pending pin OUTRANKS the persisted one: a
-    /// freshly scanned link carries the pin the server publishes today, which
-    /// is the more current fact when a certificate has just been renewed.
-    func setPendingPin(_ pin: String?, forHost host: String) {
-        let key = host.lowercased()
-        lock.lock()
-        defer { lock.unlock() }
-        if let pin, !pin.isEmpty {
-            pendingPinsByHost[key] = pin
-        } else {
-            pendingPinsByHost.removeValue(forKey: key)
+    /// The rule including the lookup. A pin that could not be read refuses:
+    /// reading a Keychain error as "no pin" would hand the connection to
+    /// system trust, which is exactly what a pin exists to override. Only a
+    /// lookup that answered "nothing stored for this host" proceeds unpinned.
+    static func failure(lookup: Result<String?, any Error>, observed: String?) -> PinFailure? {
+        switch lookup {
+        case .failure:
+            .unreadable
+        case .success(let pinned):
+            decision(pinned: pinned, observed: observed) == .refuse ? .mismatch : nil
         }
     }
 
-    /// The pin to enforce for `host`: an armed pairing pin first, then
-    /// whatever the pairing store holds.
-    ///
-    /// The lock covers only the dictionary read. `pinnedHash` goes to the
-    /// Keychain and holding a lock across that buys nothing — the same reason
-    /// the caller already reads it outside the lock.
-    ///
-    /// Not private so the precedence rule can be tested directly; getting it
-    /// backwards would silently prefer a stale pin over the one the user just
-    /// scanned, and no TLS-level test would catch that.
-    func pinToEnforce(forHost host: String) -> String? {
-        lock.lock()
-        let pending = pendingPinsByHost[host.lowercased()]
-        lock.unlock()
-        if let pending { return pending }
-        return pinnedHash(host)
-    }
-
-    /// The SPKI hash observed on the most recent handshake with `host` —
-    /// the value the pairing flow persists (trust on first use).
+    /// The SPKI hash observed on the most recent handshake with `host`.
     func lastSeenHash(forHost host: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
         return lastSeenByHost[host]
     }
 
-    /// Whether the last handshake with `host` failed the pin. Sticky until a
+    /// Why the last handshake with `host` was refused, or nil. Sticky until a
     /// handshake there succeeds — every request to a pin-failing host is
-    /// genuinely a certificate mismatch, so there is nothing to consume.
-    func pinFailed(forHost host: String) -> Bool {
+    /// genuinely refused, so there is nothing to consume.
+    func pinFailure(forHost host: String) -> PinFailure? {
         lock.lock()
         defer { lock.unlock() }
-        return pinFailedHosts.contains(host)
+        return failureByHost[host]
     }
 
-    /// Forces a handshake with `url`'s host and returns the SPKI hash it
-    /// presented.
-    ///
-    /// `lastSeenHash` is only populated by `didReceive challenge`, which
-    /// URLSession fires once per *connection*, not per request. Connection
-    /// reuse and TLS session resumption therefore left the pairing flow with
-    /// nothing to pin and no sign anything was wrong — the same fail-open-on-
-    /// arming bug the SPKI fallback fixed for unusual key shapes, arriving
-    /// through the transport instead of the certificate. A throwaway ephemeral
-    /// session has its own connection pool, so the handshake is guaranteed.
-    ///
-    /// The delegate is shared, so a host that is already pinned is still
-    /// enforced on this connection; on the first pair there is no pin yet and
-    /// the handshake proceeds under normal system trust.
-    static func probeHash(url: URL, delegate: PinnedSessionDelegate) async -> String? {
-        guard let host = url.host() else { return nil }
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpMaximumConnectionsPerHost = 1
-        configuration.urlCache = nil
-        configuration.timeoutIntervalForRequest = 15
-        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
+    // MARK: - Sessions
 
-        var request = URLRequest(url: url)
-        // HEAD on the origin: no credentials, no body, and the status is
-        // irrelevant — only the handshake matters. A 404 probes a certificate
-        // exactly as well as a 200 does.
-        request.httpMethod = "HEAD"
-        _ = try? await session.data(for: request)
-        return delegate.lastSeenHash(forHost: host)
+    /// The configuration every relay session uses: ephemeral, with no
+    /// response cache and no cookie store. Relay responses carry mail,
+    /// contacts and key material; `.default` wrote them to the app's shared
+    /// on-disk `URLCache`, where they outlived an unpair and the security
+    /// wipe.
+    static func relaySessionConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .never
+        return configuration
+    }
+
+    /// Removes what relay sessions built from `.default` by earlier builds
+    /// left in the process-wide stores: cached responses in
+    /// `URLCache.shared` and cookies in `HTTPCookieStorage.shared`. Nothing
+    /// else in this app reads either, so both are emptied whole. Run on
+    /// unpair, on pairing another account, and by the wipe.
+    static func purgeLegacySharedHTTPState(
+        cache: URLCache = .shared,
+        cookies: HTTPCookieStorage = .shared
+    ) {
+        cache.removeAllCachedResponses()
+        cookies.removeCookies(since: .distantPast)
+    }
+
+    /// Maps a refused handshake's `URLError.cancelled` onto the reason it was
+    /// refused, scoped to the request's host so an unrelated cancellation
+    /// never inherits another host's failure.
+    func mapPinFailure(_ request: URLRequest, _ error: any Error) -> any Error {
+        guard let urlError = error as? URLError, urlError.code == .cancelled,
+              let failure = pinFailure(forHost: request.url?.host() ?? "")
+        else { return error }
+        switch failure {
+        case .mismatch: return NetworkError.certificateMismatch
+        case .unreadable: return NetworkError.pinUnreadable
+        }
     }
 
     // MARK: - SPKI hashing

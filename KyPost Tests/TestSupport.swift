@@ -94,3 +94,85 @@ func makeContact(_ name: String, _ emails: String...) -> Contact {
     contact.emails = emails.map { ContactLabeledValue(label: nil, value: $0) }
     return contact
 }
+
+/// A pairing connection that answers the probe with `observed` and registers
+/// through `client`. Records what the service asked of it, so a test can
+/// assert on the pin in force when the registration went out.
+@MainActor
+final class StubPairingConnection: PairingConnection {
+    let host: String
+    /// The pin the service opened the connection with.
+    let initialPin: String?
+    private let observed: String?
+    private let client: NativeRegistrationClient
+    private(set) var enforcedPin: String?
+    /// The pin in force when `register` was called; nil if it never was.
+    private(set) var pinAtRegister: String??
+    private(set) var registrations = 0
+    private(set) var isClosed = false
+
+    init(host: String, pin: String?, observed: String?, client: NativeRegistrationClient) {
+        self.host = host
+        initialPin = pin
+        enforcedPin = pin
+        self.observed = observed
+        self.client = client
+    }
+
+    func probe(_ url: URL) async -> String? {
+        observed
+    }
+
+    func pin(_ hash: String) {
+        enforcedPin = hash
+    }
+
+    func register(deviceToken: String, params: PairingParams, deviceId: String?) async -> RegistrationOutcome {
+        registrations += 1
+        pinAtRegister = .some(enforcedPin)
+        return await client.register(deviceToken: deviceToken, params: params, deviceId: deviceId)
+    }
+
+    func close() {
+        isClosed = true
+    }
+}
+
+/// Opens `StubPairingConnection`s over `client` and keeps every one opened.
+@MainActor
+final class StubPairingConnections {
+    var observed: String?
+    private let client: NativeRegistrationClient
+    private(set) var opened: [StubPairingConnection] = []
+
+    init(client: HTTPClient, observed: String? = "hash-observed") {
+        self.client = NativeRegistrationClient(httpClient: client)
+        self.observed = observed
+    }
+
+    var last: StubPairingConnection? { opened.last }
+
+    func make(host: String, pin: String?) -> any PairingConnection {
+        let connection = StubPairingConnection(host: host, pin: pin, observed: observed, client: client)
+        opened.append(connection)
+        return connection
+    }
+}
+
+/// A registration service whose pairings ride stub connections over the same
+/// `client` its re-registrations use.
+@MainActor
+func makeRegistrationService(
+    client: HTTPClient,
+    pairingStore: SecurePairingStore,
+    settings: PushSettingsStore,
+    connections: StubPairingConnections? = nil
+) -> DeviceRegistrationService {
+    let connections = connections ?? StubPairingConnections(client: client)
+    return DeviceRegistrationService(
+        client: NativeRegistrationClient(httpClient: client),
+        securePairingStore: pairingStore,
+        pushSettingsStore: settings,
+        makePairingConnection: { connections.make(host: $0, pin: $1) }
+    )
+}

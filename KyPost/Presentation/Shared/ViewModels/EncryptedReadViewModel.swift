@@ -31,10 +31,12 @@ final class EncryptedReadViewModel {
     /// once per read, off the main actor, before `body` is published: the
     /// screen reads it on every redraw.
     private(set) var renderedHTML: String?
-    /// The address the signature verdict is about, as the **server** resolved
-    /// it. Rendered instead of the raw `From`, which is separable from it.
-    private(set) var resolvedSender = ""
-    private(set) var signature: PgpSignatureState = .none
+    /// The verdict and what it may be shown with. The server's resolved
+    /// sender is shown as an identity only beside a key this device pinned;
+    /// otherwise the line says what the signing key itself names.
+    private(set) var verdict = SignatureVerdict()
+    var signature: PgpSignatureState { verdict.state }
+    var resolvedSender: String { verdict.resolvedSender }
 
     /// Quick Look files staged from `body.attachments`, deleted by `forget()`.
     private var stagedFiles: [URL] = []
@@ -87,14 +89,23 @@ final class EncryptedReadViewModel {
     }
 
     /// The signature line, or nil when there is nothing to say. Sender
-    /// verdicts need the server's resolved sender and are rendered against it;
-    /// the two message-level notices (`unsigned`, `unchecked`) are shown on
-    /// their own, resolved sender or not.
+    /// verdicts need a resolved sender (pins and history are looked up by it)
+    /// and are shown with `signatureIdentity` — the pinned address, or what
+    /// the signing key names — never the resolved sender as an unearned
+    /// identity. The two message-level notices are shown on their own.
     var signatureLine: String? {
         guard body != nil, let label = signatureLabel(signature) else { return nil }
         if signatureIsMessageLevel(signature) { return label }
         guard !resolvedSender.isEmpty else { return nil }
-        return "\(label) — \(resolvedSender)"
+        guard let identity = signatureIdentity(verdict) else { return label }
+        return "\(label) — \(identity)"
+    }
+
+    /// Said when the address this message shows is not one the signature is
+    /// bound to. A warning only; it never changes the verdict.
+    var signatureIdentityWarning: String? {
+        guard body != nil, !resolvedSender.isEmpty else { return nil }
+        return signatureIdentityMismatch(verdict, displayedFrom: sender)
     }
 
     /// Said out loud when a part was dropped for size or count.
@@ -177,7 +188,7 @@ final class EncryptedReadViewModel {
         // keep nothing, and leave Decrypt on offer.
         guard generation == started else { return }
 
-        if case .decrypted(let body, let signature, let resolvedSender) = result {
+        if case .decrypted(let body, let verdict) = result {
             // Rendered before anything is published, so the screen never
             // shows a decrypted outcome without its body. `isWorking` stays
             // set meanwhile.
@@ -185,8 +196,7 @@ final class EncryptedReadViewModel {
             guard generation == started else { return }
             self.body = body
             self.renderedHTML = html
-            self.signature = signature
-            self.resolvedSender = resolvedSender
+            self.verdict = verdict
         }
         outcome = result
     }
@@ -207,8 +217,7 @@ final class EncryptedReadViewModel {
         stagedFiles = []
         body = nil
         renderedHTML = nil
-        signature = .none
-        resolvedSender = ""
+        verdict = SignatureVerdict()
         outcome = nil
     }
 }

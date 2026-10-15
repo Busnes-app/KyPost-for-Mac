@@ -70,6 +70,10 @@ final class ContactsViewModel {
         ContactSyncStatus.of(pending: pendingSummary, failures: repository.health.failures, now: now)
     }
 
+    /// Apple Contacts cards the last reconcile kept rather than delete more
+    /// than half of the linked cards at once.
+    var withheldCardDeletes: Int { repository.health.withheldCardDeletes }
+
     /// For callers that need contacts but aren't the contact list. On iOS
     /// nothing loads them until the Contacts tab is opened, so compose would
     /// otherwise autocomplete against an empty book on a fresh launch.

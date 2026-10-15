@@ -41,7 +41,7 @@ struct ManualRecoveryView: View {
                 Delete KyPost and install it again to clear it.
                 """)
                 .font(AppFont.ui(13))
-                .foregroundStyle(theme.ink.opacity(0.85))
+                .foregroundStyle(theme.secondaryInk)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
             if !failedSteps.isEmpty {
@@ -49,7 +49,7 @@ struct ManualRecoveryView: View {
                 // and support cannot either.
                 Text("Could not remove: \(failedSteps.joined(separator: ", "))")
                     .font(AppFont.ui(12))
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                    .foregroundStyle(theme.secondaryInk)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
             }

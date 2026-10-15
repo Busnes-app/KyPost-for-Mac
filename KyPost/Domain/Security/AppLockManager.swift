@@ -28,6 +28,27 @@ protocol DeviceAuthenticating {
     /// (passcode/login password at minimum).
     func canAuthenticate() -> Bool
     func authenticate(reason: String) async -> Bool
+    /// The unlock prompt. It needs to know *why* it did not succeed — a
+    /// prompt the user or the system dismissed is not a failed attempt — and
+    /// on success hands back the evaluated context, so the vault can reuse it
+    /// until the lock engages (`PresenceContext`).
+    func authenticateForUnlock(reason: String) async -> (outcome: DeviceAuthOutcome, context: LAContext?)
+}
+
+extension DeviceAuthenticating {
+    func authenticateForUnlock(reason: String) async -> (outcome: DeviceAuthOutcome, context: LAContext?) {
+        (await authenticate(reason: reason) ? .success : .failed, nil)
+    }
+}
+
+/// How one device-owner prompt ended.
+nonisolated enum DeviceAuthOutcome: Equatable, Sendable {
+    case success
+    /// The user dismissed the prompt, or the system or app took it down
+    /// (`userCancel`, `systemCancel`, `appCancel`). Not evidence the device
+    /// can no longer authenticate.
+    case cancelled
+    case failed
 }
 
 nonisolated struct LocalAuthenticationAuthenticator: DeviceAuthenticating {
@@ -36,13 +57,27 @@ nonisolated struct LocalAuthenticationAuthenticator: DeviceAuthenticating {
     }
 
     func authenticate(reason: String) async -> Bool {
+        await authenticateForUnlock(reason: reason).outcome == .success
+    }
+
+    func authenticateForUnlock(reason: String) async -> (outcome: DeviceAuthOutcome, context: LAContext?) {
         // A fresh context per call: LAContext is single-use once invalidated,
         // and reuse can return stale grace-period results.
         let context = LAContext()
-        return (try? await context.evaluatePolicy(
-            .deviceOwnerAuthentication,
-            localizedReason: reason
-        )) ?? false
+        do {
+            let succeeded = try await context.evaluatePolicy(
+                .deviceOwnerAuthentication,
+                localizedReason: reason
+            )
+            return succeeded ? (.success, context) : (.failed, nil)
+        } catch let error as LAError {
+            switch error.code {
+            case .userCancel, .systemCancel, .appCancel: return (.cancelled, nil)
+            default: return (.failed, nil)
+            }
+        } catch {
+            return (.failed, nil)
+        }
     }
 }
 
@@ -99,9 +134,16 @@ final class AppLockManager {
     private let authenticator: any DeviceAuthenticating
 
     private(set) var isLocked: Bool
-    /// Observable mirror of `store.lockEnabled` so settings toggles track it
-    /// (the Keychain-backed store itself is not observation-tracked).
+    /// Observable mirror of `store.lockState` so settings toggles track it
+    /// (the Keychain-backed store itself is not observation-tracked). True
+    /// while the flag is unreadable: an unreadable flag is a locked app.
     private(set) var isLockEnabled: Bool
+
+    /// The lock flag could not be read when this was last decided, so the app
+    /// is locked on the assumption that it is on. `refreshLockState` re-reads
+    /// it; a later answer of "off" releases the lock without a prompt, "on"
+    /// keeps it.
+    private(set) var isLockStateUnresolved: Bool
 
     /// Consecutive failed unlock attempts, reset by any success.
     ///
@@ -109,7 +151,8 @@ final class AppLockManager {
     /// changed, or whose passcode was removed, fails `evaluatePolicy` every
     /// time — and since the lock's own settings live behind the lock, the user
     /// would have no way back at all. Not a lockout counter: the OS owns
-    /// rate-limiting, this only decides when to offer the reset.
+    /// rate-limiting, this only decides when to offer the reset. A dismissed
+    /// prompt (`DeviceAuthOutcome.cancelled`) does not count.
     private(set) var failedUnlockAttempts = 0
 
     /// Whether to offer the destructive reset (see
@@ -144,6 +187,11 @@ final class AppLockManager {
     /// key still in the process heap.
     private let enrollmentSession: EnrollmentSession
 
+    /// The vault's shared authenticated context: adopted from a successful
+    /// unlock, invalidated wherever `enrollmentSession` is cleared by a lock
+    /// trigger, so the key's presence prompt comes back after every lock.
+    private let presence: PresenceContext
+
     /// The device-bound secret the stored verifier is peppered with. Injected
     /// so the whole exit table below is testable without a Secure Enclave.
     private let pepper: any PinPepper
@@ -153,6 +201,14 @@ final class AppLockManager {
     /// and cannot be moved by changing the date, which a wall clock can — and a
     /// lockout a user can clear from the Date & Time pane is not a lockout.
     private let monotonicMillis: () -> Int64
+
+    /// This boot's identity (`kern.bootsessionuuid`), stored beside a lockout
+    /// deadline so a deadline from an earlier boot — whose monotonic clock
+    /// meant something else — is recognised and restarted.
+    private let bootSessionId: () -> String?
+
+    /// Reads the lock flag. Injected so a test can make it unreadable.
+    private let readLockState: () -> AppLockStore.FlagState
 
     /// Runs the security wipe once the threshold is reached. Injected rather
     /// than reached for, because this class is unit-tested without a graph.
@@ -166,17 +222,29 @@ final class AppLockManager {
         store: AppLockStore,
         authenticator: any DeviceAuthenticating = LocalAuthenticationAuthenticator(),
         enrollmentSession: EnrollmentSession = .shared,
+        presence: PresenceContext = .shared,
         pepper: (any PinPepper)? = nil,
-        monotonicMillis: @escaping () -> Int64 = AppLockManager.systemMonotonicMillis
+        monotonicMillis: @escaping () -> Int64 = AppLockManager.systemMonotonicMillis,
+        bootSessionId: @escaping () -> String? = AppLockManager.systemBootSessionId,
+        readLockState: (() -> AppLockStore.FlagState)? = nil
     ) {
         self.store = store
         self.authenticator = authenticator
         self.enrollmentSession = enrollmentSession
+        self.presence = presence
         let resolvedPepper = pepper ?? DevicePinPepper(keychain: KeychainStorage())
         self.pepper = resolvedPepper
         self.monotonicMillis = monotonicMillis
-        isLockEnabled = store.lockEnabled
-        isLocked = store.lockEnabled
+        self.bootSessionId = bootSessionId
+        let readLockState = readLockState ?? { store.lockState }
+        self.readLockState = readLockState
+        // Decided from the three-state flag. Reading "unreadable" as off
+        // started a Mac login item unlocked, and `lock()` then did nothing
+        // for the whole session.
+        let state = readLockState()
+        isLockEnabled = state != .off
+        isLocked = state != .off
+        isLockStateUnresolved = state == .unreadable
         sessionFailedAttempts = store.failedAttempts
         lockGraceSeconds = store.lockGraceSeconds
         wipeThresholdSetting = WipeThresholdSeal.read(store.wipeThresholdRecord, pepper: resolvedPepper)
@@ -184,6 +252,42 @@ final class AppLockManager {
 
     static func systemMonotonicMillis() -> Int64 {
         Int64(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1_000_000)
+    }
+
+    /// `kern.bootsessionuuid`: new on every boot, which is exactly when the
+    /// monotonic clock restarts. Nil if the kernel will not say.
+    nonisolated static func systemBootSessionId() -> String? {
+        var size = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.bootsessionuuid", &buffer, &size, nil, 0) == 0 else { return nil }
+        let id = String(cString: buffer)
+        return id.isEmpty ? nil : id
+    }
+
+    /// Re-reads the lock flag while it is unresolved — on every unlock
+    /// attempt and while the lock screen is up, so a Keychain that was not
+    /// ready at launch is asked again once it is.
+    ///
+    /// Only an unresolved flag can release the lock here. A flag that read
+    /// "on" and later reads "off" mid-session is not a reason to open the
+    /// app; turning the lock off goes through `setLockEnabled`.
+    func refreshLockState() {
+        guard isLockStateUnresolved else { return }
+        switch readLockState() {
+        case .unreadable:
+            return
+        case .on:
+            isLockStateUnresolved = false
+            isLockEnabled = true
+        case .off:
+            isLockStateUnresolved = false
+            isLockEnabled = false
+            guard isLocked else { return }
+            clearPendingLock()
+            isLocked = false
+            onUnlock?()
+        }
     }
 
     // MARK: - Grace period
@@ -210,6 +314,7 @@ final class AppLockManager {
     /// never pushed back.
     func lockAfterGrace() {
         enrollmentSession.clear()
+        presence.invalidate()
         guard isLockEnabled, !isLocked else { return }
         let grace = store.lockGraceSeconds
         guard grace > 0 else {
@@ -306,20 +411,63 @@ final class AppLockManager {
         // those are settings about the UI gate, not a reason to keep an
         // unsealed key in memory.
         enrollmentSession.clear()
+        presence.invalidate()
         guard isLockEnabled, !isLocked else { return }
         clearPendingLock()
         isLocked = true
+        autoPromptedThisLock = false
         cachedGatedSecret = nil
         onLock?()
     }
 
+    /// The system prompt in flight, shared by every caller. Each macOS window
+    /// carries its own lock screen, and each one asking separately stacked one
+    /// Touch ID sheet per window.
+    @ObservationIgnored private var inFlightUnlock: Task<Bool, Never>?
+
+    /// Whether this lock has already raised its one automatic prompt. Reset
+    /// when the lock engages.
+    @ObservationIgnored private var autoPromptedThisLock = false
+
+    /// The automatic prompt a lock screen raises when it appears: once per
+    /// lock, from whichever window asks first (on macOS, the key window).
+    /// After that, the Unlock button is how the user asks again.
+    func autoPromptUnlock() async {
+        refreshLockState()
+        guard isLocked, !autoPromptedThisLock else { return }
+        autoPromptedThisLock = true
+        await requestUnlock()
+    }
+
     @discardableResult
     func requestUnlock() async -> Bool {
+        refreshLockState()
         guard isLocked else { return true }
-        guard await authenticator.authenticate(reason: String(localized: "Unlock KyPost")) else {
+        if let inFlightUnlock { return await inFlightUnlock.value }
+        let task = Task { @MainActor in await self.performUnlock() }
+        inFlightUnlock = task
+        let unlocked = await task.value
+        inFlightUnlock = nil
+        return unlocked
+    }
+
+    private func performUnlock() async -> Bool {
+        let (outcome, context) = await authenticator.authenticateForUnlock(
+            reason: String(localized: "Unlock KyPost")
+        )
+        switch outcome {
+        case .success:
+            break
+        case .cancelled:
+            // Dismissing the prompt is not evidence the device cannot
+            // authenticate, so it does not move the reset offer closer.
+            return false
+        case .failed:
             failedUnlockAttempts += 1
             return false
         }
+        // A PIN may have unlocked while the prompt was up.
+        guard isLocked else { return true }
         // Repopulate the gated secret before clearing the lock — this is the
         // one point the OS may prompt for presence a second time, and it is
         // the *only* place the in-memory copy can come back (the early return
@@ -335,10 +483,22 @@ final class AppLockManager {
             cachedGatedSecret = secret
         }
         failedUnlockAttempts = 0
+        isLockStateUnresolved = false
+        // The device owner just authenticated, which outranks the PIN: the
+        // wrong-PIN count and any lockout start over, as a correct PIN would
+        // leave them. Serialised with the PIN checks, so one in flight cannot
+        // write its stale count back over this.
+        _ = await serialized {
+            self.resetPinThrottle()
+            return .success
+        }
         // A stale deadline would re-lock the session the user just opened
         // (Android 7d791090).
         clearPendingLock()
         isLocked = false
+        // Once per app unlock: the vault reuses this context rather than
+        // prompting again when encrypted mail is opened.
+        if let context { presence.adopt(context) }
         onUnlock?()
         return true
     }
@@ -403,6 +563,12 @@ final class AppLockManager {
     /// throttle, and it is the one part of this that can silently stop working.
     private var sessionFailedAttempts = 0
 
+    /// Session-scoped mirror of the lockout deadline, on this process's
+    /// monotonic clock. The manager gates on the later of this and the stored
+    /// one, so a Keychain write that fails cannot turn a lockout into free
+    /// guesses for the rest of the session.
+    @ObservationIgnored private var sessionLockoutDeadline: Int64?
+
     /// Serialises every PIN check in the process.
     ///
     /// Both entry points run check-lockout → verify → account-for-failure, and
@@ -415,17 +581,48 @@ final class AppLockManager {
     private var inFlightAttempt: Task<UnlockAttemptOutcome, Never>?
 
     /// How long the PIN field should stay disabled, or 0 if there is no active
-    /// lockout.
+    /// lockout. The later of the stored deadline and this session's copy.
     ///
-    /// Clamped to the stored duration because the deadline is on the monotonic
-    /// timebase, which restarts at zero on reboot: without the clamp, rebooting
-    /// mid-lockout would read the stored deadline as "the whole of the previous
-    /// uptime remaining". Clamping fails safe — worst case is re-serving the
-    /// original delay once.
+    /// The stored deadline is on the monotonic timebase, which restarts at
+    /// zero on reboot. Clamping to the stored duration alone froze the
+    /// countdown at the full delay after a reboot until uptime caught up —
+    /// days, for a 30-minute rung. So the deadline carries the boot it was
+    /// written in, and one from another boot restarts as now + its duration:
+    /// served in full once more, never shortened. A lockout that ran out
+    /// while the app was not looking is served once more too — the fail-safe
+    /// direction. Within one boot the clamp still holds.
     var remainingLockoutMillis: Int64 {
+        let now = monotonicMillis()
+        let session = sessionLockoutDeadline.map { max($0 - now, 0) } ?? 0
+        return max(session, storedLockoutRemaining(now: now))
+    }
+
+    private func storedLockoutRemaining(now: Int64) -> Int64 {
         let duration = store.lockoutDurationMillis
         guard duration > 0 else { return 0 }
-        return min(max(store.lockoutUntilMillis - monotonicMillis(), 0), duration)
+        // Without a boot id there is nothing to compare, and the clamp is the
+        // whole defence, as it was before boot ids were recorded.
+        if let boot = bootSessionId(), store.lockoutBootId != boot {
+            // Rebased once per process and written back with this boot's id,
+            // so later reads count down normally. If the write fails, the
+            // session copy carries the restarted deadline instead.
+            guard !lockoutRebasedThisProcess else { return 0 }
+            lockoutRebasedThisProcess = true
+            let until = now + duration
+            sessionLockoutDeadline = max(sessionLockoutDeadline ?? 0, until)
+            try? store.setLockout(untilMillis: until, durationMillis: duration, bootId: boot)
+            return duration
+        }
+        return min(max(store.lockoutUntilMillis - now, 0), duration)
+    }
+
+    @ObservationIgnored private var lockoutRebasedThisProcess = false
+
+    /// Clears the wrong-PIN count and any lockout, stored and in session.
+    private func resetPinThrottle() {
+        try? store.resetFailedAttempts()
+        sessionFailedAttempts = 0
+        sessionLockoutDeadline = nil
     }
 
     /// Sets or replaces the PIN. Returns the policy verdict; nothing is stored
@@ -440,8 +637,7 @@ final class AppLockManager {
         let verdict = PinPolicy.validate(pin)
         guard verdict == .valid else { return verdict }
         try store.setPin(try PinHasher.hash(pin: pin, pepper: pepper))
-        try? store.resetFailedAttempts()
-        sessionFailedAttempts = 0
+        resetPinThrottle()
         // A first PIN may have minted a new pepper, which no longer vouches
         // for an older stored threshold — that now reads as the strictest.
         wipeThresholdSetting = wipeThreshold
@@ -476,8 +672,7 @@ final class AppLockManager {
     /// Removes the PIN and disarms the tripwire with it.
     func clearPin() throws {
         try store.clearPin()
-        try? store.resetFailedAttempts()
-        sessionFailedAttempts = 0
+        resetPinThrottle()
     }
 
     /// Unlocks the app with a PIN, under the ladder and the wipe threshold.
@@ -493,6 +688,7 @@ final class AppLockManager {
                 self.cachedGatedSecret = secret
             }
             self.failedUnlockAttempts = 0
+            self.isLockStateUnresolved = false
             self.clearPendingLock()
             self.isLocked = false
             self.onUnlock?()
@@ -558,8 +754,7 @@ final class AppLockManager {
         }
 
         if verified {
-            try? store.resetFailedAttempts()
-            sessionFailedAttempts = 0
+            resetPinThrottle()
             return .success
         }
 
@@ -589,7 +784,15 @@ final class AppLockManager {
 
         let delay = LockoutPolicy.delayMillis(forAttemptCount: attempts)
         if delay > 0 {
-            try? store.setLockout(untilMillis: monotonicMillis() + delay, durationMillis: delay)
+            let until = monotonicMillis() + delay
+            // Held for the session whether or not the write lands: a failed
+            // write must not turn the delay into free guesses.
+            sessionLockoutDeadline = until
+            do {
+                try store.setLockout(untilMillis: until, durationMillis: delay, bootId: bootSessionId())
+            } catch {
+                Log.app.error("Could not persist the lockout deadline: \(error.localizedDescription)")
+            }
         }
         return .rejected(delayMillis: delay)
     }
@@ -602,6 +805,7 @@ final class AppLockManager {
             return false
         }
         isLockEnabled = enabled
+        isLockStateUnresolved = false
         if !enabled {
             clearPendingLock()
             isLocked = false

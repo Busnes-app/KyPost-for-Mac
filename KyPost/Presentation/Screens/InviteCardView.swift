@@ -24,7 +24,7 @@ struct InviteCardView: View {
                  ? String(localized: "Calendar invite")
                  : String(localized: "Calendar invite · \(invite.method)"))
                 .font(AppFont.ui(11, weight: .semibold))
-                .foregroundStyle(theme.ink.opacity(0.7))
+                .foregroundStyle(theme.secondaryInk)
                 .textCase(.uppercase)
 
             Text(event.summary.isEmpty ? String(localized: "Untitled event") : event.summary)

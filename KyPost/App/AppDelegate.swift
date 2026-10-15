@@ -40,6 +40,7 @@ private enum PushLifecycle {
             AppEnvironment.eraseHostileLocationDefaults(in: graph)
             do {
                 try AppDatabase.deleteStoreFiles()
+                graph.contactCursorStore.reset()
                 try ContactPhotoCache.deleteAll()
             } catch {
                 Log.storage.error(
@@ -172,6 +173,66 @@ private enum PushLifecycle {
     }
 }
 
+/// What quitting does before the process goes (macOS ⌘Q,
+/// `applicationShouldTerminate`). Nothing ran on quit before: list actions in
+/// their undo window were lost with the process, and a compose with unsent
+/// text closed without the question closing its window asks.
+///
+/// Order: ask about unsent composes first — cancelling the quit then leaves
+/// held actions undoable — then send the held actions and wait for the relay,
+/// at most `timeout`, so an unreachable relay cannot hold quitting hostage.
+@MainActor
+enum QuitPreparation {
+    enum Reply: Equatable {
+        /// The user kept editing; nothing was sent or closed.
+        case cancel
+        /// Nothing to wait for.
+        case now
+        /// `finish` is called once the held actions are sent (or the wait ran out).
+        case later
+    }
+
+    static let commitTimeout: Duration = .seconds(10)
+
+    static func begin(
+        unsentComposes: Int,
+        confirmDiscard: (Int) -> Bool,
+        commitHeldActions: () -> Task<Void, Never>?,
+        timeout: Duration = commitTimeout,
+        finish: @escaping @MainActor () -> Void
+    ) -> Reply {
+        if unsentComposes > 0, !confirmDiscard(unsentComposes) { return .cancel }
+        guard let commit = commitHeldActions() else { return .now }
+        // Two racers, not a task group: a group waits for every child on
+        // exit, and awaiting a task's value does not cancel it, so a hung
+        // relay would have held the group — and the quit — anyway.
+        let once = FinishOnce(finish)
+        Task { @MainActor in
+            await commit.value
+            once.fire()
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: timeout)
+            once.fire()
+        }
+        return .later
+    }
+
+    private final class FinishOnce {
+        private var action: (@MainActor () -> Void)?
+
+        init(_ action: @escaping @MainActor () -> Void) {
+            self.action = action
+        }
+
+        func fire() {
+            let action = self.action
+            self.action = nil
+            action?()
+        }
+    }
+}
+
 #if os(iOS)
 import SwiftUI
 import UIKit
@@ -280,7 +341,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             forTaskWithIdentifier: Config.backgroundPullTaskId,
             using: nil
         ) { task in
-            Task { @MainActor in
+            let work = Task { @MainActor in
                 // Same gate as onForeground. Without it, background refresh
                 // kept pulling and posting local notifications — sender and
                 // subject included — onto the lock screen of a locked app.
@@ -289,7 +350,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                     return
                 }
                 await SingletonGraph.shared.pullPollingScheduler.pollNow()
-                task.setTaskCompleted(success: true)
+                task.setTaskCompleted(success: !Task.isCancelled)
+            }
+            // Out of time: stop the poll rather than be suspended inside it.
+            // A cancelled poll has recorded only what it presented and has not
+            // moved the cursor, so the next one fetches the rest again
+            // (`PushRepository.fetchPull`). `work` then completes the task.
+            task.expirationHandler = {
+                work.cancel()
+                Task { @MainActor in
+                    SingletonGraph.shared.pullPollingScheduler.cancelInFlightPoll()
+                }
             }
             Task { @MainActor in
                 self.scheduleBackgroundPull() // keep the chain going
@@ -503,6 +574,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// already full-time while the app runs.
     func applicationDidBecomeActive(_ notification: Notification) {
         PushLifecycle.runEnrollmentReporter()
+    }
+
+    /// ⌘Q (and logout/restart): the same Discard question a compose window
+    /// asks, then the list actions still in their undo window go out before
+    /// the process does (`QuitPreparation`).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let reply = QuitPreparation.begin(
+            unsentComposes: OpenComposeRegistry.shared.unsentCount,
+            confirmDiscard: Self.confirmDiscardOnQuit,
+            commitHeldActions: { PushLifecycle.commitHeldMailActions() },
+            finish: { sender.reply(toApplicationShouldTerminate: true) }
+        )
+        switch reply {
+        case .cancel: return .terminateCancel
+        case .now: return .terminateNow
+        case .later: return .terminateLater
+        }
+    }
+
+    /// Compose's own Discard / Keep editing prompt, as an app-modal alert:
+    /// quitting closes every window at once, so it asks once for all of them.
+    private static func confirmDiscardOnQuit(_ count: Int) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        if count == 1 {
+            alert.messageText = String(localized: "Discard this message?")
+            alert.informativeText = String(localized: "It has not been sent, and KyPost keeps no copy.")
+        } else {
+            alert.messageText = String(localized: "Discard \(count) unsent messages?")
+            alert.informativeText = String(localized: "They have not been sent, and KyPost keeps no copy.")
+        }
+        // Keep editing is the default, as in the compose window.
+        alert.addButton(withTitle: String(localized: "Keep editing"))
+        let discard = alert.addButton(withTitle: String(localized: "Discard"))
+        discard.hasDestructiveAction = true
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     /// The login session's own record of the screen lock. Fails closed: no

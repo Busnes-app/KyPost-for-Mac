@@ -117,10 +117,6 @@ struct MainTabView: View {
             PushPairingView(initialParams: params)
                 .environment(\.theme, themeManager.palette)
         }
-        .sheet(item: $router.desktopPairingParams) { params in
-            DesktopPairingView(initialParams: params)
-                .environment(\.theme, themeManager.palette)
-        }
         .sheet(item: $router.mfaRoute) { route in
             MfaApprovalView(challenge: route.challenge)
                 .environment(\.theme, themeManager.palette)

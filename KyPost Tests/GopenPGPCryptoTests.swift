@@ -341,3 +341,63 @@ import Testing
         }
     }
 }
+
+// MARK: - User IDs the key's owner certified
+
+/// go-crypto keeps any User ID whose signature merely names the primary key as
+/// issuer, without verifying it. These keys are the gpg fixture with packets
+/// moved around, the way a relay could serve them: no private key is needed
+/// to append a User ID and a copy of someone else's certification.
+@Suite struct CertifiedUserIDTests {
+    private let crypto = GopenPGPCrypto()
+    private let genuine = "decrypt@example.invalid"
+
+    private var fixture: OpenPgpKeySections {
+        get throws { try #require(OpenPgpKeySections(armored: TestPgpFixtures.armoredPublic)) }
+    }
+
+    @Test func theFixturesOwnUserIDIsKept() {
+        #expect(crypto.userIDAddresses(ofArmoredPublicKey: TestPgpFixtures.armoredPublic) == [genuine])
+    }
+
+    @Test func anAppendedUserIDWithACopiedCertificationIsDropped() throws {
+        var key = try fixture
+        let certified = try #require(key.userIDs?.first)
+        // The genuine certification, now standing under a User ID it never
+        // covered.
+        key.primary.append(contentsOf: [Self.userID("Mallory <mallory@example.invalid>")] + certified.dropFirst())
+        #expect(crypto.userIDAddresses(ofArmoredPublicKey: Self.armor(key)) == [genuine])
+    }
+
+    @Test func aKeyWhoseOnlyUserIDIsForgedNamesNoAddress() throws {
+        var key = try fixture
+        let index = try #require(key.primary.firstIndex { $0.tag == 13 })
+        key.primary[index] = Self.userID("Mallory <mallory@example.invalid>")
+        #expect(crypto.userIDAddresses(ofArmoredPublicKey: Self.armor(key)).isEmpty)
+    }
+
+    @Test func aUserIDInsideASubkeySectionNamesNoAddress() throws {
+        var key = try fixture
+        let certified = try #require(key.userIDs?.first)
+        key.subkeys[0].append(contentsOf: certified)
+        #expect(key.userIDs == nil)
+        #expect(crypto.userIDAddresses(ofArmoredPublicKey: Self.armor(key)).isEmpty)
+    }
+
+    /// A new-format User ID packet (tag 13), short enough for a one-octet
+    /// length.
+    private static func userID(_ text: String) -> OpenPgpPacket {
+        let body = Data(text.utf8)
+        precondition(body.count < 192)
+        return OpenPgpPacket(tag: 13, body: body, raw: Data([0xCD, UInt8(body.count)]) + body)
+    }
+
+    private static func armor(_ key: OpenPgpKeySections) -> String {
+        """
+        -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+        \(key.data.base64EncodedString(options: .lineLength76Characters))
+        -----END PGP PUBLIC KEY BLOCK-----
+        """
+    }
+}

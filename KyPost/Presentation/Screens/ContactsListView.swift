@@ -135,7 +135,7 @@ struct ContactsListView: View {
                     }
                     Text(contact.primaryEmail)
                         .font(AppFont.mono(12))
-                        .foregroundStyle(theme.ink.opacity(0.8))
+                        .foregroundStyle(theme.secondaryInk)
                 }
                 Spacer()
                 StatusBadgeView(

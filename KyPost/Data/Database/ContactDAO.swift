@@ -78,12 +78,27 @@ actor ContactDAO {
     /// Reconciliation result: attach the server-assigned uid to a local
     /// contact. Refuses a uid another row already holds — two rows sharing a
     /// uid is how mis-reconciled creates turn into local duplicates.
-    func assignUid(localId: UUID, uid: String) throws {
+    ///
+    /// `pushedUpdatedAt` is the `updatedAt` of the snapshot that was sent.
+    /// A row edited since keeps `needsSync`, so the edit goes out as an
+    /// update on the next sync instead of being marked synced unsent (the
+    /// same rule as `clearNeedsSync`). Nil clears it unconditionally.
+    func assignUid(localId: UUID, uid: String, pushedUpdatedAt: Date? = nil) throws {
         guard try fetchEntity(uid: uid) == nil,
               let entity = try fetchEntity(localId: localId) else { return }
         entity.uid = uid
-        entity.needsSync = false
+        if pushedUpdatedAt.map({ entity.updatedAt <= $0 }) ?? true {
+            entity.needsSync = false
+        }
         try modelContext.save()
+    }
+
+    /// Whether any contact is stored. A sync cursor describes rows this
+    /// device holds; with none held it must not be trusted.
+    func hasRows() throws -> Bool {
+        var descriptor = FetchDescriptor<ContactEntity>()
+        descriptor.fetchLimit = 1
+        return try modelContext.fetchCount(descriptor) > 0
     }
 
     /// One-time cleanup of rows damaged by the old order-based reconciler
@@ -232,9 +247,22 @@ actor ContactDAO {
         try modelContext.save()
     }
 
-    /// Full wipe for a tooOld re-pull (Mobile_Contact_Sync.md).
+    /// Full wipe (Mobile_Contact_Sync.md).
     func clearAll() throws {
         try modelContext.delete(model: ContactEntity.self)
+        try modelContext.save()
+    }
+
+    /// The `tooOld` wipe: drops every row the server already has and keeps
+    /// the ones still waiting to sync — creates, edits and nameless contacts
+    /// alike, with their localIds, so the re-pull reconciles against them and
+    /// their Apple Contacts links stay intact. One save, so a crash cannot
+    /// land between the wipe and a restore.
+    func clearSynced() throws {
+        try modelContext.delete(
+            model: ContactEntity.self,
+            where: #Predicate { !$0.needsSync }
+        )
         try modelContext.save()
     }
 

@@ -14,13 +14,19 @@
 	     handing it to a second tool. -->
 	<key>destination</key>
 	<string>upload</string>
+	<!-- Automatic: xcodebuild -exportArchive, given the App Store Connect API
+	     key and -allowProvisioningUpdates, fetches the App Store profile and
+	     signs with the team's cloud-managed Apple Distribution certificate.
+	     No distribution certificate or profile is stored as a secret. The
+	     key must have the Admin role; any other role gets "Cloud signing
+	     permission error". -->
 	<key>signingStyle</key>
-	<string>manual</string>
+	<string>automatic</string>
 	<key>uploadSymbols</key>
 	<true/>
-	<!-- Never let the exporter invent a version. A build whose number was
-	     bumped by the toolchain no longer matches the tag the release gate
-	     just checked. -->
+	<!-- Never let the exporter invent a version. release.yml sets the build
+	     number from the workflow run, and the release gate has already checked
+	     the marketing version against the tag. -->
 	<key>manageAppVersionAndBuildNumber</key>
 	<false/>
 </dict>

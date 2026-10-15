@@ -23,8 +23,33 @@ Domain.
   name.** A fresh install, a saved name no longer offered, and a missing
   palette all resolve through it; an explicit saved choice is always kept
   (`ThemeManager` discards only unknown names). Palettes match web
-  `THEME_OPTIONS` and Android `AppTheme.kt` hex for hex and are opaque — the
-  Busnes `line` is Android's composite of the web's translucent value.
+  `THEME_OPTIONS` and Android `AppTheme.kt` hex for hex, except the WCAG
+  deviations below, and are opaque — the Busnes `line` is Android's
+  composite of the web's translucent value.
+- **Every text color reads at least 4.5:1 (WCAG AA) on every theme**
+  (`Contrast`, `ThemeContrastTests`: ink, inkStrong, `secondaryInk` and
+  `link` on bg and panel; `readableOnAccent` on accent; danger, success and
+  warning on bg and panel, danger and inkStrong on `dangerFill`). Secondary
+  text is `theme.secondaryInk`, never `ink.opacity(…)`. New text colors join
+  the test. **Deviations from web/Android, decided 2026-10-13 for those
+  apps to follow:**
+  - Patina Ky `ink` `#7C8BA1` (web/Android `#64748B`: 4.0:1 on bg, 3.7:1 on
+    panel).
+  - `SemanticColors` text has light/dark variants resolved by appearance
+    (every scene sets `preferredColorScheme` from `isLight`): danger
+    `#B71C1C` / `#FF8A8A` (web `#FF5F5F`: 2.7:1 on light, 4.2:1 on its own
+    fill on Busnes Dark panel), success `#1B5E20` / `#A5DCA5` (web `#A5DCA5`:
+    1.5:1 on light), warning `#8A5A00` / `#FFD64D` (web `#FFD64D`: 1.3:1 on
+    light). Fills and borders are unchanged.
+  - `secondaryInk` replaces `ink` at 60–90% opacity (3.0:1 on Busnes Light,
+    2.6:1 on Patina Ky): `ink` blended toward `bg` from 70% in 5% steps until
+    it reads on bg and panel.
+  - The HTML reader's `link` is the accent where it reads, else the accent
+    blended toward `inkStrong` until it does (Light Matter, Tropics, White
+    Cliffs, Sky, Sun, Polished Ky; Tropics' lime was 1.8:1), and underlined.
+  - `readableOnAccent` keeps the web's charcoal/white pick unless it fails,
+    then takes the other: Coffee and Polished Ky get charcoal (white was
+    3.4:1 and 3.7:1).
 - **Sheets do not inherit `\.theme`.** Every `.sheet` re-injects
   `.environment(\.theme, theme)`. A sheet that skips it renders unthemed.
 - **Nothing presents while the app is locked — the router enforces it, not
@@ -36,7 +61,14 @@ Domain.
   per view, so a sheet already on screen stops the `fullScreenCover`
   presenting at all. Either way MFA approval and pairing were reachable on a
   locked app. A new scene root gets `.lockAwareRouting(router)` alongside its
-  `.id(generation)`, `LockedOverlay`, and `protectedFromCapture()`.
+  `.id(generation)`, `lockCover(theme:)`, and `protectedFromCapture()`.
+- **The macOS lock cover covers the chrome, not just the content**
+  (`lockCover(theme:)`, `UnlockView.swift`). While locked it hides the window
+  toolbar (`.toolbar(.hidden, for: .windowToolbar)`), disables the content
+  (which reaches the toolbar items it declares) and hides it from
+  accessibility; the `LockedOverlay` sits outside all three. An overlay alone
+  left toolbar Delete/Archive/Move and the search field working behind it.
+  Never apply `LockedOverlay` on its own.
 - **`PushPairingView` closes itself on iOS when the lock engages.** Settings
   presents it outside the router, so `dismissPresentedRoutes` cannot reach
   it, and "Sign in with KyIdentity" backgrounds the app on purpose. A sign-on
@@ -44,6 +76,17 @@ Domain.
   confirmation step; otherwise it goes through `router.handle`, which defers it
   until unlock. A link the screen never took (it was dismissed first) goes to
   the router when the last pairing screen disappears, so it is never stranded.
+- **An unpaired Mac says exactly how to pair** (`PairingInstructions`): on the
+  web, Settings → Security → Devices → Pair a new device → Pair this device,
+  which opens a `kypost://native-pair` link. The wording follows KyPost-Server
+  `frontend/src/pages/security/PairingPanel.tsx`; change both together. The
+  inbox empty state and Settings → Connection use it; Settings → Connection
+  offers only "Paste Pairing Link…" (the native `PushPairingView`, for the
+  link the web page shows when the browser could not open it). There is no
+  desktop pairing screen.
+- **A new pairing reloads the Mac window at once.** `MacRootView` observes
+  `.kyPostPaired` and loads the inbox, its subfolders and a contact sync,
+  rather than leaving "not paired" up until the 90 s refresh.
 - **Notification history renders nothing while locked or after an abandoned
   wipe.** `NotificationHistorySections` (iOS Settings → Notifications →
   Notification History; macOS Notifications tab) shows sender and subject
@@ -63,7 +106,12 @@ Domain.
   `LAContext` only when one is not. A system authentication sheet raised over a
   PIN field asks for something the user did not ask for; a PIN exists only
   because they chose it. Removing a PIN is an *off* path and re-authenticates
-  like the rest.
+  like the rest. The automatic prompt goes through
+  `AppLockManager.autoPromptUnlock` — once per lock, and on macOS only from
+  the key window (`controlActiveState`); every window's lock screen shares one
+  in-flight `requestUnlock`, so no window stacks a second Touch ID sheet. A
+  reset that finished incomplete keeps the app locked; the lock screen says so
+  and keeps Reset offered.
 - **Every PIN outcome gets its own sentence, and `verifierUnavailable` is the
   one that matters.** It means the PIN was *not* wrong — telling the user it was
   invites them to burn attempts against a threshold that outcome deliberately
@@ -85,7 +133,9 @@ Domain.
   changes.
 - **The contacts list carries `ContactSyncBanner`** on both platforms
   (`safeAreaInset`), re-evaluated each minute because a change turns "stuck"
-  by age alone. Retry is `ContactsViewModel.sync()`. vCard export goes through
+  by age alone. Retry is `ContactsViewModel.sync()`. It also says when a
+  reconcile kept Apple Contacts cards rather than delete more than half of
+  them (`withheldCardDeletes`). vCard export goes through
   `VCardShareMenu` only — it owns the Hostile Location Protection refusal.
 - **Loosening a Security picker re-authenticates; tightening does not.** A
   longer lock delay or a higher wipe threshold (or Never) goes through
@@ -135,7 +185,9 @@ Domain.
   the same prompt; macOS answers `windowShouldClose` through
   `WindowCloseGuard`. Both are proxies that forward every other delegate call
   to SwiftUI's. Closes the app forces (Hostile Location Protection, wipe) never
-  ask.
+  ask. Quitting on macOS asks once for every open compose: each registers in
+  `OpenComposeRegistry` on appear, and `applicationShouldTerminate` shows the
+  same Discard / Keep editing question as an alert.
 - **A compose open when the lock engages stays, covered, and sends nothing.**
   The iOS shell owns the one compose sheet (`MailShellState.compose`, below),
   outside the router, so `dismissPresentedRoutes` cannot reach it and the
@@ -227,10 +279,14 @@ Domain.
   server never saw the plaintext, so `pgpSigned`/`pgpVerified` are not a
   verdict about anything. A client-protected message automatically decrypts
   when its key is already held; otherwise it shows Decrypt, whose deliberate
-  press prompts to unlock the key. Cancelling leaves Decrypt available. The
-  reader has no webmail fallback. PGP explanation and controls disappear once
-  plaintext is visible — the signature line, a dropped-attachment notice and
-  the decrypted files then show beside the body instead — and the body has
+  press opens the key — prompting only if no presence check has happened
+  since the app last locked (`PresenceContext`). Cancelling leaves Decrypt
+  available. The reader has no webmail fallback. PGP explanation and controls
+  disappear once plaintext is visible — the signature line
+  (`EncryptedReadViewModel.signatureLine`, identity from `signatureIdentity`),
+  the identity-mismatch warning (`signatureIdentityWarning`, danger colour), a
+  dropped-attachment notice and the decrypted files then show beside the body
+  instead — and the body has
   layout priority so it owns the remaining scrollable space without imposing
   an infinite-height content constraint on its macOS window. The reader navigation bar does not repeat
   the sender, and client-protected PGP/MIME transport parts are not presented
@@ -339,8 +395,36 @@ Domain.
   resync is skipped (`refresh` returns false), it reports failure and returns
   nil, never the cached row.
 - `notice` is the inbox's transient toast (rejected actions, missing Sent
-  folder, selection limit); it expires itself. `connectionNotice` keeps its
-  own contract above.
+  folder, selection limit, a failed bulk mark-read, a refused folder
+  create/rename/delete); it expires itself. `connectionNotice` keeps its own
+  contract above. **`errorMessage` is only for a list that cannot load**
+  (unpaired): it renders in place of an empty list, so anything else put
+  there is never seen.
+- **The reader says its own failures** (`EmailDetailView.readerNotice`, a
+  toast): attachment preview/download, Save As, mark-as-read. The view model
+  throws `ReaderFailure` with the sentence (`InboxViewModel.readerFailure`:
+  what failed, then the relay's reason, never a transport description).
+  Forward and the invite card treat a failed fetch as nil, as before.
+- **macOS Message menu** (`KyPostCommands`, `MessageCommands`): the reader
+  (`EmailDetailView`) and the list (`MacRootView`) each publish a
+  `MessageCommands` as a focused scene value; `MessageCommands.resolve`
+  takes Reply/Reply All/Forward from the reader (body readiness, the
+  client-protected gate) and Archive/Junk/Delete/Mark as Read from the list
+  (held for Undo), and disables everything while locked or unpaired. The
+  list composes only for one selected message whose body is cached and may
+  be quoted. Shortcuts are Apple Mail's; Refresh moved to ⇧⌘N. **No bare ⌫
+  key equivalent in a menu or the main window**: it would fire while typing
+  in the search field. ⌫ is the list's `onDeleteCommand`, the reader's when
+  it holds focus, and a hidden shortcut in pop-outs only
+  (`EmailDetailView.isPopOut`). No Mark as Unread: `/api/inbox/actions` has
+  no unread action (KyPost-Server `server_inbox.go`, 2026-10-13).
+- **A pop-out reader owns its row** (`EmailWindowView`,
+  `InboxViewModel.resolveEmail`; root "Inbox search"). Never read the main
+  list from the window's body. It resolves only while `MailAccessGate` is
+  open (App AGENTS.md) and only for the account it resolved under: a gate
+  or `accountGeneration` change removes the reader, dropping its
+  plaintext, and resolves again. Its ⌫ re-checks lock, gate and pairing on
+  the key press — `LockedOverlay` covers a window but takes no keys.
 - Encrypted send is decided by key custody, not by hope.
   `Domain/Models/PgpKeyCustody.swift` maps `/api/pgp/bootstrap` to
   `serverHeld` / `clientHeld` / `noIdentity`, and anything unrecognised
@@ -367,6 +451,13 @@ Domain.
 - **A relay `warning` on a 200 means the message was sent.** Show it as a
   notice, keep the window open, and leave Send disabled (`isSent`) — a retry
   duplicates the message. Never pattern-match the warning's wording.
+- **A send with no trustworthy answer may have gone out**
+  (`MailOutcome.mayHaveBeenSent`: timeout, dropped connection, 5xx). Compose
+  says to check Sent, sets `sendOutcomeUnknown`, and keeps Send, pickup and
+  webmail hand-off disabled; the only way on is the explicit "Not in Sent —
+  Send Again" (`sendAgainAfterUncertainOutcome`), which reuses the same
+  `idempotencyKey`. Any definite answer mints a new key, so a corrected
+  message is never the refused request's duplicate.
 - **Entry points own `isSending`, and claim it before their first `await`.**
   `send`, `confirmPickupFallback` and `handOffToWebmail` set it immediately
   after their `!isSending, !isSent, !didSend` guard; `deliver` and `handOff`
@@ -380,14 +471,22 @@ Domain.
   and `loadsSubresources = false` do not cover main-frame navigation — a
   `<meta http-equiv="refresh">` is neither script nor subresource — so an
   allow-by-default branch here silently reopens the remote-content beacon.
+  The remote-content block itself is a content rule list (root AGENTS.md);
+  build reader pages only through `EmailBodyWebView.makePage`.
 
 ## Work Guidance
 
 - About and Support are shared across iOS Settings and the macOS About window.
   macOS exposes one standard About KyPost app-menu item; it does not duplicate
   the surface as a Preferences tab. `AboutView` owns the version, 2026
-  Busnes.app copyright, privacy-policy link, embedded MIT license, and StoreKit
-  2 donation presentation. `TipJarStore` uses `CupOJoe4Mail` for one-off
+  Busnes.app copyright, privacy-policy link, embedded MIT license, the
+  Acknowledgements link (`AcknowledgementsView`: pushed on iOS, a sheet in
+  the macOS About window), and the StoreKit 2 Tip Jar. The user-facing name
+  is **Tip Jar**, never "Donate": App Review reads "donate" as a charitable
+  donation, which it allows only for approved nonprofits, while a tip to the
+  developer through In-App Purchase is ordinary. The tip section shows one status line,
+  `TipJarStore.statusMessage`; do not render `errorMessage` beside it.
+  `TipJarStore` uses `CupOJoe4Mail` for one-off
   purchases only; prices come from App Store Connect and must not be hardcoded.
   Do not offer recurring support without an ongoing customer benefit.
   `start()` keeps the `Transaction.updates` listener and drains
@@ -426,7 +525,14 @@ Recorded so they aren't re-litigated as bugs:
   window, `OlderMailTests.swift` for older mail, delta overflow and bodies on
   open, `MailIdentityTests.swift` for the (folder, id) key,
   `MailSearchTests.swift` for search, `WideLayoutTests.swift` for the iOS
-  stack/split decision, what a switch keeps, and its Undo rule).
+  stack/split decision, what a switch keeps, and its Undo rule,
+  `ThemeContrastTests` for WCAG AA, `RemoteContentBlockingTests` for the
+  reader's block against real WebKit, `ReaderWindowTests.swift` for pop-out
+  rows, reader failures and the Message menu, `TipJarStoreTests` for the tip
+  transactions and status line).
+- The Message menu's enablement and ⌫ routing are focus behaviour: check
+  them in the running app (main window with and without the preview pane,
+  a pop-out, typing ⌫ in the search field).
 - Pass `debounceInterval: .zero` to `ComposeViewModel` in tests, and poll for
   the result rather than sleeping a fixed span — the search lands a scheduling
   hop later even at zero, so a fixed sleep goes flaky under load.

@@ -44,22 +44,22 @@ private struct PgpPayloadDTO: Decodable {
 private struct SignerKeyDTO: Decodable {
     var addresses: [String] = []
     var publicKey: String = ""
-    /// `false` is the safe direction for both of these: it weakens a claim
-    /// rather than inventing one. A missing `verified` must never read as
-    /// "the user confirmed this key".
-    var verified: Bool = false
     var source: String = ""
+    /// Can only ever add a warning (`signatureState`). A missing one is the
+    /// ordinary case, and nothing reads its absence as reassurance.
     var conflict: Bool = false
 
+    // The relay's `verified` is deliberately not decoded: whether a key is
+    // confirmed is decided on this device (`RecipientPinStore`), and a field
+    // that is never read cannot be turned into a trust input by a later edit.
     private enum CodingKeys: String, CodingKey {
-        case addresses, publicKey, verified, source, conflict
+        case addresses, publicKey, source, conflict
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         addresses = try values.decodeIfPresent([String].self, forKey: .addresses) ?? []
         publicKey = try values.decodeIfPresent(String.self, forKey: .publicKey) ?? ""
-        verified = try values.decodeIfPresent(Bool.self, forKey: .verified) ?? false
         source = try values.decodeIfPresent(String.self, forKey: .source) ?? ""
         conflict = try values.decodeIfPresent(Bool.self, forKey: .conflict) ?? false
     }
@@ -113,7 +113,6 @@ final class PgpPayloadClient: PgpPayloadSource {
                     SignerKey(
                         addresses: $0.addresses,
                         publicKey: $0.publicKey,
-                        verified: $0.verified,
                         source: $0.source,
                         conflict: $0.conflict
                     )

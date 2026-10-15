@@ -145,4 +145,34 @@ nonisolated struct OpenPgpKeySections: Equatable, Sendable {
     func isolating(subkey index: Int) -> OpenPgpKeySections {
         OpenPgpKeySections(primary: primary, subkeys: [subkeys[index]])
     }
+
+    /// Each User ID (tag 13) of the primary section with the signatures that
+    /// follow it. Nil when a User ID or user attribute (tag 17) sits inside a
+    /// subkey section, where `isolating(userID:)` could not leave it out.
+    var userIDs: [[OpenPgpPacket]]? {
+        guard !subkeys.joined().contains(where: { Self.identityTags.contains($0.tag) }) else { return nil }
+        var sections: [[OpenPgpPacket]] = []
+        var current: [OpenPgpPacket]?
+        for packet in primary {
+            if Self.identityTags.contains(packet.tag) {
+                if let current { sections.append(current) }
+                current = packet.tag == 13 ? [packet] : nil
+            } else {
+                current?.append(packet)
+            }
+        }
+        if let current { sections.append(current) }
+        return sections
+    }
+
+    /// This key with one User ID only, and no user attributes — so a check of
+    /// what the key can still do speaks for that User ID's own certification.
+    /// Nil where `userIDs` is.
+    func isolating(userID index: Int) -> OpenPgpKeySections? {
+        guard let userIDs, userIDs.indices.contains(index) else { return nil }
+        let head = primary.prefix { !Self.identityTags.contains($0.tag) }
+        return OpenPgpKeySections(primary: Array(head) + userIDs[index], subkeys: subkeys)
+    }
+
+    private static let identityTags: Set<UInt8> = [13, 17]
 }
