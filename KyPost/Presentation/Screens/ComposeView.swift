@@ -213,6 +213,9 @@ struct ComposeView: View {
         .onChange(of: viewModel.didSend) {
             if viewModel.didSend { dismiss() }
         }
+        // Quitting asks about unsent composes (macOS ⌘Q).
+        .onAppear { OpenComposeRegistry.shared.register(viewModel) }
+        .onDisappear { OpenComposeRegistry.shared.unregister(viewModel) }
         // Leaving a field commits what's in it, so a typed address isn't
         // quietly lost by clicking away. The dropdown belongs to the field
         // that had focus, so it closes on any change — not just on losing
@@ -240,7 +243,11 @@ struct ComposeView: View {
             Button("Keep editing", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
         } message: {
-            Text("It has not been sent, and KyPost keeps no copy.")
+            if viewModel.sendOutcomeUnknown {
+                Text("It may have been sent — check Sent. KyPost keeps no copy.")
+            } else {
+                Text("It has not been sent, and KyPost keeps no copy.")
+            }
         }
 #if os(iOS)
         // A swipe down would otherwise drop the sheet without asking: it is
@@ -308,6 +315,21 @@ struct ComposeView: View {
 
         if let message = viewModel.errorMessage {
             messageLine(message, color: SemanticColors.danger)
+        }
+
+        // The only way past an unconfirmed send: Send stays disabled, so a
+        // retry is always this deliberate press, never a reflexive ⌘↩.
+        if viewModel.sendOutcomeUnknown {
+            HStack {
+                Spacer()
+                Button("Not in Sent — Send Again") {
+                    Task { await viewModel.sendAgainAfterUncertainOutcome(fontTraits: fontTraits) }
+                }
+                .font(AppFont.ui(12, weight: .medium))
+                .disabled(viewModel.isSending || isLocked)
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
         }
     }
 
@@ -395,7 +417,7 @@ struct ComposeView: View {
         case .clientHeld:
             HStack(spacing: 8) {
                 Image(systemName: "lock.fill")
-                    .foregroundStyle(theme.ink.opacity(0.7))
+                    .foregroundStyle(theme.secondaryInk)
                 Text("This account's PGP key is held only by your browser, so signing and encryption happen there.")
                     .font(AppFont.ui(12))
                     .foregroundStyle(theme.ink)
@@ -451,7 +473,7 @@ struct ComposeView: View {
         GridRow {
             Text(label)
                 .font(AppFont.ui(12, weight: .medium))
-                .foregroundStyle(theme.ink.opacity(0.7))
+                .foregroundStyle(theme.secondaryInk)
                 .gridColumnAlignment(.trailing)
             field()
                 .foregroundStyle(theme.inkStrong)
@@ -489,7 +511,7 @@ struct ComposeView: View {
                     Image(systemName: "text.book.closed")
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(theme.ink.opacity(0.7))
+                .foregroundStyle(theme.secondaryInk)
                 .help("Browse contacts")
                 .accessibilityLabel("Browse contacts")
             }
@@ -591,13 +613,13 @@ struct ComposeView: View {
                                 .lineLimit(1)
                             Text(attachment.data.count.formatted(.byteCount(style: .file)))
                                 .font(AppFont.ui(10))
-                                .foregroundStyle(theme.ink.opacity(0.7))
+                                .foregroundStyle(theme.secondaryInk)
                         }
                         Button {
                             viewModel.removeAttachment(attachment)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(theme.ink.opacity(0.6))
+                                .foregroundStyle(theme.secondaryInk)
                         }
                         .buttonStyle(.plain)
                         .help("Remove attachment")
@@ -645,7 +667,7 @@ struct ComposeView: View {
                 }
             }
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(viewModel.isSending || viewModel.isSent)
+            .disabled(viewModel.isSending || viewModel.isSent || viewModel.sendOutcomeUnknown)
             .help("Send (⌘↩)")
         }
     }

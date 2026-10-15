@@ -57,12 +57,16 @@ nonisolated struct EncryptedMessageReader: Sendable {
     /// empty snapshot is "no pins", and a caller that forgot to pass them
     /// would silently let the relay's key stand in for one the user verified.
     private let pins: @MainActor @Sendable () -> RecipientPinSnapshot
+    /// The on-device first-seen signer history. Not defaulted, for `pins`'
+    /// reason: a forgotten history would read every sender as first seen.
+    private let history: any SignerKeyHistory
 
     init(
         opener: any VaultOpening,
         payloads: any PgpPayloadSource,
         crypto: any PgpDecrypting,
         pins: @escaping @MainActor @Sendable () -> RecipientPinSnapshot,
+        history: any SignerKeyHistory,
         session: EnrollmentSession = .shared,
         mime: @escaping @Sendable (Data) -> DecryptedBody? = { PgpMimeReader.read($0) }
     ) {
@@ -70,30 +74,36 @@ nonisolated struct EncryptedMessageReader: Sendable {
         self.payloads = payloads
         self.crypto = crypto
         self.pins = pins
+        self.history = history
         self.session = session
         self.mime = mime
     }
 
-    /// The signer keys a verdict may use. Where this device pinned a key for
-    /// the server's resolved sender, the pin **replaces** what the server
-    /// offered: an intact pin is the only key accepted, and confirmed (it was
-    /// verified in person); a revoked or broken one is a conflict, so a signed
-    /// message reads as `.keyChanged` with no fallback to the relay's key.
+    /// The signer keys a verdict may use and the trust this device holds for
+    /// the resolved sender. Where this device pinned a key, the pin
+    /// **replaces** what the server offered: an intact pin is the only key
+    /// accepted; a revoked or broken one is unusable, so a signed message
+    /// reads as `.keyChanged` with no fallback to the relay's key. Otherwise
+    /// the relay's candidates stand, judged against this device's history.
     ///
     /// Keyed on `resolvedSender` — the server's binding — never on a parsed
     /// `From`; that parser is the one this client must not have.
-    static func signerKeys(
+    static func signerInputs(
         _ offered: [SignerKey],
         resolvedSender: String,
-        pins: RecipientPinSnapshot
-    ) -> [SignerKey] {
+        pins: RecipientPinSnapshot,
+        firstSeen: String?
+    ) -> (keys: [SignerKey], trust: LocalSignerTrust) {
         switch pins.state(for: resolvedSender) {
         case nil:
-            return offered
-        case .intact(let publicKey, _):
-            return [SignerKey(addresses: [resolvedSender], publicKey: publicKey, verified: true, source: "device")]
+            return (offered, .firstSeen(firstSeen))
+        case .intact(let publicKey, let fingerprint):
+            return (
+                [SignerKey(addresses: [resolvedSender], publicKey: publicKey, source: "device")],
+                .pinned(fingerprint: fingerprint)
+            )
         case .revoked, .broken:
-            return [SignerKey(addresses: [resolvedSender], conflict: true)]
+            return ([SignerKey(addresses: [resolvedSender], conflict: true)], .pinUnusable)
         }
     }
 
@@ -104,9 +114,9 @@ nonisolated struct EncryptedMessageReader: Sendable {
     ///     runs. Do not wire this up to filter `signerKeys` — that
     ///     reintroduces the client-side `From` parser that diverged from the
     ///     server's on 27 of 111 adversarial headers. It stays a parameter
-    ///     because callers have it and a future caller may want it for
-    ///     something that is *not* the verdict, such as comparing it against
-    ///     `resolvedSender` for display.
+    ///     because callers have it. The screen compares it against the
+    ///     verdict's bound addresses to *add* a mismatch warning
+    ///     (`signatureIdentityMismatch`); it never sets a verdict.
     ///   - unlockIfNeeded: false on the automatic attempt when a screen opens,
     ///     true when the user pressed Decrypt. This is what keeps the presence
     ///     prompt tied to a deliberate action.
@@ -116,11 +126,17 @@ nonisolated struct EncryptedMessageReader: Sendable {
         sender: String,
         unlockIfNeeded: Bool
     ) async -> ReadOutcome {
+        // Taken before anything awaits: an unpair or a wipe while this read
+        // is in flight advances it, and the history write below is dropped.
+        let historyGeneration = history.generation
         if !session.isHeld {
             guard unlockIfNeeded else { return .needsUnlock }
+            // A lock during the open clears the session; the key must not
+            // then be installed behind it. Read as cancelled: Decrypt again.
+            let epoch = session.epoch
             switch await opener.open() {
             case .opened(let material):
-                session.install(material)
+                guard session.install(material, ifEpoch: epoch) else { return .cancelled }
             case .cancelled: return .cancelled
             case .notEnrolled: return .notEnrolled
             case .noSecureLockScreen: return .noSecureLockScreen
@@ -142,14 +158,22 @@ nonisolated struct EncryptedMessageReader: Sendable {
         }
 
         let pinSnapshot = await pins()
-        payload.signerKeys = Self.signerKeys(
-            payload.signerKeys, resolvedSender: payload.resolvedSender, pins: pinSnapshot
+        let firstSeen = payload.resolvedSender.isEmpty
+            ? nil
+            : await history.firstSeenFingerprint(for: payload.resolvedSender)
+        let inputs = Self.signerInputs(
+            payload.signerKeys,
+            resolvedSender: payload.resolvedSender,
+            pins: pinSnapshot,
+            firstSeen: firstSeen
         )
+        payload.signerKeys = inputs.keys
+        let trust = inputs.trust
 
         guard !payload.encryptedPayload.isEmpty else {
             // A signed-but-not-encrypted message: readable content in the
             // clear, a detached signature, nothing to decrypt.
-            return signedOnly(payload)
+            return await signedOnly(payload, trust: trust, historyGeneration: historyGeneration)
         }
 
         // Conflicted entries carry no key material and must never be offered
@@ -197,15 +221,56 @@ nonisolated struct EncryptedMessageReader: Sendable {
         // signature is detected, not verified — checking it would mean
         // verifying the exact signed-part bytes, which this reader does not
         // do — so it reads "not checked", never "not signed".
-        let signature: PgpSignatureState = decrypted.signature.present
-            ? signatureState(
-                signature: decrypted.signature,
-                signerKeys: payload.signerKeys,
-                fingerprint: crypto.fingerprint(ofArmoredPublicKey:)
+        guard decrypted.signature.present else {
+            return .decrypted(body: body, verdict: SignatureVerdict(
+                state: body.hasDetachedSignature ? .unchecked : .unsigned,
+                resolvedSender: payload.resolvedSender
+            ))
+        }
+        return .decrypted(
+            body: body,
+            verdict: await verdict(
+                decrypted.signature, payload: payload, trust: trust, historyGeneration: historyGeneration
             )
-            : body.hasDetachedSignature ? .unchecked : .unsigned
+        )
+    }
 
-        return .decrypted(body: body, signature: signature, resolvedSender: payload.resolvedSender)
+    /// The verdict for a present signature, and the history it starts.
+    ///
+    /// The only write to the first-seen history: a valid signature by a key
+    /// this device has no pin or history for, and only when that key's own
+    /// User IDs name the resolved sender — so a key the relay attaches to an
+    /// address it does not even claim never becomes that address's key.
+    private func verdict(
+        _ signature: RawSignature,
+        payload: PgpPayload,
+        trust: LocalSignerTrust,
+        historyGeneration: UInt64
+    ) async -> SignatureVerdict {
+        let state = signatureState(
+            signature: signature,
+            signerKeys: payload.signerKeys,
+            trust: trust,
+            fingerprint: crypto.fingerprint(ofArmoredPublicKey:)
+        )
+        let signed = signature.signerFingerprint
+        let signingKey = signed.isEmpty ? nil : payload.signerKeys.first { key in
+            guard !key.conflict, let candidate = crypto.fingerprint(ofArmoredPublicKey: key.publicKey)
+            else { return false }
+            return candidate.caseInsensitiveCompare(signed) == .orderedSame
+        }
+        let keyAddresses = (signingKey.map { crypto.userIDAddresses(ofArmoredPublicKey: $0.publicKey) } ?? [])
+            .compactMap(plainAddress)
+
+        let sender = RecipientPinStore.normalized(payload.resolvedSender)
+        if state == .signerNotConfirmed, !sender.isEmpty, keyAddresses.contains(sender) {
+            await history.recordFirstSeen(signed, for: sender, ifGeneration: historyGeneration)
+        }
+        return SignatureVerdict(
+            state: state,
+            resolvedSender: payload.resolvedSender,
+            keyAddresses: keyAddresses
+        )
     }
 
     /// A signed-but-not-encrypted message: nothing to decrypt, but a detached
@@ -218,7 +283,11 @@ nonisolated struct EncryptedMessageReader: Sendable {
     /// detached check over it would falsely accuse a real correspondent. That
     /// is precisely the trap the server's own signedOnlyParts avoids by
     /// shipping the raw part.
-    private func signedOnly(_ payload: PgpPayload) -> ReadOutcome {
+    private func signedOnly(
+        _ payload: PgpPayload,
+        trust: LocalSignerTrust,
+        historyGeneration: UInt64
+    ) async -> ReadOutcome {
         guard let signedPart = Data(base64Encoded: payload.signedPartBase64),
               !signedPart.isEmpty,
               !payload.signaturePayload.isEmpty else {
@@ -230,8 +299,7 @@ nonisolated struct EncryptedMessageReader: Sendable {
             guard !payload.body.isEmpty else { return .noEncryptedContent }
             return .decrypted(
                 body: DecryptedBody(html: nil, plain: payload.body, protectedSubject: nil),
-                signature: .none,
-                resolvedSender: payload.resolvedSender
+                verdict: SignatureVerdict(resolvedSender: payload.resolvedSender)
             )
         }
 
@@ -248,15 +316,9 @@ nonisolated struct EncryptedMessageReader: Sendable {
             armoredSignature: payload.signaturePayload,
             signerKeys: offeredKeys
         )
-        return .decrypted(
-            body: body,
-            signature: signatureState(
-                signature: signature,
-                signerKeys: payload.signerKeys,
-                fingerprint: crypto.fingerprint(ofArmoredPublicKey:)
-            ),
-            resolvedSender: payload.resolvedSender
-        )
+        return .decrypted(body: body, verdict: await verdict(
+            signature, payload: payload, trust: trust, historyGeneration: historyGeneration
+        ))
     }
 
     /// Sentences for the exit table, not a forwarded library string.

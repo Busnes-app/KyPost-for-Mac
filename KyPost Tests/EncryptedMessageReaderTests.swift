@@ -18,6 +18,15 @@ private struct FakeOpener: VaultOpening {
     func open() async -> VaultOpenOutcome { outcome }
 }
 
+/// Opens successfully, but the app locks (clearing the session) first.
+private struct LockingOpener: VaultOpening {
+    let session: EnrollmentSession
+    func open() async -> VaultOpenOutcome {
+        session.clear()
+        return .opened(privateKey: Data("KEY".utf8))
+    }
+}
+
 private struct FakePayloads: PgpPayloadSource {
     let result: PgpPayloadResult
     var thrown: (any Error)?
@@ -58,6 +67,44 @@ private struct FakeCrypto: PgpDecrypting {
     }
 
     func fingerprint(ofArmoredPublicKey key: String) -> String? { fingerprints[key] }
+
+    var userIDs: [String: [String]] = [:]
+    func userIDAddresses(ofArmoredPublicKey key: String) -> [String] { userIDs[key] ?? [] }
+}
+
+/// The on-device signer history, in memory.
+final class MemorySignerHistory: SignerKeyHistory, @unchecked Sendable {
+    var entries: [String: String] = [:]
+
+    init(_ entries: [String: String] = [:]) { self.entries = entries }
+
+    func firstSeenFingerprint(for address: String) -> String? {
+        entries[RecipientPinStore.normalized(address)]
+    }
+
+    var generation: UInt64 = 0
+
+    func recordFirstSeen(_ fingerprint: String, for address: String, ifGeneration generation: UInt64) {
+        guard generation == self.generation else { return }
+        let key = RecipientPinStore.normalized(address)
+        if entries[key] == nil { entries[key] = fingerprint.uppercased() }
+    }
+}
+
+/// Holds every fetch open until the test releases it, so a teardown can land
+/// while a read is in flight.
+private final class GatedPayloads: PgpPayloadSource, @unchecked Sendable {
+    let result: PgpPayloadResult
+    let started = Box(false)
+    let released = Box(false)
+
+    init(_ result: PgpPayloadResult) { self.result = result }
+
+    func fetch(mailbox: String, messageId: String) async throws -> PgpPayloadResult {
+        started.value = true
+        while !released.value { await Task.yield() }
+        return result
+    }
 }
 
 private let mimeBody = Data("Content-Type: text/plain\r\n\r\nhello\r\n".utf8)
@@ -68,6 +115,7 @@ private func makeReader(
     crypto: FakeCrypto = FakeCrypto(body: mimeBody),
     thrown: (any Error)? = nil,
     pins: RecipientPinSnapshot = .none,
+    history: MemorySignerHistory = MemorySignerHistory(),
     session: EnrollmentSession
 ) -> EncryptedMessageReader {
     EncryptedMessageReader(
@@ -75,6 +123,7 @@ private func makeReader(
         payloads: FakePayloads(result: payload, thrown: thrown),
         crypto: crypto,
         pins: { pins },
+        history: history,
         session: session
     )
 }
@@ -233,13 +282,31 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
         let outcome = await reader.read(
             mailbox: "INBOX", messageId: "1", sender: payload.rawSender, unlockIfNeeded: true
         )
-        guard case .decrypted(let body, _, let resolvedSender) = outcome else {
+        guard case .decrypted(let body, let verdict) = outcome else {
             Issue.record("expected decrypted, got \(outcome)")
             return
         }
         #expect(body.plain?.contains("hello") == true)
         // The verdict is about what the SERVER resolved, never the raw From.
-        #expect(resolvedSender == "bob@example.com")
+        #expect(verdict.resolvedSender == "bob@example.com")
+    }
+
+    /// The app locks while the vault is still opening: the lock clears the
+    /// session, and the key that comes back afterwards must not be installed
+    /// behind it. Reads as cancelled, so the screen offers Decrypt again.
+    @Test func aKeyOpenedAcrossALockIsNotHeld() async {
+        let session = freshSession()
+        let reader = EncryptedMessageReader(
+            opener: LockingOpener(session: session),
+            payloads: FakePayloads(result: .success(PgpPayload(encryptedPayload: "CIPHERTEXT")), thrown: nil),
+            crypto: FakeCrypto(body: mimeBody),
+            pins: { .none },
+            history: MemorySignerHistory(),
+            session: session
+        )
+        let outcome = await reader.read(mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true)
+        #expect(outcome == .cancelled)
+        #expect(!session.isHeld)
     }
 
     /// A held key means no prompt, so a second read does not re-authenticate.
@@ -272,31 +339,149 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
         let outcome = await reader.read(
             mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
         )
-        guard case .decrypted(_, let signature, _) = outcome else {
+        guard case .decrypted(_, let verdict) = outcome else {
             Issue.record("expected decrypted, got \(outcome)")
             return
         }
-        #expect(signature == .keyChanged)
+        #expect(verdict.state == .keyChanged)
     }
 
-    @Test func aVerifiedSignatureReachesTheVerdict() async {
-        let payload = PgpPayload(
-            encryptedPayload: "CIPHERTEXT",
-            signerKeys: [SignerKey(publicKey: "k", verified: true)]
-        )
+    // MARK: - Trust is decided on this device
+
+    private func signedRead(
+        payload: PgpPayload,
+        history: MemorySignerHistory,
+        pins: RecipientPinSnapshot = .none,
+        signer: String = "FPR-BOB",
+        userIDs: [String] = ["bob@example.com"]
+    ) async -> SignatureVerdict? {
         let crypto = FakeCrypto(
             body: mimeBody,
-            signature: RawSignature(present: true, valid: true, signerFingerprint: "FPR1"),
-            fingerprints: ["k": "FPR1"]
+            signature: RawSignature(present: true, valid: true, signerFingerprint: signer),
+            fingerprints: ["relay-key": signer, "PINNED": "FPR-PINNED"],
+            userIDs: ["relay-key": userIDs]
         )
-        let reader = makeReader(payload: .success(payload), crypto: crypto, session: freshSession())
-        guard case .decrypted(_, let signature, _) = await reader.read(
-            mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
-        ) else {
-            Issue.record("expected decrypted")
-            return
+        let reader = makeReader(
+            payload: .success(payload), crypto: crypto, pins: pins, history: history, session: freshSession()
+        )
+        guard case .decrypted(_, let verdict) = await reader.read(
+            mailbox: "INBOX", messageId: "1", sender: "bob@example.com", unlockIfNeeded: true
+        ) else { return nil }
+        return verdict
+    }
+
+    /// What a hostile relay sends: its own key for Bob, no `conflict`. (It
+    /// may also claim `verified: true`; that field is not decoded at all —
+    /// see `PgpPayloadClientTests`.)
+    private let relayPayload = PgpPayload(
+        encryptedPayload: "CIPHERTEXT",
+        signerKeys: [SignerKey(addresses: ["bob@example.com"], publicKey: "relay-key")],
+        resolvedSender: "bob@example.com"
+    )
+
+    /// First sighting → not confirmed, and recorded; second → same key as
+    /// last time; a different key → changed, with the relay saying nothing.
+    @Test func continuityIsComputedFromThisDevicesHistory() async throws {
+        let history = MemorySignerHistory()
+        let first = try #require(await signedRead(payload: relayPayload, history: history))
+        #expect(first.state == .signerNotConfirmed)
+        #expect(first.keyAddresses == ["bob@example.com"])
+        #expect(history.entries["bob@example.com"] == "FPR-BOB")
+
+        let second = try #require(await signedRead(payload: relayPayload, history: history))
+        #expect(second.state == .verifiedSeenBefore)
+
+        let swapped = try #require(await signedRead(payload: relayPayload, history: history, signer: "FPR-EVE"))
+        #expect(swapped.state == .keyChanged, "the relay omitted conflict; the device still sees the change")
+        #expect(history.entries["bob@example.com"] == "FPR-BOB", "a changed key never overwrites history")
+    }
+
+    /// A key the relay attaches to an address it does not itself name is
+    /// never recorded as that address's key, and the screen is told so.
+    @Test func aKeyThatDoesNotNameTheSenderIsNotRecorded() async throws {
+        let history = MemorySignerHistory()
+        let verdict = try #require(await signedRead(
+            payload: relayPayload, history: history, signer: "FPR-EVE", userIDs: ["eve@evil.example"]
+        ))
+        #expect(verdict.state == .signerNotConfirmed)
+        #expect(history.entries.isEmpty)
+        #expect(signatureIdentityMismatch(verdict, displayedFrom: "bob@example.com") != nil)
+    }
+
+    /// Only a pin made here confirms identity — never the relay.
+    @Test func onlyAnOnDevicePinConfirms() async throws {
+        let pins = RecipientPinSnapshot(states: [
+            "bob@example.com": .intact(publicKey: "PINNED", fingerprint: "FPR-PINNED"),
+        ])
+        let verdict = try #require(await signedRead(
+            payload: relayPayload, history: MemorySignerHistory(), pins: pins, signer: "FPR-PINNED"
+        ))
+        #expect(verdict.state == .verifiedConfirmed)
+        #expect(signatureIdentity(verdict) == "bob@example.com")
+    }
+
+    /// The relay's conflict can only warn, even over a key seen before.
+    @Test func theRelaysConflictOnlyEverLowersTheVerdict() async throws {
+        var payload = relayPayload
+        payload.signerKeys.append(SignerKey(conflict: true))
+        let verdict = try #require(await signedRead(
+            payload: payload, history: MemorySignerHistory(["bob@example.com": "FPR-BOB"])
+        ))
+        #expect(verdict.state == .keyChanged)
+    }
+
+    /// A read still in flight when the account is torn down (unpair, the
+    /// security wipe) must not write the erased history back — on disk, or in
+    /// memory under Hostile Location Protection. The control read, with no
+    /// teardown, shows the same read does record.
+    @Test(arguments: [false, true])
+    func aReadThatOutlivesATeardownDoesNotRestoreHistory(hostile: Bool) async throws {
+        let defaults = try #require(UserDefaults(suiteName: "tests.\(UUID().uuidString)"))
+        let hostileStore = HostileLocationProtectionStore(defaults: defaults)
+        hostileStore.enabled = hostile
+        let store = RecipientPinStore(defaults: defaults, hostileLocation: hostileStore)
+        let payload = PgpPayload(
+            signaturePayload: "SIG",
+            signedPartBase64: mimeBody.base64EncodedString(),
+            signerKeys: [SignerKey(addresses: ["bob@example.com"], publicKey: "relay-key")],
+            resolvedSender: "bob@example.com"
+        )
+        let crypto = FakeCrypto(
+            signature: RawSignature(present: true, valid: true, signerFingerprint: "FPR-BOB"),
+            fingerprints: ["relay-key": "FPR-BOB"],
+            userIDs: ["relay-key": ["bob@example.com"]]
+        )
+
+        func gatedRead(tearingDown: Bool) async {
+            let payloads = GatedPayloads(.success(payload))
+            let reader = EncryptedMessageReader(
+                opener: FakeOpener(outcome: .opened(privateKey: Data("KEY".utf8))),
+                payloads: payloads,
+                crypto: crypto,
+                pins: { .none },
+                history: store,
+                session: freshSession()
+            )
+            let read = Task {
+                await reader.read(mailbox: "INBOX", messageId: "1", sender: "bob@example.com", unlockIfNeeded: true)
+            }
+            while !payloads.started.value { await Task.yield() }
+            if tearingDown { store.clear() }
+            payloads.released.value = true
+            guard case .decrypted(_, let verdict) = await read.value else {
+                Issue.record("expected the read to finish")
+                return
+            }
+            #expect(verdict.state == .signerNotConfirmed)
         }
-        #expect(signature == .verifiedConfirmed)
+
+        await gatedRead(tearingDown: true)
+        #expect(store.firstSeenFingerprint(for: "bob@example.com") == nil)
+        #expect(defaults.data(forKey: "contacts.signerFirstSeen") == nil)
+
+        await gatedRead(tearingDown: false)
+        #expect(store.firstSeenFingerprint(for: "bob@example.com") == "FPR-BOB")
+        #expect((defaults.data(forKey: "contacts.signerFirstSeen") != nil) == !hostile)
     }
 
     // MARK: - The signed-but-not-encrypted path
@@ -310,25 +495,28 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
             signaturePayload: "-----BEGIN PGP SIGNATURE-----",
             body: "a different render the signature must NOT be checked against",
             signedPartBase64: mimeBody.base64EncodedString(),
-            signerKeys: [SignerKey(publicKey: "k", verified: true)],
+            signerKeys: [SignerKey(publicKey: "k")],
             resolvedSender: "bob@example.com"
         )
         let crypto = FakeCrypto(
             signature: RawSignature(present: true, valid: true, signerFingerprint: "FPR1"),
             fingerprints: ["k": "FPR1"]
         )
-        let reader = makeReader(payload: .success(payload), crypto: crypto, session: freshSession())
+        let reader = makeReader(
+            payload: .success(payload), crypto: crypto,
+            history: MemorySignerHistory(["bob@example.com": "FPR1"]), session: freshSession()
+        )
         let outcome = await reader.read(
             mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
         )
-        guard case .decrypted(let body, let signature, let resolvedSender) = outcome else {
+        guard case .decrypted(let body, let verdict) = outcome else {
             Issue.record("expected decrypted, got \(outcome)")
             return
         }
         // Rendered from the signed part, not the divergent `body`.
         #expect(body.plain?.contains("hello") == true)
-        #expect(signature == .verifiedConfirmed)
-        #expect(resolvedSender == "bob@example.com")
+        #expect(verdict.state == .verifiedSeenBefore)
+        #expect(verdict.resolvedSender == "bob@example.com")
         // And what was actually handed to the verifier were those exact octets.
         #expect(crypto.detachedInput.value?.bytes == mimeBody)
         #expect(crypto.detachedInput.value?.signature == "-----BEGIN PGP SIGNATURE-----")
@@ -344,13 +532,13 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
         // What GopenPGP returns with no offered key: present, not valid.
         let crypto = FakeCrypto(signature: RawSignature(present: true))
         let reader = makeReader(payload: .success(payload), crypto: crypto, session: freshSession())
-        guard case .decrypted(_, let signature, _) = await reader.read(
+        guard case .decrypted(_, let verdict) = await reader.read(
             mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
         ) else {
             Issue.record("expected decrypted")
             return
         }
-        #expect(signature == .signerUnknown)
+        #expect(verdict.state == .signerUnknown)
     }
 
     /// When the server could not re-fetch the raw signed part it leaves `body`
@@ -367,12 +555,12 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
         let outcome = await reader.read(
             mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: true
         )
-        guard case .decrypted(let body, let signature, _) = outcome else {
+        guard case .decrypted(let body, let verdict) = outcome else {
             Issue.record("expected decrypted, got \(outcome)")
             return
         }
         #expect(body.plain == "readable but unverifiable")
-        #expect(signature == .none)
+        #expect(verdict.state == .none)
     }
 
     /// A signed-only message with neither a verifiable part nor a readable body
@@ -429,13 +617,14 @@ private func freshSession() -> EnrollmentSession { EnrollmentSession() }
             payloads: FakePayloads(result: .success(PgpPayload(encryptedPayload: ciphertext)), thrown: nil),
             crypto: GopenPGPCrypto(),
             pins: { .none },
+            history: MemorySignerHistory(),
             session: session,
             mime: { DecryptedBody(html: nil, plain: String(decoding: $0, as: UTF8.self), protectedSubject: nil) }
         )
         let outcome = await reader.read(
             mailbox: "INBOX", messageId: "1", sender: "a@b", unlockIfNeeded: false
         )
-        guard case .decrypted(let body, _, _) = outcome else {
+        guard case .decrypted(let body, _) = outcome else {
             Issue.record("expected decrypted, got \(outcome)"); return
         }
         #expect(body.plain == V3Fixtures.keyringFile["plaintext"] as? String)

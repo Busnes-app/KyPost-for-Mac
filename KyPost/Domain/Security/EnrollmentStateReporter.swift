@@ -103,8 +103,10 @@ nonisolated protocol EnrollmentReportStore: Sendable {
 
 nonisolated extension EnrollmentVault: EnrollmentReportStore {
     func recordSummary() throws -> EnrollmentRecordSummary? {
-        guard let record = try storedRecord() else { return nil }
-        return EnrollmentRecordSummary(kind: record.kind, acknowledgement: record.acknowledgement)
+        // The clear header: restating enrollment never needs the key, so it
+        // never raises the presence prompt.
+        guard let header = try storedHeader() else { return nil }
+        return EnrollmentRecordSummary(kind: header.kind, acknowledgement: header.acknowledgement)
     }
 }
 

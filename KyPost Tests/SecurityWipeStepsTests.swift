@@ -43,6 +43,7 @@ import Testing
             "credentialGate",
             "pairing",
             "mailCursors",
+            "recipientPins",
             "mailSignature",
             "appLock",
             "userDefaults",
@@ -108,7 +109,7 @@ import Testing
         let suite = "tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         let graph = try makeGraph(defaults: defaults)
-        let state = WipeStateStore(defaults: defaults)
+        let state = WipeStateStore(defaults: defaults, keychain: nil)
         state.begin(hostileLocationEnabled: true)
         defaults.set("something", forKey: "keywords.tabs")
 

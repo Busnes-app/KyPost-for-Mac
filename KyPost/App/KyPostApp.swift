@@ -49,7 +49,7 @@ struct KyPostApp: App {
                 .environment(router)
                 .environment(\.theme, themeManager.palette)
                 .preferredColorScheme(themeManager.palette.preferredColorScheme)
-                .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
+                .lockCover(theme: themeManager.palette)
                 .protectedFromCapture()
                 .lockAwareRouting(router)
         }
@@ -65,7 +65,7 @@ struct KyPostApp: App {
                 .environment(\.deviceIsEnrolled, graph.enrollmentVault.isEnrolled)
                 .preferredColorScheme(themeManager.palette.preferredColorScheme)
                 .background(themeManager.palette.bg.ignoresSafeArea())
-                .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
+                .lockCover(theme: themeManager.palette)
                 .protectedFromCapture()
         }
         .defaultSize(width: 680, height: 620)
@@ -80,7 +80,7 @@ struct KyPostApp: App {
                 .environment(\.theme, themeManager.palette)
                 .preferredColorScheme(themeManager.palette.preferredColorScheme)
                 .background(themeManager.palette.bg.ignoresSafeArea())
-                .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
+                .lockCover(theme: themeManager.palette)
                 .protectedFromCapture()
                 .modifier(CloseOnHostileLocationProtection(draft: $draft))
         }
@@ -95,7 +95,7 @@ struct KyPostApp: App {
                 // not, so ⌘, reached Remove Pairing (which clears the pinned
                 // SPKI hash) and the Hostile Location Protection toggle while
                 // the app was locked.
-                .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
+                .lockCover(theme: themeManager.palette)
                 .protectedFromCapture()
         }
 #else
@@ -165,7 +165,7 @@ struct KyPostApp: App {
                     }
 #endif
                 }
-                .overlay { LockedOverlay().environment(\.theme, themeManager.palette) }
+                .lockCover(theme: themeManager.palette)
                 .protectedFromCapture()
         }
         .modelContainer(environment.graph.database.container)
@@ -244,7 +244,7 @@ private struct StartupGatePlaceholder: View {
             ProgressView()
             Text("Checking this Mac…")
                 .font(AppFont.ui(13))
-                .foregroundStyle(theme.ink.opacity(0.8))
+                .foregroundStyle(theme.secondaryInk)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.bg)

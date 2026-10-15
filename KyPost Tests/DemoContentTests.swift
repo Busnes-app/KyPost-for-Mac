@@ -190,6 +190,7 @@ import Testing
             deviceRegistrationService: graph.deviceRegistrationService,
             deregisterDeviceUseCase: graph.deregisterDeviceUseCase,
             pushNotificationDispatcher: graph.pushNotificationDispatcher,
+            erasePreservedStore: graph.erasePreservedStoreStep,
             pairingDisplayOverride: graph.pairingDisplayOverride
         )
 

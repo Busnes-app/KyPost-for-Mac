@@ -241,11 +241,18 @@ is the server's pin, not this device's.
   someone remembered — every gap is a genuine revocation dropped and a
   compromised subkey still confirmed.
 - **Reader:** where the resolved sender is pinned, the pin replaces the relay's
-  `signerKeys` (`EncryptedMessageReader.signerKeys`) — intact is the only key
-  and reads `verifiedConfirmed`; revoked or broken is a conflict, so a signed
-  message reads `keyChanged`. Keyed on `resolvedSender`, never a parsed `From`.
-  The reader takes a pin provider, not a snapshot, and reads it on every
-  attempt: a reader lives as long as its screen.
+  `signerKeys` (`EncryptedMessageReader.signerInputs`) — intact is the only key
+  and the only route to `verifiedConfirmed`; revoked or broken is
+  `pinUnusable`, so a signed message reads `keyChanged`. Keyed on
+  `resolvedSender`, never a parsed `From`. The reader takes a pin provider,
+  not a snapshot, and reads it on every attempt: a reader lives as long as its
+  screen.
+- **First-seen signer history** (`SignerKeyHistory`, same store, key
+  `contacts.signerFirstSeen`): per address, the first fingerprint this device
+  saw make a valid signature. Written only by the reader, only on
+  `signerNotConfirmed`, and only when the signing key's own User IDs name the
+  resolved sender; never overwritten (a different key is `keyChanged` until a
+  QR pin supersedes it). Same HLP/wipe/unpair handling as pins.
 - **Sender:** `ClientEncryptedSender.applyPins` runs after resolve and before
   the vault opens. Revoked → `recipientKeyRevoked` ("verify the new key by
   QR"); broken, or a relay key whose bytes fingerprint differently →
@@ -254,6 +261,10 @@ is the server's pin, not this device's.
   opens with no await before encrypting (`recheckPins`). A recipient whose
   pin no longer lands on the key already chosen stops the send with the same
   two outcomes; it is never re-chosen silently.
+- **Stored pins that will not decode are never written over.** Every write
+  is refused while `persistedPinsUnreadable` holds (a write would replace the
+  map with the one new pin), and the QR save throws
+  `RecipientPinStoreError.unreadable` after keeping the contact.
 - A pin is trusted only while its bytes fingerprint to the stored fingerprint
   (`broken` otherwise, never "absent"). The reader and sender each take a
   provider returning a `RecipientPinSnapshot` value, never a snapshot taken
@@ -292,6 +303,32 @@ Same protocol as KyPost for Android and Linux; change it in all three.
   description, which `localizedDescription` would drop. The outbox count also
   lives in `health.pending`, recounted by the repository after every write and
   every sync, so syncs the change monitor runs reach the banner.
+- **Contact sync never discards or duplicates the user's work**
+  (`ContactSyncRepository`):
+  - The cursor describes rows held: with the table empty and a cursor above 0
+    the sync resets it and pulls from 0 (MailRepository's `hasRows` rule). It
+    is also reset wherever the store files are deleted.
+  - Tombstones are removed only for the uids the request carried
+    (`ContactPendingDeletesStore.remove`); `tooOld` and store deletion never
+    clear them.
+  - Server writes are stamped with the sync's start time, never "now", so
+    `ContactDAO.upsert`'s newer-wins guard keeps an edit made while the
+    request was out. `assignUid` takes the pushed `updatedAt` for the same
+    reason.
+  - `tooOld` drops only synced rows (`ContactDAO.clearSynced`): `needsSync`
+    rows keep their localIds, tombstones stay, and the re-pull runs at once
+    (once — a second `tooOld` stops).
+  - Every create carries its localId as `clientRef`, and reconciliation
+    matches an echoed `clientRef` exactly before falling back to content.
+    **The relay does not store or echo it yet** (KyPost-Server
+    `contactSyncChange` ignores the field), so until it does the protection
+    is `ContactCursorStore.createsInFlight`: set while a push with creates is
+    unanswered, it makes the next sync pull and reconcile pending creates
+    before pushing them again.
+  - The Apple Contacts reconcile refuses a pass that would delete every
+    linked card or more than half of them (cards already gone do not count),
+    aborts on a failed Contacts read, and reports withheld deletes through
+    `ContactSyncHealth.withheldCardDeletes` to `ContactSyncBanner`.
 - **vCard** (`Utilities/VCard.swift`, Android #184): 4.0 or 3.0; every value
   escaped and stripped of control characters by **unicode scalar** (C0, DEL,
   C1, U+2028/2029 — wider than Android), so no field can start a property or a
@@ -311,16 +348,20 @@ Same protocol as KyPost for Android and Linux; change it in all three.
   so the screen simply goes back to offering Decrypt; and `noEncryptedContent`
   is *terminal*, so the UI must not offer Retry. `readOutcomeAllowsRetry` is
   the single place that decides this.
-- **`signerKeys` arrive already narrowed to the resolved sender.** Do not
+- **`signerKeys` arrive already narrowed to the resolved sender** — as
+  candidates only; trust is this device's (see "PGP signature trust"). Do not
   re-narrow them, and never parse a `From` header to do it. Android shipped
   exactly that and a differential harness caught it disagreeing with the
   server's parser on 27 of 111 adversarial headers.
 - **PGP payload DTO defaults use `decodeIfPresent`.** The relay omits false and
   empty signer-key fields, so synthesized decoding turns the first ordinary
   signing key into a fetch failure instead of applying the documented defaults.
-- **Render `resolvedSender`, never the raw `From`,** wherever a verdict is
-  shown. The two are separable by an attacker, and a correct verdict displayed
-  next to the wrong address is still a lie.
+- **Never render the raw `From` as a verdict's identity, and render
+  `resolvedSender` as one only beside `verifiedConfirmed`** (the address the
+  user pinned). Every other sender verdict is shown with what the signing key
+  names (`signatureIdentity`), and `signatureIdentityMismatch` warns when the
+  displayed `From` is not among the bound addresses — a warning only; the
+  display parser's address never sets or raises a verdict.
 - A decrypt failure must **not** clear `EnrollmentSession`. One message failing
   says nothing about the held key, and clearing re-prompts for every later
   message.
@@ -362,8 +403,10 @@ Same protocol as KyPost for Android and Linux; change it in all three.
   `cid:`. Markup inside an HTML comment or a raw-text/RCDATA
   element (`script`, `style`, `textarea`, `title`, `xmp`, `iframe`,
   `noembed`, `noframes`, `plaintext`) is text, as an HTML parser reads it: it
-  is never rewritten and spends no budget. `data:` images render with `loadsSubresources` off (verified against
-  WebKit), so remote content stays blocked.
+  is never rewritten and spends no budget. `data:` images render under the
+  reader's remote-content block (`loadsSubresources` off plus
+  `RemoteContentBlocker`, which exempts only `data:` and `about:`;
+  `RemoteContentBlockingTests`), so remote content stays blocked.
   **The scan must stay linear on any input** (`MarkupScanner`): no
   backtracking pattern over an open-ended tag or body; malformed markup made
   the old single regex slow down quadratically. Tag names match as ICU
@@ -474,8 +517,34 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
   equally lossless. Anything else keeps the previous record.
 - **The vault is one Keychain item** (`VaultRecord`: kind, generation,
   fingerprint, material), so replacement is atomic and a failed write leaves
-  the old record. The earlier two-item layout is still read and retired on the
-  next store. A record that will not decode throws; it is never sealed over.
+  the old record. A record that will not decode throws; it is never sealed
+  over.
+- **The material is never stored in the clear** (format 2). `store` seals the
+  whole plaintext record (format 1) to the device key's public half
+  (`DeviceKeySealing`: SecKey ECIES X9.63-SHA256 AES-GCM) — no prompt — and
+  keeps only the header in the clear for `storedHeader()` (reporter,
+  acknowledgement, `isEnrolled`). `openRecord()` is the only way to the
+  material: a Secure Enclave decrypt under `.userPresence`, then the sealed
+  header must equal the clear one. The SE/LAContext boundary is
+  `VaultKeySealing`; tests use `FakeKeySealing` (`testVault`).
+- **Migration:** a plaintext record (format 1, or the older two-item layout)
+  is sealed on the first `openRecord()`; the seal is opened under presence
+  (the check, and proof it opens) before it replaces the plaintext in the same
+  item, compare-and-set against what was read, and the two-item keys are
+  removed. A cancelled prompt or a seal that does not open writes nothing.
+- **Prompt policy: once per app unlock** (`PresenceContext.shared`). The app
+  unlock's evaluated `LAContext` is adopted
+  (`DeviceAuthenticating.authenticateForUnlock`); otherwise the first open
+  prompts and its context is kept. `AppLockManager.lock()` /
+  `lockAfterGrace()` and `EnrollmentVault.destroy*` invalidate it. **The lock
+  wins a race:** an open (or enrollment ECDH) whose lease predates an
+  invalidation throws `cancelled` and returns no plaintext, and the reader and
+  sender install material only through `EnrollmentSession.install(_:ifEpoch:)`
+  with the epoch read before the open (every `clear()` advances it).
+  Enrollment's ECDH uses the same context, so reading the previous record does
+  not prompt twice.
+- **Secure Enclave required** outside the Simulator: key generation refuses a
+  device without one (all supported hardware has one).
 - **Order: validate → store durably → hold → acknowledge.** No session install
   and no acknowledgement for material not on disk.
 - **Acknowledge with metadata.** A keyring is confirmed as
@@ -488,7 +557,8 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
 - **Each pending marker carries a revision** minted per delivery. The reporter
   clears or advances it only via `replacePendingReport(ifRevision:)` with the
   revision it read before sending, so a request that finishes after a
-  re-enrollment cannot erase or rewind the newer marker.
+  re-enrollment cannot erase or rewind the newer marker. It reads the clear
+  header (`storedHeader`), so restating enrollment never prompts.
 - **Teardown marker (Android `b0786ee8`).** Enabling Hostile Location
   Protection destroys the vault *then* marks it, so the reporter tells the
   server `encryptionEnrolled: false`. `destroy` leaves the marker; `store`
@@ -509,15 +579,21 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
 - This app has two address parsers and **neither may reach a verdict**:
   `RelayMailSource.splitSender` fills display fields, and `EmailAddress.parse`
   builds outgoing recipients. Audited 2026-08-18; keep them apart.
-- Eight states, not verified/unverified (`unsigned` and `unchecked` describe
-  the message, the other six its sender). The line that matters is **identity**
-  (`verifiedConfirmed` — confirmed out of band) versus **continuity**
-  (`verifiedSeenBefore` — same key as last time). Most keys arrive by Autocrypt
-  harvest, so a flat "verified" overclaims for nearly all of them. The wording
-  is part of the contract.
-- Ordering is load-bearing: a `conflict` outranks both a good key and an
-  invalid signature for the same sender, because reporting the survivor as
-  verified hides precisely the event worth reporting.
+- Nine states, not verified/unverified (`unsigned` and `unchecked` describe
+  the message, the other seven its sender). The line that matters is
+  **identity** (`verifiedConfirmed` — pinned on this device by QR) versus
+  **continuity** (`verifiedSeenBefore` — same key as this device's first-seen
+  history); `signerNotConfirmed` is a valid signature by a key only the relay
+  vouches for. Most keys arrive by Autocrypt harvest, so a flat "verified"
+  overclaims for nearly all of them. The wording is part of the contract.
+- **The relay is never a trust input.** `SignerKey` has no `verified` field and
+  the DTO does not decode it. The only inputs are `LocalSignerTrust` (pin,
+  unusable pin, or first-seen fingerprint). The relay's `conflict` can only
+  lower a verdict to `keyChanged`, and is ignored under a pin.
+- Ordering is load-bearing: an unusable pin, then (unpinned) a relay
+  `conflict`, outrank everything; then no attributed key → `signerUnknown`,
+  invalid → `invalid`, and only then the pin / history comparison. Reporting a
+  survivor as fine hides precisely the event worth reporting.
 - `signerUnknown` is **not an accusation** and does not mark a row: an ordinary
   correspondent not yet in the address book, a rotated key, and a forgery are
   locally indistinguishable.
@@ -551,10 +627,27 @@ old sentence edited out.
   advances the wipe counter. Both serialise through one in-flight task: two
   concurrent checks otherwise read the same count, both write `n + 1`, and both
   clear the lockout gate at the same instant.
-- The lockout deadline is on **`CLOCK_MONOTONIC_RAW`**, and clamped to the
-  stored duration. A wall clock is cleared from the Date & Time pane; a
-  monotonic one restarts at zero on reboot, so without the clamp a reboot reads
-  the deadline as the whole previous uptime.
+- The lockout deadline is on **`CLOCK_MONOTONIC_RAW`**, stored with its
+  duration and the boot it was written in (`kern.bootsessionuuid`). A wall
+  clock is cleared from the Date & Time pane; a monotonic one restarts at zero
+  on reboot. A deadline from another boot restarts once as now + duration and
+  is written back (clamping alone froze the countdown for days); within a
+  boot, or with no boot id, it is clamped to the duration. The manager also
+  holds the deadline in memory and gates on the later of the two, so a failed
+  Keychain write is never free guesses.
+- **Whether the app starts locked is decided from `AppLockStore.lockState`,
+  and `.unreadable` is locked.** A Mac login item reads the Keychain before
+  it is ready; reading that as off started the app unlocked and made `lock()`
+  a no-op all session. `refreshLockState` re-reads it (each unlock attempt,
+  and each second the lock screen is up); only an *unresolved* flag that then
+  reads off releases the lock without a prompt.
+- **A device-owner unlock (Touch ID, password) resets the wrong-PIN count and
+  any lockout**, stored and in session, under the same serialisation as the
+  PIN checks. A cancelled prompt (`DeviceAuthOutcome.cancelled`) counts
+  toward nothing; concurrent `requestUnlock` calls share one prompt.
+- **`PinPepper.ensureExists` never downgrades.** With a Secure Enclave present,
+  a failed enclave key throws `PepperUnavailable`; the software pepper is only
+  for machines without one.
 - **The tripwire is armed by `setPin`, not by `setLockEnabled`.** The PIN is
   optional on this platform, so arming it with the toggle would make
   "configured, and the PIN vanished" true immediately and wipe the machine at
@@ -588,10 +681,21 @@ old sentence edited out.
 - **The wipe fails closed.** `WipeResult.complete` is only returned when every
   step ran; a step must not catch its own errors, or the step cannot fail and
   the claim cannot be supported. An incomplete run keeps its marker, resumes at
-  the next launch, and after `SecurityWipe.maxResumes` sets `abandoned` —
-  which stops the retries **without** forgetting. Clearing the marker to
-  express "giving up" is the bug that presented a clean first-run app over data
-  that was never deleted.
+  the next launch, and on its `SecurityWipe.maxAttempts`th (3rd) failed run
+  — the first run plus two resumes — sets `abandoned`, which stops the retries
+  **without** forgetting. Clearing the marker to express "giving up" is the bug
+  that presented a clean first-run app over data that was never deleted.
+- **The lock comes off last, and only after a complete run.** The `appLock`
+  step keeps Require Unlock to Open; `SecurityWipeSteps.releaseLock` (the
+  `release:` step of `SecurityWipe.run`) removes it only when every other step
+  succeeded. An incomplete wipe rebuilds a locked app.
+- **The in-progress and abandoned markers are mirrored into the Keychain**
+  (`WipeStateStore`), and either copy is believed. A Keychain marker with no
+  defaults record (a deleted plist, or a reinstall — Keychain items survive
+  both) resumes the wipe rather than blocking, so reinstalling stays the
+  recovery. An unreadable Keychain reads as no marker.
+- **The failed-unlock reset is this wipe** (`resetAfterFailedUnlock` →
+  `performSecurityWipe`). Never give it a step list of its own.
 - **Order: in-memory plaintext, then local files, then network.** The
   deregister is not a step and is never folded into the result — an unreachable
   relay says nothing about local data, and counting it would keep the resume
@@ -629,6 +733,34 @@ old sentence edited out.
 - Un-gestured navigations stay blocked regardless of scheme: a
   `<meta http-equiv="refresh">` is plain HTML and a main-frame navigation, so
   neither the JavaScript switch nor `loadsSubresources` touches it.
+- **Remote content is blocked by a content rule list, not only a flag**
+  (`RemoteContentBlocker`, `EmailBodyWebView.makePage`). Every reader page
+  — server-rendered and decrypted alike — gets the block-all list (exempt:
+  `data:`, `about:`) before its first load; "Load Remote Content" builds a
+  page without it for that message's HTML only. No list, no render (fail
+  closed). `RemoteContentBlockingTests` renders every beacon vector through
+  the reader's own page and counts zero fetches: over loopback HTTP where a
+  listener is allowed (iOS Simulator, CI) — the sandboxed macOS host may not
+  listen, and must not gain a network-server entitlement for a test — and
+  through a URL scheme handler everywhere. Measured 2026-10-13: over HTTP
+  `loadsSubresources = false` alone already stopped every vector, so the list
+  is defence in depth there; it is what stops custom-scheme loads.
+
+### The local store (`Data/Database/AppDatabase.swift`, `AppSchemaVersions.swift`)
+
+- **Each schema version lists every entity as it was at that version** — a
+  nested snapshot, never a live `@Model` that changed later. V3 once listed
+  the live `ContactEntity` (which gained `isSelf` at V6), so every V3 store
+  read as an unknown version and was deleted at launch. A new version is
+  added to `SchemaMigrationTests`, which writes a store at every version and
+  opens it with the current plan.
+- **A store that will not open is deleted only when this build can never
+  read it** (`AppDatabase.openFailureDisposition`): an unknown model version,
+  a failed migration (its hashes are not the current version's), or a file
+  that is not a database. A full disk, a locked or unreadable file, an I/O
+  error, or a current-version store that fails anyway keeps the file and runs
+  the session in memory. The store holds unsynced contacts, and Apple
+  Contacts cards follow its rows; it is not a disposable cache.
 
 ### Mail delta sync (`Data/Mail`, `Data/Storage/MailCursorStore.swift`)
 
@@ -653,6 +785,9 @@ old sentence edited out.
 - **Only a full window may prune, and only window rows.** A partial delta
   describes what changed; everything it omits is still legitimately in the
   mailbox. Pruning against one deletes the folder.
+- **One empty full window over cached rows prunes nothing**
+  (`EmailDAO.unconfirmedEmptyWindows`): the next refresh asks for the full
+  window again, and only a second empty answer in a row prunes.
 - **Mail older than the window is kept** (KyPost-Server `before=` paging and
   `agedOut`/`hasMore`/`nextBefore`; Android #183). `EmailEntity.inWindow` is
   false for rows paged in by "Load older mail" (`MailRepository.loadOlder`) or
@@ -735,8 +870,12 @@ old sentence edited out.
   same pair **together with that row's OpenPGP state** — a result carries
   none, and dropping it hides a cached verdict or turns a client-protected row
   into a server fetch), and Reply All uses the result's own `sentTo`/`cc` —
-  the body endpoint carries none. `InboxViewModel.email(for:)` (macOS pop-out
-  readers) prefers the folder row but takes the result's To/Cc.
+  the body endpoint carries none. `InboxViewModel.email(for:)` prefers the
+  folder row but takes the result's To/Cc. A macOS pop-out reader resolves
+  its row once through `resolveEmail(for:)`: the list's row, else the row it
+  was opened with (`rememberForWindow`, memory only, dropped by
+  `forgetAccount`), else the cache — so a folder switch or search never
+  blanks it. An uncached result's window does not survive a relaunch.
 - **Results land only while their submission is the newest and their query
   and folder are still on screen.** A failure says why and shows the folder
   list — never an older query's results. The search ends on clearing or
@@ -748,6 +887,42 @@ old sentence edited out.
 - Known gap: results carry no PGP flags (the server sends none), so encrypted
   mail found only by search and not cached opens through `/api/mail/body` with no decrypt
   path, like older mail.
+
+### Pairing and relay certificate pinning (`Domain/UseCases/DeviceRegistrationService.swift`, `Data/Networking/PinnedSessionDelegate|RelayPairingConnection`, `Data/Storage/SecurePairingStore.swift`)
+
+- **Every client pairs with `kypost://native-pair`.** Desktop pairing
+  (`kypost://desktop-pair`) is removed: its session token was never sent by
+  anything. Its link opens nothing; `DesktopSessionStore` survives only to
+  erase a token an older build stored (unpair, wipe, failed-unlock reset).
+- **The pin is bound to its host** (`pinnedSpkiHost`; an unbound legacy pin
+  belongs to the stored srv). `savePairing(_:pinnedSpkiHash:)` writes it with
+  the pairing, and saving another host without a pin removes it.
+- **A pairing pins its own connection before anything is sent.** Pin
+  expected = the link's `pin=`, else the pin stored for that host. A link pin
+  differing from a stored one is refused (remove the pairing in Settings →
+  Connection first) — never swapped in. `RelayPairingConnection` (own
+  ephemeral session and delegate) probes; the probed hash must match the
+  expected pin, or becomes the pin when there is none; no hash fails the
+  pairing. The registration then rides that connection, held to that pin.
+- **Never arm a pin on the shared `relaySession` delegate.** It enforces
+  stored pins only, read through `SecurePairingStore.pinnedSpkiHash(in:forHost:)`.
+  **`reregisterIfPaired` never captures a pin**; it rides the shared session.
+- **A pin lookup that throws refuses the handshake** (`PinFailure.unreadable`
+  → `NetworkError.pinUnreadable`); only "not found" means unpinned. Never
+  `try?` a pin read on an enforcement path.
+- **Relay sessions are `relaySessionConfiguration()`**: ephemeral, no
+  `URLCache`, no cookies. `HTTPClient(session:)` has no default — never hand a
+  relay client `URLSession.shared`. Redirects must keep scheme https, host and
+  effective port.
+- A pairing (not a re-registration) posts `.kyPostPaired` once stored.
+- **A reset ends registrations in flight.** `.kyPostSessionReset` and
+  `SingletonGraph.shutdown()` call `DeviceRegistrationService.cancelAll()`,
+  which closes open pairing connections (graph shutdown's
+  `relaySession.invalidateAndCancel()` does not reach them) and moves the
+  service's session on. A result from an older session stores and announces
+  nothing — checked before every write and after every await — or an answer
+  landing after a wipe or failed-unlock reset would restore the pairing on
+  an app that reset just unlocked.
 
 ### Relay error mapping (`Data/Mail/MailSource.swift`)
 
@@ -767,6 +942,14 @@ old sentence edited out.
   not a form.
 - 502 is `.upstreamFailure` and retryable with backoff; other 5xx are not.
   Telling the user to retry is only honest for the one that is.
+- **A send is the exception** (`MailRepository.send`,
+  `MailOutcome.sendOutcomeUnknown`): a transport error, any 5xx, or a 2xx
+  that will not decode is `.mayHaveBeenSent` — the relay answers only after
+  SMTP accepted the message, so the message may be out. `/api/mail/send`
+  carries an `Idempotency-Key` header (`OutgoingEmail.idempotencyKey`) and,
+  with attachments, a 180 s timeout. **The relay does not dedupe on the key
+  yet**; until it does, the guard is compose refusing a second send without
+  the user's explicit retry. The client-custody `send-pgp` path has neither.
 
 ### KyIdentity sign-on via KyAuth, iOS only (`Domain/SignOn`, `Data/Networking/KyIdentitySignOnClient.swift`, `KyIdentitySignOnCoordinator`)
 
@@ -814,7 +997,8 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
   same-id row in another folder stays visible. The source folder is pinned at
   tap time.
 - **Commit points:** the timer, leaving the list, iOS backgrounding (under a
-  background-task assertion), and app lock. Leaving is switching tabs on iOS
+  background-task assertion), app lock, and quitting on macOS
+  (`QuitPreparation`, waiting at most 10 s for the relay). Leaving is switching tabs on iOS
   or, in the iOS stack layout only, opening a message over the list; on macOS
   switching to Contacts or closing the window. In the iOS split layout the
   list stays beside the reader, so opening a message commits nothing and held
@@ -1022,8 +1206,10 @@ When the user requests a durable behavior change, record it here or in the relev
   (`AppEnvironment` / `SingletonGraph.shared` aliasing), lifecycle/lock
   ordering at launch, the pull poll as push-mode heartbeat.
 - `KyPost/Presentation/AGENTS.md` — SwiftUI views, view models, and
-  components: theming and font contracts, MainActor isolation rules, compose
-  recipient tokens and contact search, and the macOS/iOS input deviations.
+  components: theming, contrast and font contracts (and the recorded palette
+  deviations from web/Android), MainActor isolation rules, compose recipient
+  tokens and contact search, the macOS Message menu, and the macOS/iOS input
+  deviations.
 
 ## Product icon
 

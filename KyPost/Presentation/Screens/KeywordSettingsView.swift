@@ -31,7 +31,7 @@ struct KeywordSettingsView: View {
             if viewModel.keywordSettings.isEmpty {
                 Text("No keywords yet — they appear after your first inbox refresh.")
                     .font(AppFont.ui(14))
-                    .foregroundStyle(theme.ink.opacity(0.75))
+                    .foregroundStyle(theme.secondaryInk)
                     .listRowBackground(theme.panel)
             } else {
                 ForEach(viewModel.keywordSettings) { setting in

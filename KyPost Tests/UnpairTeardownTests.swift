@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import SwiftData
 import Testing
 @testable import KyPost
 
@@ -17,6 +18,18 @@ import Testing
             userDefaults: UserDefaults(suiteName: "tests.\(UUID().uuidString)")!,
             keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)"),
             database: AppDatabase(inMemory: true)
+        )
+    }
+
+    /// Storing seals to the device key, which a test host has none of: the
+    /// graph's vault gets the fake one, on the graph's own Keychain and a
+    /// throwaway tag (destroy deletes the key by tag).
+    private func useFakeDeviceKey(_ graph: SingletonGraph) {
+        graph.enrollmentVault = EnrollmentVault(
+            keychain: graph.keychain,
+            keyTag: "org.kysecurity.mail.tests.\(UUID().uuidString)",
+            sealing: FakeKeySealing(),
+            presence: PresenceContext()
         )
     }
 
@@ -49,10 +62,41 @@ import Testing
             deviceRegistrationService: graph.deviceRegistrationService,
             deregisterDeviceUseCase: graph.deregisterDeviceUseCase,
             pushNotificationDispatcher: graph.pushNotificationDispatcher,
+            erasePreservedStore: graph.erasePreservedStoreStep,
             enrollmentVault: graph.enrollmentVault,
             pushRepository: graph.pushRepository,
             mailSignatureStore: graph.mailSignatureStore
         )
+    }
+
+    /// A session running in memory over a store it kept (a recoverable open
+    /// failure) clears only the in-memory copy on unpair. The kept file holds
+    /// the account's mail and must not reopen under the next pairing.
+    @Test func unpairingErasesAStoreKeptUnderAnInMemorySession() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "kypost-unpair-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appending(path: "store.sqlite")
+        _ = try {
+            let kept = try AppDatabase(url: url)
+            let context = ModelContext(kept.container)
+            context.insert(EmailEntity(from: Email(
+                serverId: "a-1", folder: "INBOX", senderName: "A", senderEmail: "a@x",
+                subject: "Account A's mail", body: "A's body", keywords: [],
+                receivedAt: Date(), read: false, starred: false
+            )))
+            try context.save()
+        }()
+
+        let graph = try makeGraph()
+        graph.preservedStoreURL = url
+        await makeViewModel(graph).unpair()
+
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        #expect(AppDatabase.storeMayOpen(defaults: graph.userDefaults, at: url))
+        let reopened = try AppDatabase(url: url)
+        #expect(try ModelContext(reopened.container).fetch(FetchDescriptor<EmailEntity>()).isEmpty)
     }
 
     /// The envelope is the account's private key sealed to *this* Mac. Left
@@ -60,6 +104,7 @@ import Testing
     /// machine the account no longer knows about, so no revocation reaches it.
     @Test func unpairingDestroysTheSealedEnvelope() async throws {
         let graph = try makeGraph()
+        useFakeDeviceKey(graph)
         try graph.enrollmentVault.store(
             privateKey: Data("-----BEGIN PGP PRIVATE KEY BLOCK-----".utf8),
             identityFingerprint: "AABBCCDDEEFF00112233445566778899AABBCCDD"
@@ -68,6 +113,35 @@ import Testing
 
         await makeViewModel(graph).unpair()
         #expect(!graph.enrollmentVault.isEnrolled)
+    }
+
+    /// Desktop pairing is gone, but a session token an older build stored is
+    /// still this account's credential and goes with the pairing — as do the
+    /// pin and any relay response an older `.default` session cached.
+    @Test func unpairingErasesLegacyDesktopSessionPinAndCache() async throws {
+        let graph = try makeGraph()
+        // No device secret: the deregister call skips the network.
+        try graph.securePairingStore.savePairing(Pairing(
+            sub: "u1", deviceSecret: "", srv: server, registrationUrl: nil,
+            pairingToken: "pt", lastDeviceId: nil, pairedAt: Date()
+        ), pinnedSpkiHash: "hash-a")
+        for key in DesktopSessionStore.legacyKeys {
+            try graph.keychain.set("old", forKey: key)
+        }
+        let url = URL(string: "\(server)/api/inbox")!
+        let response = try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
+        URLCache.shared.storeCachedResponse(
+            CachedURLResponse(response: response, data: Data("mail".utf8)),
+            for: URLRequest(url: url)
+        )
+
+        await makeViewModel(graph).unpair()
+
+        for key in DesktopSessionStore.legacyKeys {
+            #expect(try graph.keychain.string(forKey: key) == nil)
+        }
+        #expect(try graph.securePairingStore.pinnedSpkiHash(forHost: "relay.example.com") == nil)
+        #expect(URLCache.shared.cachedResponse(for: URLRequest(url: url)) == nil)
     }
 
     /// Destroying the sealed blob while an unsealed copy sits in this process
@@ -137,6 +211,7 @@ import Testing
     /// is left for B.
     @Test func pairingAnotherAccountOverThisOneLeavesNoneOfItsState() async throws {
         let graph = try makeGraph()
+        useFakeDeviceKey(graph)
         try graph.securePairingStore.savePairing(Pairing(
             sub: "u1", deviceSecret: "s1", srv: server, registrationUrl: nil,
             pairingToken: "pt", lastDeviceId: "dev-1", pairedAt: Date()
@@ -158,13 +233,13 @@ import Testing
         graph.inboxViewModel.delete(serverIds: ["w1"])
         #expect(graph.inboxViewModel.undoMessage != nil)
 
-        // Account B's registration, against a stub relay. The TOFU probe
-        // would open a real connection; nothing here pins.
-        graph.nativeRegistrationClient = NativeRegistrationClient(httpClient: stubClient(
+        // Account B's registration, against a stub relay: the graph's wiring
+        // with the pairing connection swapped for one that never dials out.
+        let connections = StubPairingConnections(client: stubClient(
             json: #"{"ok": true, "deviceId": "dev-2", "deviceSecret": "s-2"}"#
         ))
         let service = graph.deviceRegistrationService
-        service.probeSpkiHash = nil
+        service.makePairingConnection = { connections.make(host: $0, pin: $1) }
         let outcome = await service.pair(
             params: PairingParams(sub: "u2", srv: server, pt: "pt-b"), deviceToken: "apns"
         )

@@ -50,6 +50,31 @@ nonisolated struct PendingPickup: Identifiable {
     var email: OutgoingEmail
 }
 
+/// Every compose on screen, so quitting the app (macOS ⌘Q,
+/// `AppDelegate.applicationShouldTerminate`) can ask about unsent messages the
+/// way closing one window does. `ComposeView` registers on appear and leaves
+/// on disappear; references are weak.
+@MainActor
+final class OpenComposeRegistry {
+    static let shared = OpenComposeRegistry()
+
+    private var models: [ObjectIdentifier: () -> ComposeViewModel?] = [:]
+
+    func register(_ model: ComposeViewModel) {
+        models[ObjectIdentifier(model)] = { [weak model] in model }
+    }
+
+    func unregister(_ model: ComposeViewModel) {
+        models[ObjectIdentifier(model)] = nil
+    }
+
+    /// Open composes whose close would lose something
+    /// (`ComposeViewModel.closingNeedsConfirmation`).
+    var unsentCount: Int {
+        models.values.compactMap { $0() }.filter(\.closingNeedsConfirmation).count
+    }
+}
+
 @Observable
 @MainActor
 final class ComposeViewModel {
@@ -102,6 +127,16 @@ final class ComposeViewModel {
     /// Never route this into a WKWebView: it shares no session and would put
     /// an account-password field inside this app.
     private(set) var webmailHandoffURL: URL?
+    /// The last send got no answer it could trust — a timeout, a dropped
+    /// connection, a 5xx — so the message may have gone out. Send stays
+    /// disabled: the user checks Sent and then either closes or explicitly
+    /// sends again (`sendAgainAfterUncertainOutcome`), never by a stray ⌘↩.
+    private(set) var sendOutcomeUnknown = false
+    /// The `Idempotency-Key` the next send carries. Kept across a send whose
+    /// outcome is unknown, so the deliberate retry is the same request to a
+    /// relay that dedupes on it; replaced after any definite answer, so a
+    /// corrected message after a refusal is not mistaken for the refused one.
+    private(set) var idempotencyKey = UUID().uuidString.lowercased()
 
     private var searchTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
@@ -232,7 +267,7 @@ final class ComposeViewModel {
     /// this class clears `pendingPickup` through that binding's setter)
     /// synchronously, before this `Task { }`-wrapped action body ever runs.
     func confirmPickupFallback(_ pickup: PendingPickup) async {
-        guard !isSending, !isSent, !didSend, !isLocked() else { return }
+        guard !isSending, !isSent, !didSend, !sendOutcomeUnknown, !isLocked() else { return }
         // Claimed here rather than in `deliver`, so nothing can slip between
         // the guard above and the in-flight state (see `send`).
         isSending = true
@@ -244,6 +279,9 @@ final class ComposeViewModel {
         var email = pickup.email
         pendingPickup = nil
         email.allowPickupFallback = true
+        // The refusal was a definite answer, so this is a new request; the
+        // only field besides the flag that may differ from the refused one.
+        email.idempotencyKey = idempotencyKey
         await deliver(email)
     }
 
@@ -255,7 +293,7 @@ final class ComposeViewModel {
     /// Client-custody account: the key exists only in the user's browser, so
     /// save the composed message as a server-side draft and send them there.
     func handOffToWebmail(fontTraits: @escaping RichTextHTML.FontTraits) async {
-        guard !isSending, !isSent, !didSend, !isLocked() else { return }
+        guard !isSending, !isSent, !didSend, !sendOutcomeUnknown, !isLocked() else { return }
         // A fresh attempt starts with a clean slate: an earlier notice or
         // keyless-address list must not linger over whatever this one produces.
         noticeMessage = nil
@@ -495,8 +533,9 @@ final class ComposeViewModel {
     func send(fontTraits: @escaping RichTextHTML.FontTraits) async {
         // `didSend` as well as `isSent`: the window dismisses on `didSend`
         // through an onChange, and a second ⌘↩ in that gap would post the
-        // message twice. Nothing goes out while the app is locked.
-        guard !isSending, !isSent, !didSend, !isLocked() else { return }
+        // message twice. Nothing goes out while the app is locked, and nothing
+        // after a send that may already have gone out.
+        guard !isSending, !isSent, !didSend, !sendOutcomeUnknown, !isLocked() else { return }
         // Claimed here, not in `deliver`: the recipient preflight below is an
         // `await` on a network round-trip, and a guard that only closes after
         // it leaves a window in which a second ⌘↩ passes the check above and
@@ -533,6 +572,16 @@ final class ComposeViewModel {
         await deliver(email)
     }
 
+    /// The user checked Sent after an unconfirmed send and chose to send
+    /// again. Carries the same `Idempotency-Key`, so a relay that already
+    /// delivered the first attempt can answer without mailing it twice.
+    func sendAgainAfterUncertainOutcome(fontTraits: @escaping RichTextHTML.FontTraits) async {
+        guard sendOutcomeUnknown, !isSending, !isLocked() else { return }
+        sendOutcomeUnknown = false
+        errorMessage = nil
+        await send(fontTraits: fontTraits)
+    }
+
     /// Builds the request once. `send` and the pickup re-send share the same
     /// value: rebuilding risks a subtly different message.
     private func outgoingEmail(
@@ -552,7 +601,8 @@ final class ComposeViewModel {
                 OutgoingAttachment(name: $0.name, mimeType: $0.mimeType, data: $0.data)
             },
             encrypt: encrypt,
-            sign: sign
+            sign: sign,
+            idempotencyKey: idempotencyKey
         )
     }
 
@@ -565,7 +615,20 @@ final class ComposeViewModel {
         // refusal must not outlive it and keep a stale dialog answerable.
         pendingPickup = nil
 
-        switch await sendEmail(email) {
+        let outcome = await sendEmail(email)
+        if case .mayHaveBeenSent = outcome {} else {
+            // A definite answer: the next attempt is a new request. A refused
+            // send re-sent under the key of the refusal could be answered with
+            // the refusal again by a relay that remembers keys.
+            idempotencyKey = UUID().uuidString.lowercased()
+        }
+        switch outcome {
+        case .mayHaveBeenSent(let detail):
+            sendOutcomeUnknown = true
+            errorMessage = """
+            This message may have been sent — the server didn't confirm it (\(detail)). \
+            Check your Sent folder before sending it again.
+            """
         case .success:
             didSend = true
             errorMessage = nil
@@ -736,7 +799,8 @@ final class ComposeViewModel {
         case .notPaired:
             errorMessage = "Pair this device before sending."
         case .invalid(let message), .failure(let message),
-             .notConfigured(let message), .upstreamFailure(let message):
+             .notConfigured(let message), .upstreamFailure(let message),
+             .mayHaveBeenSent(let message):
             errorMessage = "Couldn't save this as a draft: \(message)"
         case .rateLimited:
             errorMessage = "Couldn't save this as a draft — too many attempts. Try again shortly."

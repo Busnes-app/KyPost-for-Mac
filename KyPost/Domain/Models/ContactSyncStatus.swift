@@ -72,6 +72,14 @@ nonisolated enum ContactSyncStatus: Equatable, Sendable {
 final class ContactSyncHealth {
     private(set) var failures = ContactSyncFailures()
     private(set) var pending = ContactPendingSummary()
+    /// Apple Contacts cards the last reconcile refused to delete because it
+    /// would have removed more than half of the linked cards at once
+    /// (`SystemContactsExporter.performReconcile`). Zero when none were held.
+    private(set) var withheldCardDeletes = 0
+
+    func recordWithheldCardDeletes(_ count: Int) {
+        withheldCardDeletes = count
+    }
 
     func recordPending(_ summary: ContactPendingSummary) {
         pending = summary

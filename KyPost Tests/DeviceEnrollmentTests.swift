@@ -364,9 +364,7 @@ private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
     /// A 409 also settles an earlier failed delivery's marker: otherwise the
     /// next foreground repeats the claim the server just refused.
     @Test func aRefusedAcknowledgementClearsAnEarlierPendingMarker() async throws {
-        let vault = EnrollmentVault(
-            keychain: MemoryItemStore(), keyTag: "org.kysecurity.mail.tests.\(UUID().uuidString)"
-        )
+        let vault = testVault()
         try vault.store(VaultRecord(
             kind: .keyring, material: V3Fixtures.ringBytes,
             identityFingerprint: V3Fixtures.active, materialGeneration: 2

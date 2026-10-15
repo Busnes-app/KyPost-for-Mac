@@ -10,6 +10,25 @@
 import Foundation
 import Observation
 
+/// What an unpaired device tells the user. The macOS wording follows the web
+/// app's pairing page (KyPost-Server `frontend/src/pages/security/
+/// PairingPanel.tsx`): Settings → Security → Devices → "Pair a new device",
+/// whose "Pair this device" button opens a `kypost://native-pair` link and,
+/// when nothing takes it, shows the link to paste.
+enum PairingInstructions {
+    /// The inbox's not-paired state.
+    static var inbox: String {
+        #if os(macOS)
+        String(localized: "This Mac isn't paired. In KyPost on the web, open Settings → Security → Devices, choose Pair a new device, then Pair this device. Your browser opens a kypost://native-pair link in this app.")
+        #else
+        String(localized: "Pair this device (Settings → Connection) to load mail.")
+        #endif
+    }
+
+    /// Settings → Connection on macOS while unpaired.
+    static let macConnection = String(localized: "To pair this Mac, sign in to KyPost on the web and open Settings → Security → Devices. Choose Pair a new device, then Pair this device: your browser opens a kypost://native-pair link and KyPost asks you to confirm the server. If nothing opens, the web page shows the link instead; copy it and use Paste Pairing Link.")
+}
+
 /// A parsed pairing link/QR code awaiting the user's explicit confirmation
 /// before any network call fires. `existingHost` is set when accepting would
 /// replace an already-paired device, so the confirmation screen can warn

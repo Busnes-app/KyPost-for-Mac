@@ -35,7 +35,12 @@ final class MockSystemContactStore: SystemContactStoring {
 
     func fetch(identifier: String) async throws -> CNContact? { cards[identifier] }
 
-    func listAll() async throws -> [CNContact] { Array(cards.values) }
+    var failListAll = false
+
+    func listAll() async throws -> [CNContact] {
+        if failListAll { throw StubError() }
+        return Array(cards.values)
+    }
 
     func add(_ contact: CNMutableContact) async throws {
         addCount += 1
@@ -1094,5 +1099,86 @@ private func makeCard(
             cardIdentifier: "card1", groupIDs: ["unknown"], groupNames: [:]
         )
         #expect(store.groupAddCount == 0)
+    }
+}
+
+// MARK: - Mass-delete guard
+
+/// A reconcile never deletes more than half of the linked cards in one pass:
+/// each orphaned link deletes a real card in the user's own Contacts, and a
+/// store that lost most of its rows orphans most links at once.
+@MainActor
+@Suite struct SystemContactsMassDeleteGuardTests {
+    private func exported(_ count: Int) async throws -> (ExporterEnvironment, [Contact]) {
+        let env = try makeEnvironment()
+        let contacts = (0..<count).map { makeContact(name: "Person \($0)", email: "p\($0)@example.com") }
+        try await env.dao.upsert(contacts: contacts)
+        await env.exporter.reconcileAll()
+        #expect(env.mock.cards.count == count)
+        return (env, contacts)
+    }
+
+    @Test func deletingMoreThanHalfIsWithheldAndReported() async throws {
+        let (env, contacts) = try await exported(3)
+        for contact in contacts.prefix(2) { try await env.dao.deleteLocal(localId: contact.localId) }
+
+        let summary = await env.exporter.reconcileAll()
+
+        #expect(summary.withheldDeletes == 2)
+        #expect(summary.deleted == 0)
+        #expect(env.mock.cards.count == 3)
+        #expect(env.linkStore.all().count == 3)
+    }
+
+    @Test func deletingHalfOrFewerGoesAhead() async throws {
+        let (env, contacts) = try await exported(4)
+        for contact in contacts.prefix(2) { try await env.dao.deleteLocal(localId: contact.localId) }
+
+        let summary = await env.exporter.reconcileAll()
+
+        #expect(summary.withheldDeletes == 0)
+        #expect(summary.deleted == 2)
+        #expect(env.mock.cards.count == 2)
+    }
+
+    /// The way out the banner names: cards the user already removed in
+    /// Contacts delete nothing, so they do not count against the guard.
+    @Test func cardsAlreadyDeletedInContactsDoNotCount() async throws {
+        let (env, contacts) = try await exported(3)
+        for contact in contacts.prefix(2) {
+            try await env.dao.deleteLocal(localId: contact.localId)
+            let link = try #require(env.linkStore.link(localId: contact.localId))
+            try await env.mock.delete(identifier: link.cnIdentifier)
+        }
+
+        let summary = await env.exporter.reconcileAll()
+
+        #expect(summary.withheldDeletes == 0)
+        #expect(env.linkStore.all().count == 1)
+        #expect(env.mock.cards.count == 1)
+    }
+
+    @Test func theAllLinksGuardStillHolds() async throws {
+        let (env, _) = try await exported(2)
+        try await env.dao.clearAll()
+
+        let summary = await env.exporter.reconcileAll()
+
+        #expect(summary.withheldDeletes == 2)
+        #expect(env.mock.cards.count == 2)
+    }
+
+    /// A Contacts read that fails is not an empty Contacts database: every
+    /// linked card would read as already gone and lose its link.
+    @Test func aFailedContactsReadChangesNothing() async throws {
+        let (env, contacts) = try await exported(4)
+        try await env.dao.deleteLocal(localId: contacts[0].localId)
+        env.mock.failListAll = true
+
+        let summary = await env.exporter.reconcileAll()
+
+        #expect(summary == SystemContactsExporter.Summary())
+        #expect(env.linkStore.all().count == 4)
+        #expect(env.mock.deleteCount == 0)
     }
 }
