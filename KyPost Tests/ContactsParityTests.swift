@@ -638,15 +638,18 @@ private struct ContactsEnvironment {
 
     private func subkeyVerdict(_ pins: RecipientPinStore, address: String, signature: String) -> PgpSignatureState {
         let crypto = GopenPGPCrypto()
-        let keys = EncryptedMessageReader.signerKeys(
-            [], resolvedSender: address, pins: pins.snapshot(revocation: crypto)
+        let inputs = EncryptedMessageReader.signerInputs(
+            [], resolvedSender: address, pins: pins.snapshot(revocation: crypto), firstSeen: nil
         )
         let raw = crypto.verifyDetached(
             signedBytes: Data(PinnedKeyFixtures.carolSignedText.utf8),
             armoredSignature: signature,
-            signerKeys: keys.filter { !$0.conflict }.map(\.publicKey)
+            signerKeys: inputs.keys.filter { !$0.conflict }.map(\.publicKey)
         )
-        return signatureState(signature: raw, signerKeys: keys, fingerprint: crypto.fingerprint(ofArmoredPublicKey:))
+        return signatureState(
+            signature: raw, signerKeys: inputs.keys, trust: inputs.trust,
+            fingerprint: crypto.fingerprint(ofArmoredPublicKey:)
+        )
     }
 
     @Test func aForgedSyncedRevocationLeavesThePinIntact() async throws {
@@ -692,30 +695,82 @@ private struct ContactsEnvironment {
     // MARK: Reader
 
     @Test func anIntactPinReplacesTheRelaysKeysAndIsConfirmed() {
-        let offered = [SignerKey(addresses: ["alice@example.invalid"], publicKey: "RELAY-KEY", verified: false, source: "autocrypt")]
+        let offered = [SignerKey(addresses: ["alice@example.invalid"], publicKey: "RELAY-KEY", source: "autocrypt")]
         let pins = RecipientPinSnapshot(states: ["alice@example.invalid": .intact(publicKey: "PINNED", fingerprint: "FP")])
-        let keys = EncryptedMessageReader.signerKeys(offered, resolvedSender: "Alice@example.invalid", pins: pins)
-        #expect(keys.map(\.publicKey) == ["PINNED"])
-        #expect(keys.first?.verified == true)
+        let inputs = EncryptedMessageReader.signerInputs(
+            offered, resolvedSender: "Alice@example.invalid", pins: pins, firstSeen: "OTHER"
+        )
+        #expect(inputs.keys.map(\.publicKey) == ["PINNED"])
+        #expect(inputs.trust == .pinned(fingerprint: "FP"), "the pin outranks the history")
     }
 
     /// A revoked pin reads as a changed key for a signed message — no
     /// fallback to the relay's key.
     @Test func aRevokedPinReadsAsKeyChanged() {
-        let offered = [SignerKey(addresses: ["alice@example.invalid"], publicKey: "RELAY-KEY", verified: true)]
+        let offered = [SignerKey(addresses: ["alice@example.invalid"], publicKey: "RELAY-KEY")]
         let pins = RecipientPinSnapshot(states: ["alice@example.invalid": .revoked])
-        let keys = EncryptedMessageReader.signerKeys(offered, resolvedSender: "alice@example.invalid", pins: pins)
+        let inputs = EncryptedMessageReader.signerInputs(
+            offered, resolvedSender: "alice@example.invalid", pins: pins, firstSeen: nil
+        )
         let state = signatureState(
             signature: RawSignature(present: true, valid: true, signerFingerprint: "ANY"),
-            signerKeys: keys,
+            signerKeys: inputs.keys,
+            trust: inputs.trust,
             fingerprint: { _ in "ANY" }
         )
         #expect(state == .keyChanged)
     }
 
-    @Test func anUnpinnedSenderKeepsTheRelaysKeys() {
+    @Test func anUnpinnedSenderKeepsTheRelaysKeysUnderItsHistory() {
         let offered = [SignerKey(addresses: ["bob@example.invalid"], publicKey: "RELAY-KEY")]
-        let keys = EncryptedMessageReader.signerKeys(offered, resolvedSender: "bob@example.invalid", pins: .none)
-        #expect(keys == offered)
+        let inputs = EncryptedMessageReader.signerInputs(
+            offered, resolvedSender: "bob@example.invalid", pins: .none, firstSeen: "FPR-BOB"
+        )
+        #expect(inputs.keys == offered)
+        #expect(inputs.trust == .firstSeen("FPR-BOB"))
+    }
+
+    // MARK: First-seen signer history
+
+    @Test func theFirstSeenKeyIsNeverOverwritten() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let store = RecipientPinStore(defaults: defaults, hostileLocation: HostileLocationProtectionStore(defaults: defaults))
+        store.recordFirstSeen("aa11", for: " Bob@Example.invalid ", ifGeneration: store.generation)
+        store.recordFirstSeen("BB22", for: "bob@example.invalid", ifGeneration: store.generation)
+        #expect(store.firstSeenFingerprint(for: "BOB@example.invalid") == "AA11")
+        #expect(defaults.data(forKey: "contacts.signerFirstSeen") != nil)
+    }
+
+    @Test func underHostileLocationProtectionHistoryStaysInMemory() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let hostile = HostileLocationProtectionStore(defaults: defaults)
+        hostile.enabled = true
+        let store = RecipientPinStore(defaults: defaults, hostileLocation: hostile)
+        store.recordFirstSeen("AA11", for: "bob@example.invalid", ifGeneration: store.generation)
+        #expect(store.firstSeenFingerprint(for: "bob@example.invalid") == "AA11")
+        #expect(defaults.data(forKey: "contacts.signerFirstSeen") == nil)
+    }
+
+    /// Unpair clears it with the pins; the HLP sweep erases the disk copy.
+    @Test func clearingTakesTheHistoryWithThePins() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let store = RecipientPinStore(defaults: defaults, hostileLocation: HostileLocationProtectionStore(defaults: defaults))
+        store.recordFirstSeen("AA11", for: "bob@example.invalid", ifGeneration: store.generation)
+        store.clearPersisted()
+        #expect(defaults.data(forKey: "contacts.signerFirstSeen") == nil)
+        store.recordFirstSeen("AA11", for: "bob@example.invalid", ifGeneration: store.generation)
+        store.clear()
+        #expect(store.firstSeenFingerprint(for: "bob@example.invalid") == nil)
+    }
+
+    /// A write that started before a clear is dropped, not applied after it.
+    @Test func aWriteFromBeforeAClearIsDropped() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let store = RecipientPinStore(defaults: defaults, hostileLocation: HostileLocationProtectionStore(defaults: defaults))
+        let before = store.generation
+        store.clear()
+        store.recordFirstSeen("AA11", for: "bob@example.invalid", ifGeneration: before)
+        #expect(store.firstSeenFingerprint(for: "bob@example.invalid") == nil)
+        #expect(defaults.data(forKey: "contacts.signerFirstSeen") == nil)
     }
 }

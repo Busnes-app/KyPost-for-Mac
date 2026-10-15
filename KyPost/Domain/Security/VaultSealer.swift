@@ -8,6 +8,7 @@
 
 import CryptoKit
 import Foundation
+import LocalAuthentication
 import Security
 
 /// The `EnrollmentSealer` the ceremony actually runs against.
@@ -73,7 +74,11 @@ struct VaultSealer: EnrollmentSealer {
             throw EnrollmentSealerError.envelopeMalformed
         }
 
-        let privateKey = try vault.deviceKey()
+        // Under the shared presence context: the prompt this raises also
+        // covers reading the previous record in `importOpened`, and the
+        // reader's next open until the app locks.
+        let lease = vault.presence.lease(reason: EnrollmentVault.presenceReason)
+        let privateKey = try vault.deviceKey(context: lease.context)
         guard let ephemeral = SecKeyCreateWithData(
             fields.epk as CFData,
             [
@@ -94,8 +99,8 @@ struct VaultSealer: EnrollmentSealer {
             [:] as CFDictionary,
             &error
         ) as Data? else {
-            let failure = error?.takeRetainedValue()
-            if failure.map(isUserCancellation) == true {
+            if lease.wasHeld { vault.presence.discard(lease) }
+            if vaultError(from: error?.takeRetainedValue()) == .cancelled {
                 throw EnrollmentVaultError.cancelled
             }
             // A key-exchange failure that is *not* a cancellation says nothing
@@ -104,6 +109,9 @@ struct VaultSealer: EnrollmentSealer {
             // substituted because their Secure Enclave was busy.
             throw EnrollmentVaultError.unavailable
         }
+        // The app locked during the key exchange: stop before anything is
+        // stored or held.
+        guard vault.presence.keep(lease) else { throw EnrollmentVaultError.cancelled }
 
         // CryptoKit's HKDF wants a SharedSecret, which only its own key
         // agreement produces; the Secure Enclave path hands back raw bytes, so
@@ -145,8 +153,9 @@ struct VaultSealer: EnrollmentSealer {
     ) throws -> EnrollmentReport {
         // Read without trusting a held session: teardown removes the record
         // without clearing the session, so only the disk says what is sealed.
-        // A record that will not read is never sealed over.
-        let previous = try vault.storedRecord()
+        // A record that will not read is never sealed over. Opening it is a
+        // presence-checked step, covered by the key exchange's prompt.
+        let previous = try vault.openRecord()
         switch decideVaultImport(
             version: version,
             plaintext: plaintext,
@@ -169,15 +178,4 @@ struct VaultSealer: EnrollmentSealer {
             throw EnrollmentSealerError.mergeFailed
         }
     }
-}
-
-/// Distinguishes "the user dismissed the prompt" from a real failure.
-///
-/// **Only cancellation counts.** `errSecAuthFailed` is an authentication that
-/// was attempted and rejected, which is a different event with a different
-/// remedy — folding it in here would report a wrong fingerprint as "never
-/// mind", and the mirror-image mistake (treating an unanswerable check as a
-/// failed one) is what destroyed user data on Android's app lock.
-private func isUserCancellation(_ error: CFError) -> Bool {
-    CFErrorGetCode(error) == errSecUserCanceled
 }

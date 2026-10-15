@@ -43,6 +43,7 @@ import Testing
             "credentialGate",
             "pairing",
             "mailCursors",
+            "recipientPins",
             "mailSignature",
             "appLock",
             "userDefaults",

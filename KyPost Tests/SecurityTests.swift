@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import LocalAuthentication
 import Testing
 @testable import KyPost
 
@@ -658,7 +659,9 @@ private struct OutcomeAuthenticator: DeviceAuthenticating {
     init(_ outcome: DeviceAuthOutcome) { self.outcome = outcome }
     func canAuthenticate() -> Bool { true }
     func authenticate(reason: String) async -> Bool { outcome == .success }
-    func authenticateForUnlock(reason: String) async -> DeviceAuthOutcome { outcome }
+    func authenticateForUnlock(reason: String) async -> (outcome: DeviceAuthOutcome, context: LAContext?) {
+        (outcome, nil)
+    }
 }
 
 /// Holds every prompt open until the test releases it.
@@ -667,12 +670,12 @@ private final class GatedAuthenticator: DeviceAuthenticating, @unchecked Sendabl
     private let result = Box<DeviceAuthOutcome?>(nil)
 
     func canAuthenticate() -> Bool { true }
-    func authenticate(reason: String) async -> Bool { await authenticateForUnlock(reason: reason) == .success }
+    func authenticate(reason: String) async -> Bool { await authenticateForUnlock(reason: reason).outcome == .success }
 
-    func authenticateForUnlock(reason: String) async -> DeviceAuthOutcome {
+    func authenticateForUnlock(reason: String) async -> (outcome: DeviceAuthOutcome, context: LAContext?) {
         calls.mutate { $0 += 1 }
         while true {
-            if let outcome = result.value { return outcome }
+            if let outcome = result.value { return (outcome, nil) }
             await Task.yield()
         }
     }

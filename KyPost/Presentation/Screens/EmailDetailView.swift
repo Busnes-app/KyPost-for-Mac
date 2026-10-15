@@ -694,15 +694,20 @@ struct EmailDetailView: View {
     private func decryptedNotices(_ model: EncryptedReadViewModel) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             if let line = model.signatureLine {
-                // A sender verdict is shown against the address the SERVER
-                // resolved, never the raw From — the two are separable by an
-                // attacker, and a correct verdict beside the wrong address is
-                // still a lie.
+                // A sender verdict is shown with the pinned address or what
+                // the signing key names — never the server's resolved sender
+                // as an identity it did not earn on this device.
                 Text(line)
                     .font(AppFont.ui(12))
                     .foregroundStyle(
                         signatureIsAlarming(model.signature) ? SemanticColors.danger : theme.ink
                     )
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let warning = model.signatureIdentityWarning {
+                Text(warning)
+                    .font(AppFont.ui(12))
+                    .foregroundStyle(SemanticColors.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let omitted = model.attachmentsOmittedMessage {

@@ -64,6 +64,8 @@ nonisolated final class EnrollmentSession: Sendable {
         var members: [[UInt8]] = []
         var activeIndex = 0
         var generation: UInt64?
+        /// Advanced by every `clear()`, never by `wipe()` alone.
+        var epoch: UInt64 = 0
 
         mutating func wipe() {
             legacy.zeroAll()
@@ -122,6 +124,42 @@ nonisolated final class EnrollmentSession: Sendable {
         }
     }
 
+    /// How many times the session has been cleared. Read before a vault
+    /// open, passed to `install(_:ifEpoch:)` after it.
+    var epoch: UInt64 {
+        state.withLock { $0.epoch }
+    }
+
+    /// Installs only if no `clear()` ran since `epoch` was read. A vault open
+    /// that finishes after the app locked must not leave the key held across
+    /// the lock. The check and the install are one critical section, so a
+    /// clear cannot land between them.
+    @discardableResult
+    func install(_ material: VaultMaterial, ifEpoch expected: UInt64) -> Bool {
+        let activeIndex: Int
+        if case .keyring(let ring) = material {
+            activeIndex = ring.members.firstIndex { $0.fingerprint == ring.activeFingerprint } ?? 0
+        } else {
+            activeIndex = 0
+        }
+        return state.withLock { storage in
+            guard storage.epoch == expected else { return false }
+            storage.wipe()
+            switch material {
+            case .legacyArmor(let data):
+                storage.legacy = Array(data)
+                storage.kind = .legacy
+            case .keyring(let ring):
+                storage.original = Array(ring.original)
+                storage.members = ring.members.map { Array($0.armor) }
+                storage.activeIndex = activeIndex
+                storage.generation = ring.materialGeneration
+                storage.kind = .keyring
+            }
+            return true
+        }
+    }
+
     /// True when the held keyring is byte-for-byte `original`. Equal
     /// inventories or active keys prove nothing about certifications or
     /// revocations; only identical bytes are known to be the same ring.
@@ -177,7 +215,10 @@ nonisolated final class EnrollmentSession: Sendable {
     /// "Complete" with the account's private key still in the process heap —
     /// the failure this comment exists to stop recurring here.
     func clear() {
-        state.withLock { $0.wipe() }
+        state.withLock {
+            $0.wipe()
+            $0.epoch &+= 1
+        }
     }
 }
 

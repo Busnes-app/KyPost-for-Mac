@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import LocalAuthentication
 import Testing
 @testable import KyPost
 
@@ -401,5 +402,7 @@ private struct ScriptedUnlockAuthenticator: DeviceAuthenticating {
     init(_ outcome: DeviceAuthOutcome) { self.outcome = outcome }
     func canAuthenticate() -> Bool { true }
     func authenticate(reason: String) async -> Bool { outcome == .success }
-    func authenticateForUnlock(reason: String) async -> DeviceAuthOutcome { outcome }
+    func authenticateForUnlock(reason: String) async -> (outcome: DeviceAuthOutcome, context: LAContext?) {
+        (outcome, nil)
+    }
 }

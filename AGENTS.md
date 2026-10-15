@@ -241,11 +241,18 @@ is the server's pin, not this device's.
   someone remembered — every gap is a genuine revocation dropped and a
   compromised subkey still confirmed.
 - **Reader:** where the resolved sender is pinned, the pin replaces the relay's
-  `signerKeys` (`EncryptedMessageReader.signerKeys`) — intact is the only key
-  and reads `verifiedConfirmed`; revoked or broken is a conflict, so a signed
-  message reads `keyChanged`. Keyed on `resolvedSender`, never a parsed `From`.
-  The reader takes a pin provider, not a snapshot, and reads it on every
-  attempt: a reader lives as long as its screen.
+  `signerKeys` (`EncryptedMessageReader.signerInputs`) — intact is the only key
+  and the only route to `verifiedConfirmed`; revoked or broken is
+  `pinUnusable`, so a signed message reads `keyChanged`. Keyed on
+  `resolvedSender`, never a parsed `From`. The reader takes a pin provider,
+  not a snapshot, and reads it on every attempt: a reader lives as long as its
+  screen.
+- **First-seen signer history** (`SignerKeyHistory`, same store, key
+  `contacts.signerFirstSeen`): per address, the first fingerprint this device
+  saw make a valid signature. Written only by the reader, only on
+  `signerNotConfirmed`, and only when the signing key's own User IDs name the
+  resolved sender; never overwritten (a different key is `keyChanged` until a
+  QR pin supersedes it). Same HLP/wipe/unpair handling as pins.
 - **Sender:** `ClientEncryptedSender.applyPins` runs after resolve and before
   the vault opens. Revoked → `recipientKeyRevoked` ("verify the new key by
   QR"); broken, or a relay key whose bytes fingerprint differently →
@@ -341,16 +348,20 @@ Same protocol as KyPost for Android and Linux; change it in all three.
   so the screen simply goes back to offering Decrypt; and `noEncryptedContent`
   is *terminal*, so the UI must not offer Retry. `readOutcomeAllowsRetry` is
   the single place that decides this.
-- **`signerKeys` arrive already narrowed to the resolved sender.** Do not
+- **`signerKeys` arrive already narrowed to the resolved sender** — as
+  candidates only; trust is this device's (see "PGP signature trust"). Do not
   re-narrow them, and never parse a `From` header to do it. Android shipped
   exactly that and a differential harness caught it disagreeing with the
   server's parser on 27 of 111 adversarial headers.
 - **PGP payload DTO defaults use `decodeIfPresent`.** The relay omits false and
   empty signer-key fields, so synthesized decoding turns the first ordinary
   signing key into a fetch failure instead of applying the documented defaults.
-- **Render `resolvedSender`, never the raw `From`,** wherever a verdict is
-  shown. The two are separable by an attacker, and a correct verdict displayed
-  next to the wrong address is still a lie.
+- **Never render the raw `From` as a verdict's identity, and render
+  `resolvedSender` as one only beside `verifiedConfirmed`** (the address the
+  user pinned). Every other sender verdict is shown with what the signing key
+  names (`signatureIdentity`), and `signatureIdentityMismatch` warns when the
+  displayed `From` is not among the bound addresses — a warning only; the
+  display parser's address never sets or raises a verdict.
 - A decrypt failure must **not** clear `EnrollmentSession`. One message failing
   says nothing about the held key, and clearing re-prompts for every later
   message.
@@ -506,8 +517,34 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
   equally lossless. Anything else keeps the previous record.
 - **The vault is one Keychain item** (`VaultRecord`: kind, generation,
   fingerprint, material), so replacement is atomic and a failed write leaves
-  the old record. The earlier two-item layout is still read and retired on the
-  next store. A record that will not decode throws; it is never sealed over.
+  the old record. A record that will not decode throws; it is never sealed
+  over.
+- **The material is never stored in the clear** (format 2). `store` seals the
+  whole plaintext record (format 1) to the device key's public half
+  (`DeviceKeySealing`: SecKey ECIES X9.63-SHA256 AES-GCM) — no prompt — and
+  keeps only the header in the clear for `storedHeader()` (reporter,
+  acknowledgement, `isEnrolled`). `openRecord()` is the only way to the
+  material: a Secure Enclave decrypt under `.userPresence`, then the sealed
+  header must equal the clear one. The SE/LAContext boundary is
+  `VaultKeySealing`; tests use `FakeKeySealing` (`testVault`).
+- **Migration:** a plaintext record (format 1, or the older two-item layout)
+  is sealed on the first `openRecord()`; the seal is opened under presence
+  (the check, and proof it opens) before it replaces the plaintext in the same
+  item, compare-and-set against what was read, and the two-item keys are
+  removed. A cancelled prompt or a seal that does not open writes nothing.
+- **Prompt policy: once per app unlock** (`PresenceContext.shared`). The app
+  unlock's evaluated `LAContext` is adopted
+  (`DeviceAuthenticating.authenticateForUnlock`); otherwise the first open
+  prompts and its context is kept. `AppLockManager.lock()` /
+  `lockAfterGrace()` and `EnrollmentVault.destroy*` invalidate it. **The lock
+  wins a race:** an open (or enrollment ECDH) whose lease predates an
+  invalidation throws `cancelled` and returns no plaintext, and the reader and
+  sender install material only through `EnrollmentSession.install(_:ifEpoch:)`
+  with the epoch read before the open (every `clear()` advances it).
+  Enrollment's ECDH uses the same context, so reading the previous record does
+  not prompt twice.
+- **Secure Enclave required** outside the Simulator: key generation refuses a
+  device without one (all supported hardware has one).
 - **Order: validate → store durably → hold → acknowledge.** No session install
   and no acknowledgement for material not on disk.
 - **Acknowledge with metadata.** A keyring is confirmed as
@@ -520,7 +557,8 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
 - **Each pending marker carries a revision** minted per delivery. The reporter
   clears or advances it only via `replacePendingReport(ifRevision:)` with the
   revision it read before sending, so a request that finishes after a
-  re-enrollment cannot erase or rewind the newer marker.
+  re-enrollment cannot erase or rewind the newer marker. It reads the clear
+  header (`storedHeader`), so restating enrollment never prompts.
 - **Teardown marker (Android `b0786ee8`).** Enabling Hostile Location
   Protection destroys the vault *then* marks it, so the reporter tells the
   server `encryptionEnrolled: false`. `destroy` leaves the marker; `store`
@@ -541,15 +579,21 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
 - This app has two address parsers and **neither may reach a verdict**:
   `RelayMailSource.splitSender` fills display fields, and `EmailAddress.parse`
   builds outgoing recipients. Audited 2026-08-18; keep them apart.
-- Eight states, not verified/unverified (`unsigned` and `unchecked` describe
-  the message, the other six its sender). The line that matters is **identity**
-  (`verifiedConfirmed` — confirmed out of band) versus **continuity**
-  (`verifiedSeenBefore` — same key as last time). Most keys arrive by Autocrypt
-  harvest, so a flat "verified" overclaims for nearly all of them. The wording
-  is part of the contract.
-- Ordering is load-bearing: a `conflict` outranks both a good key and an
-  invalid signature for the same sender, because reporting the survivor as
-  verified hides precisely the event worth reporting.
+- Nine states, not verified/unverified (`unsigned` and `unchecked` describe
+  the message, the other seven its sender). The line that matters is
+  **identity** (`verifiedConfirmed` — pinned on this device by QR) versus
+  **continuity** (`verifiedSeenBefore` — same key as this device's first-seen
+  history); `signerNotConfirmed` is a valid signature by a key only the relay
+  vouches for. Most keys arrive by Autocrypt harvest, so a flat "verified"
+  overclaims for nearly all of them. The wording is part of the contract.
+- **The relay is never a trust input.** `SignerKey` has no `verified` field and
+  the DTO does not decode it. The only inputs are `LocalSignerTrust` (pin,
+  unusable pin, or first-seen fingerprint). The relay's `conflict` can only
+  lower a verdict to `keyChanged`, and is ignored under a pin.
+- Ordering is load-bearing: an unusable pin, then (unpinned) a relay
+  `conflict`, outrank everything; then no attributed key → `signerUnknown`,
+  invalid → `invalid`, and only then the pin / history comparison. Reporting a
+  survivor as fine hides precisely the event worth reporting.
 - `signerUnknown` is **not an accusation** and does not mark a row: an ordinary
   correspondent not yet in the address book, a rotated key, and a forgery are
   locally indistinguishable.

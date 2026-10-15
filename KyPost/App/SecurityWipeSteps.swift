@@ -131,6 +131,11 @@ enum SecurityWipeSteps {
         // defaults domain would clear nothing at all in exactly the mode that
         // promises this machine holds nothing.
         steps.append(WipeStep("mailCursors") { graph.mailCursorStore.clear() })
+        // Recipient pins and the first-seen signer history, also memory-only
+        // under that mode. Through `clear()` rather than the sweep: it also
+        // advances the history's generation, so a read still in flight on the
+        // graph being wiped cannot write the history back.
+        steps.append(WipeStep("recipientPins") { graph.recipientPinStore.clear() })
         // Account data, cleared by name rather than left to the sweep, so the
         // wipe's claim does not depend on which defaults domain it lives in.
         steps.append(WipeStep("mailSignature") {
