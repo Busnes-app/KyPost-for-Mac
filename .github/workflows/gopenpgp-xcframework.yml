@@ -248,4 +248,5 @@ jobs:
           # known not to exist.
           gh release create "$TAG" "$ASSET" \
             --title "GopenPGP $VERSION (XCFramework)" \
+            --latest=false \
             --notes-file "$RUNNER_TEMP/notes.md"

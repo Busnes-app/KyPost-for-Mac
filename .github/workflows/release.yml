@@ -1,17 +1,19 @@
 name: Release
 
-# Archives both platforms and uploads them to App Store Connect when a version
-# tag is pushed. Until this existed the repository had no distribution path at
-# all: ci.yml and two GopenPGP jobs, and nothing that produced a shippable
-# artifact.
+# Archives both platforms when a version tag is pushed, then ships each to
+# its own channel:
 #
-# There is deliberately NO notarisation step. Notarisation (notarytool) is for
-# distributing outside the App Store; App Store builds are notarised by Apple
-# during review. If this project ever adds a direct-download channel — the
-# equivalent of Android's GitHub Releases APK — that channel needs a Developer
-# ID identity and a notarise-and-staple step, and it is a separate job, not a
-# flag on this one. (Cloud signing cannot do Developer ID either: Apple calls
-# that a known bug, even with an Admin key.)
+#   iOS    uploaded to App Store Connect.
+#   macOS  NOT on the Mac App Store. Exported with Developer ID, packed into a
+#          disk image, notarised, stapled, and attached to a GitHub Release for
+#          the tag (the equivalent of Android's GitHub Releases APK). Cloud
+#          signing cannot do Developer ID (Apple calls that a known bug, even
+#          with an Admin key), so the Developer ID identity is a secret.
+#
+# The Mac release goes first, so an App Store Connect failure does not hold
+# it back. A re-run never replaces a disk image already published: people may
+# have downloaded it, and a second build under the same name is a different
+# binary. It leaves the published one and carries on to the iOS upload.
 #
 # Modelled on kypost-android's release.yml, which gates publication on the tag
 # matching the versioned manifest and on the artifact carrying the expected
@@ -61,6 +63,16 @@ name: Release
 #                                   from Keychain Access as .p12, base64-encoded.
 #   APPLE_DEVELOPMENT_CERTIFICATE_PASSWORD
 #                                   the password chosen for that .p12 export.
+#   DEVELOPER_ID_CERTIFICATE        a Developer ID Application certificate of
+#                                   team TATYN4X57D with its private key, as
+#                                   .p12, base64-encoded. Only the Account
+#                                   Holder can create one (Certificates →
+#                                   + → Developer ID Application, G2 Sub-CA).
+#   DEVELOPER_ID_CERTIFICATE_PASSWORD
+#                                   the password chosen for that .p12 export.
+#
+#   The same API key notarises the disk image; no Apple ID or app-specific
+#   password is involved.
 #
 #   The team needs at least one registered iOS device: automatic signing
 #   cannot create an iOS development profile for a team with none.
@@ -79,7 +91,8 @@ on:
 
 # Not concurrency-cancelled. A half-finished upload is worse than a slow one.
 permissions:
-  contents: read
+  # Write: the job creates the GitHub Release the Mac disk image is attached to.
+  contents: write
 
 jobs:
   release:
@@ -91,6 +104,8 @@ jobs:
     env:
       DEVELOPMENT_CERTIFICATE: ${{ secrets.APPLE_DEVELOPMENT_CERTIFICATE }}
       DEVELOPMENT_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPMENT_CERTIFICATE_PASSWORD }}
+      DEVELOPER_ID_CERTIFICATE: ${{ secrets.DEVELOPER_ID_CERTIFICATE }}
+      DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
       ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
       ASC_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
@@ -110,6 +125,7 @@ jobs:
           set -euo pipefail
           missing=""
           for name in DEVELOPMENT_CERTIFICATE DEVELOPMENT_CERTIFICATE_PASSWORD \
+                      DEVELOPER_ID_CERTIFICATE DEVELOPER_ID_CERTIFICATE_PASSWORD \
                       ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
             eval "value=\${$name:-}"
             [ -n "$value" ] || missing="$missing $name"
@@ -141,7 +157,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: ./scripts/verify-version.sh "$TAG"
 
-      - name: Install development identity
+      - name: Install signing identities
         run: |
           set -euo pipefail
           KEYCHAIN=$RUNNER_TEMP/release.keychain-db
@@ -155,6 +171,11 @@ jobs:
           security import "$RUNNER_TEMP/dev.p12" -k "$KEYCHAIN" \
             -P "$DEVELOPMENT_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           rm -f "$RUNNER_TEMP/dev.p12"
+
+          echo "$DEVELOPER_ID_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security import "$RUNNER_TEMP/devid.p12" -k "$KEYCHAIN" \
+            -P "$DEVELOPER_ID_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/devid.p12"
 
           # Without this codesign blocks on a GUI prompt no one can answer and
           # the job hangs until it times out rather than failing.
@@ -237,27 +258,122 @@ jobs:
             echo "${platform}: signer ${actual}, build ${build}"
           done
 
+      # Re-signs the Mac app with Developer ID. ExportOptions-macOS carries
+      # destination=export, so the .app lands on disk for the steps below.
+      - name: Export Mac app (Developer ID)
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/KyPost-macOS.xcarchive" \
+            -exportOptionsPlist Distribution/ExportOptions-macOS.plist \
+            -exportPath "$RUNNER_TEMP/export-macOS" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+          app="$RUNNER_TEMP/export-macOS/KyPost.app"
+          codesign --verify --deep --strict "$app"
+          # The archive check above saw the development signature; this is the
+          # one users get. Gatekeeper refuses anything but Developer ID, and a
+          # development-signed push entitlement does not reach production APNs.
+          authority=$(codesign -dvv "$app" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+          case "$authority" in
+            "Developer ID Application: "*"($EXPECTED_TEAM_ID)") ;;
+            *) echo "::error::Mac app is signed by '${authority}', expected Developer ID Application of ${EXPECTED_TEAM_ID}."; exit 1 ;;
+          esac
+          aps=$(codesign -d --entitlements - --xml "$app" 2>/dev/null \
+            | plutil -extract 'com\.apple\.developer\.aps-environment' raw -o - - 2>/dev/null || true)
+          if [ "$aps" != "production" ]; then
+            echo "::error::Mac app's aps-environment is '${aps}', expected production."
+            exit 1
+          fi
+          echo "macOS: ${authority}, aps-environment ${aps}"
+
+      # One disk image with an Applications link to drag onto. The image is
+      # signed and notarised as a whole: notarising the outermost container
+      # covers the app inside, and the ticket is stapled to the image so the
+      # first open needs no network.
+      - name: Package, notarise and staple the disk image
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          dmg="$RUNNER_TEMP/KyPost-${version}.dmg"
+          stage="$RUNNER_TEMP/dmg"
+          mkdir -p "$stage"
+          ditto "$RUNNER_TEMP/export-macOS/KyPost.app" "$stage/KyPost.app"
+          ln -s /Applications "$stage/Applications"
+          hdiutil create -volname "KyPost ${version}" -srcfolder "$stage" \
+            -fs HFS+ -format UDZO -ov "$dmg"
+
+          identity=$(security find-identity -v -p codesigning "$RUNNER_TEMP/release.keychain-db" \
+            | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
+          [ -n "$identity" ] || { echo "::error::No Developer ID Application identity in the keychain."; exit 1; }
+          codesign --sign "$identity" --timestamp "$dmg"
+
+          # `--wait` exits 0 for a rejected submission too, so the verdict is
+          # read from the result, and the log is printed when it is not
+          # Accepted: that log is the only place Apple says what was wrong.
+          xcrun notarytool submit "$dmg" \
+            --key "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
+            --wait --output-format json > "$RUNNER_TEMP/notary.json"
+          status=$(plutil -extract status raw -o - "$RUNNER_TEMP/notary.json")
+          if [ "$status" != "Accepted" ]; then
+            id=$(plutil -extract id raw -o - "$RUNNER_TEMP/notary.json")
+            xcrun notarytool log "$id" \
+              --key "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+              --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            echo "::error::Notarisation returned ${status}."
+            exit 1
+          fi
+
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature -vv "$dmg"
+          (cd "$RUNNER_TEMP" && shasum -a 256 "KyPost-${version}.dmg" > "KyPost-${version}.dmg.sha256")
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: Publish the GitHub Release
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag \
+              --title "KyPost ${version}" \
+              --generate-notes
+          fi
+          name=$(basename "$DMG")
+          if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qxF "$name"; then
+            echo "::notice::${name} is already published on ${TAG}; leaving it as it is."
+            exit 0
+          fi
+          gh release upload "$TAG" "$DMG" "$DMG.sha256"
+
       # Export and upload are one step: ExportOptions carries
       # destination=upload, so there is no intermediate artifact for a later
       # step to upload the wrong copy of.
-      - name: Upload to App Store Connect
+      - name: Upload iOS to App Store Connect
         run: |
           set -euo pipefail
-          for platform in macOS iOS; do
-            xcodebuild -exportArchive \
-              -archivePath "$RUNNER_TEMP/KyPost-${platform}.xcarchive" \
-              -exportOptionsPlist "Distribution/ExportOptions-${platform}.plist" \
-              -exportPath "$RUNNER_TEMP/export-${platform}" \
-              -allowProvisioningUpdates \
-              -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
-              -authenticationKeyID "$ASC_KEY_ID" \
-              -authenticationKeyIssuerID "$ASC_ISSUER_ID"
-          done
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/KyPost-iOS.xcarchive" \
+            -exportOptionsPlist Distribution/ExportOptions-iOS.plist \
+            -exportPath "$RUNNER_TEMP/export-iOS" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
       - name: Remove the signing keychain
-        # `always()`: a keychain holding the team's development identity, and a
-        # private key that can upload to App Store Connect, should not outlive
-        # the job even when the job failed.
+        # `always()`: a keychain holding the team's development and Developer
+        # ID identities, and a private key that can upload to App Store
+        # Connect, should not outlive the job even when the job failed.
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
