@@ -16,18 +16,25 @@ import SwiftUI
 struct MyPgpQrCodeView: View {
     @Environment(\.theme) private var theme
 
-    @State private var viewModel = MyPgpQrViewModel(
-        client: SingletonGraph.shared.pgpQrClient,
-        pairingStore: SingletonGraph.shared.securePairingStore,
-        bootstrapClient: SingletonGraph.shared.pgpSendClient,
-        session: EnrollmentSession.shared,
-        crypto: SingletonGraph.shared.pgpCrypto,
-        opener: DeviceVaultOpener(
-            vault: SingletonGraph.shared.enrollmentVault,
-            inspector: SingletonGraph.shared.pgpCrypto
-        ),
-        deviceIsEnrolled: { [vault = SingletonGraph.shared.enrollmentVault] in vault.isEnrolled }
-    )
+    @State private var viewModel = Self.makeViewModel()
+
+    /// Built here, not inline: Xcode 27's `@State` macro moves an inline
+    /// initial value into a static stored property, and the closure capture
+    /// list below crashes the type checker there ("failed to produce
+    /// diagnostic for expression").
+    private static func makeViewModel() -> MyPgpQrViewModel {
+        let graph = SingletonGraph.shared
+        let vault = graph.enrollmentVault
+        return MyPgpQrViewModel(
+            client: graph.pgpQrClient,
+            pairingStore: graph.securePairingStore,
+            bootstrapClient: graph.pgpSendClient,
+            session: EnrollmentSession.shared,
+            crypto: graph.pgpCrypto,
+            opener: DeviceVaultOpener(vault: vault, inspector: graph.pgpCrypto),
+            deviceIsEnrolled: { vault.isEnrolled }
+        )
+    }
 
     var body: some View {
         VStack(spacing: 16) {
