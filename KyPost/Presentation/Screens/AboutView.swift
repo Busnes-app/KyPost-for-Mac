@@ -2,7 +2,8 @@
 //  AboutView.swift
 //  KyPost
 //
-//  Shared About and Support surface for iOS and macOS.
+//  Shared About and Support surface for iOS and macOS. The Tip Jar is
+//  iOS only: the Mac app is distributed outside the App Store.
 //
 
 import SwiftUI
@@ -13,9 +14,12 @@ import AppKit
 
 struct AboutView: View {
     @Environment(\.theme) private var theme
-    @State private var tipJar = TipJarStore()
     #if os(macOS)
     @State private var showAcknowledgements = false
+    #else
+    // iOS only. The Mac app ships from GitHub Releases, signed with Developer
+    // ID, where StoreKit has no App Store to sell through.
+    @State private var tipJar = TipJarStore()
     #endif
 
     private let privacyPolicyURL = URL(string: "https://www.kypost.org/privacy.html")!
@@ -50,57 +54,6 @@ struct AboutView: View {
                         .foregroundStyle(theme.secondaryInk)
                 }
 
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Tip Jar")
-                        .font(AppFont.ui(17, weight: .semibold))
-                        .foregroundStyle(theme.inkStrong)
-                    Text("If KyPost is useful to you, you can support its continued development with a one-off tip.")
-                        .font(AppFont.ui(13))
-                        .foregroundStyle(theme.secondaryInk)
-
-                    ForEach(tipJar.products, id: \.id) { product in
-                        Button {
-                            Task { await tipJar.purchase(product) }
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "heart.fill")
-                                    .foregroundStyle(theme.accent)
-                                    .frame(width: 20)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(product.displayName)
-                                        .font(AppFont.ui(14, weight: .semibold))
-                                        .foregroundStyle(theme.inkStrong)
-                                    Text("One-off tip")
-                                        .font(AppFont.ui(12))
-                                        .foregroundStyle(theme.secondaryInk)
-                                }
-                                Spacer()
-                                Text(product.displayPrice)
-                                    .font(AppFont.ui(14, weight: .semibold))
-                                    .foregroundStyle(theme.inkStrong)
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 11)
-                            .background(theme.panel, in: RoundedRectangle(cornerRadius: 10))
-                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.line, lineWidth: 1))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(tipJar.isLoading)
-                    }
-
-                    if let status = tipJar.statusMessage {
-                        Text(status)
-                            .font(AppFont.ui(13))
-                            .foregroundStyle(theme.secondaryInk)
-                    }
-                    Text("Payments are processed securely by Apple.")
-                        .font(AppFont.ui(12))
-                        .foregroundStyle(theme.secondaryInk)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(18)
-                .background(theme.panel.opacity(0.7), in: RoundedRectangle(cornerRadius: 14))
-
                 HStack(spacing: 20) {
                     Link("Privacy Policy", destination: privacyPolicyURL)
                     Button("Acknowledgements") { showAcknowledgements = true }
@@ -130,7 +83,6 @@ struct AboutView: View {
         }
         .background(theme.bg)
         .frame(minWidth: 440, idealWidth: 480, minHeight: 560, idealHeight: 620)
-        .task { await tipJar.start() }
         // The About window is not a navigation stack, so the list opens as a
         // sheet. It shows only bundled licence text, nothing from the account.
         .sheet(isPresented: $showAcknowledgements) {

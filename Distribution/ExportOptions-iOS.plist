@@ -2,10 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- App Store Connect, not Developer ID. See release.yml's header for why
-	     there is no notarisation step: App Store builds are notarised by
-	     Apple during review, and notarytool is for the direct-download
-	     channel this project does not currently have. -->
+	<!-- App Store Connect. App Store builds are notarised by Apple during
+	     review; only the Mac's Developer ID build (ExportOptions-macOS) goes
+	     through notarytool in release.yml. -->
 	<key>method</key>
 	<string>app-store-connect</string>
 	<key>teamID</key>

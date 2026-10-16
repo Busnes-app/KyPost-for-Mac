@@ -481,7 +481,9 @@ Domain.
   the surface as a Preferences tab. `AboutView` owns the version, 2026
   Busnes.app copyright, privacy-policy link, embedded MIT license, the
   Acknowledgements link (`AcknowledgementsView`: pushed on iOS, a sheet in
-  the macOS About window), and the StoreKit 2 Tip Jar. The user-facing name
+  the macOS About window), and, on iOS only, the StoreKit 2 Tip Jar (the Mac
+  app is a Developer ID build from GitHub Releases, with no App Store to buy
+  through). The user-facing name
   is **Tip Jar**, never "Donate": App Review reads "donate" as a charitable
   donation, which it allows only for approved nonprofits, while a tip to the
   developer through In-App Purchase is ordinary. The tip section shows one status line,

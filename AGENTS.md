@@ -1174,11 +1174,12 @@ an event only when asked and syncs no calendar.
 
 - **Signing is automatic, with an App Store Connect API key.** A `v*` tag runs
   `release.yml` on the `release` environment (create it in GitHub with
-  required reviewers, tags `v*` only). Its secrets are exactly
+  required reviewers, tags `v*` only). Its secrets are
   `APP_STORE_CONNECT_PRIVATE_KEY` (.p8, base64), `APP_STORE_CONNECT_KEY_ID`,
   `APP_STORE_CONNECT_ISSUER_ID`, `APPLE_DEVELOPMENT_CERTIFICATE` (.p12 of an
-  Apple Development identity, base64) and
-  `APPLE_DEVELOPMENT_CERTIFICATE_PASSWORD`. The key must have the **Admin**
+  Apple Development identity, base64),
+  `APPLE_DEVELOPMENT_CERTIFICATE_PASSWORD`, plus the two Developer ID secrets
+  below. The key must have the **Admin**
   role: the export signs with the team's cloud-managed Apple Distribution
   certificate, which App Store Connect refuses to every other role. There is
   no distribution certificate or profile secret. The development identity is
@@ -1186,6 +1187,20 @@ an event only when asked and syncs no calendar.
   per runner and refuses on the next one (release.yml's header has the
   detail). Both `Distribution/ExportOptions-*.plist` say `signingStyle
   automatic`.
+- **The Mac app is not on the Mac App Store; it ships on GitHub Releases.**
+  The same tag exports it with Developer ID (`ExportOptions-macOS.plist`,
+  `method developer-id`), checks the signer and a production
+  `aps-environment`, packs `KyPost-<version>.dmg`, signs, notarises with the
+  same API key, staples, and attaches it and its `.sha256` to the tag's
+  release, before the iOS upload. Two more secrets:
+  `DEVELOPER_ID_CERTIFICATE` (.p12, base64) and
+  `DEVELOPER_ID_CERTIFICATE_PASSWORD`. Cloud signing cannot do Developer ID,
+  so that identity is a secret. A re-run never replaces a published disk
+  image. GopenPGP releases are created `--latest=false`, so "Latest" on the
+  Releases page is always the app.
+- **No StoreKit on the Mac.** A Developer ID build has no App Store to buy
+  through, so the Tip Jar is iOS only (`AboutView`). Do not add an in-app
+  purchase to the Mac app.
 - **The build number is the workflow run**, `<run_number>.<run_attempt>`,
   passed as `CURRENT_PROJECT_VERSION` to archive and checked in the archive
   before upload. `project.pbxproj` keeps `1`; do not commit CI's value back.

@@ -2,28 +2,23 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- App Store Connect, not Developer ID. See release.yml's header for why
-	     there is no notarisation step: App Store builds are notarised by
-	     Apple during review, and notarytool is for the direct-download
-	     channel this project does not currently have. -->
+	<!-- Developer ID, not the Mac App Store. The Mac app is distributed as a
+	     notarised disk image on GitHub Releases; release.yml notarises and
+	     staples it after this export. -->
 	<key>method</key>
-	<string>app-store-connect</string>
+	<string>developer-id</string>
 	<key>teamID</key>
 	<string>TATYN4X57D</string>
-	<!-- Uploads straight from xcodebuild rather than exporting a .pkg and
-	     handing it to a second tool. -->
+	<!-- Writes KyPost.app to -exportPath for release.yml to package. -->
 	<key>destination</key>
-	<string>upload</string>
+	<string>export</string>
 	<!-- Automatic: xcodebuild -exportArchive, given the App Store Connect API
-	     key and -allowProvisioningUpdates, fetches the App Store profile and
-	     signs with the team's cloud-managed Apple Distribution certificate.
-	     No distribution certificate or profile is stored as a secret. The
-	     key must have the Admin role; any other role gets "Cloud signing
-	     permission error". -->
+	     key and -allowProvisioningUpdates, fetches the Developer ID profile
+	     the push and keychain-group entitlements need. It signs with the
+	     Developer ID Application identity release.yml imports from a secret:
+	     cloud signing cannot do Developer ID. -->
 	<key>signingStyle</key>
 	<string>automatic</string>
-	<key>uploadSymbols</key>
-	<true/>
 	<!-- Never let the exporter invent a version. release.yml sets the build
 	     number from the workflow run, and the release gate has already checked
 	     the marketing version against the tag. -->

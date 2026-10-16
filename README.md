@@ -100,6 +100,11 @@ The app uses SwiftData for persistence, URLSession for networking, and WebKit fo
 
 Its one external dependency is **GopenPGP** — the same OpenPGP implementation Proton uses — consumed as a binary XCFramework through the local package in `Dependencies/GopenPGP`. That binary is built from source by `.github/workflows/gopenpgp-xcframework.yml`, from the upstream tag pinned in `Dependencies/gopenpgp.env`, using upstream's own `build.sh` plus one linker flag (`GODEBUG` default `asyncpreemptoff=1`) that keeps the embedded Go runtime's preemption signal from crashing the app; `Package.swift` pins its SHA-256, so the bytes cannot change without that line changing. Nothing outside `KyPost/Domain/Security/PgpCrypto.swift` and its conforming types may reference the library.
 
+## Download
+
+- **Mac:** download `KyPost-<version>.dmg` from [GitHub Releases](https://github.com/Busnes-app/KyPost-for-Mac/releases/latest), open it and drag KyPost to Applications. It is signed with Developer ID and notarised by Apple. KyPost is not on the Mac App Store.
+- **iPhone and iPad:** the App Store.
+
 ## Getting started
 
 1. Open `KyPost.xcodeproj` in Xcode.
@@ -164,10 +169,11 @@ The network-facing tests run against a stubbed `HTTPClient`. They need no backen
   live relay.** They are covered by unit tests against fakes, so the wire
   contracts for `/api/pgp/recipients/resolve`, `/api/mail/send-pgp` and
   `/api/mail/pgp-payload` are unverified in practice.
-- **The release workflow has not run end to end.** `release.yml` signs
-  automatically with an App Store Connect API key and uploads both platforms,
-  but no tag has exercised it yet. Its one-time setup (the `release`
-  environment and five secrets) is listed at the top of the workflow.
+- **The release workflow has not run end to end.** `release.yml` uploads iOS
+  to App Store Connect and publishes the Mac app, notarised, on GitHub
+  Releases, but no tag has exercised it yet. Its one-time setup (the
+  `release` environment and seven secrets) is listed at the top of the
+  workflow.
 - **No visionOS build.** The app targets iPhone, iPad and Mac only.
 
 ## License
