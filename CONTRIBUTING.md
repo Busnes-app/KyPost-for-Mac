@@ -67,7 +67,7 @@ need the project’s Keychain entitlements/signing arrangement; disabling signin
 those entitlements and fail runtime Keychain tests. CI runs the unit target in the iOS
 simulator and an unsigned macOS compile check, not unsigned macOS runtime tests.
 Screenshot captures are opt-in demo runs, separate from assertions and real-server/device
-acceptance. See [README testing](README.md#testing) and root `AGENTS.md`.
+acceptance. See [README testing](docs/DEVELOPMENT.md#testing) and root `AGENTS.md`.
 
 `README.md` covers installation and supported features. Read
 [SECURITY.md](SECURITY.md#what-the-app-protects-and-what-it-does-not) before changing a trust boundary.

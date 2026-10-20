@@ -1248,3 +1248,8 @@ When the user requests a durable behavior change, record it here or in the relev
 ## Product icon
 
 App/launcher assets use the Busnes.app-site Systems stamp family. Regenerate platform sizes from the matching master in `../Busnes.app-site`; preserve resource names and adaptive foreground safe margins. This asset update does not change native theme defaults.
+
+
+## README and topic guides
+
+Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/DEVELOPMENT.md`, `docs/FEATURES.md`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.
