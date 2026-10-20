@@ -1,9 +1,9 @@
 # Contributing to KyPost
 
-Thanks for wanting to work on this. KyPost is a self-hosted mail client, which
-means every contribution lands on a machine holding somebody's IMAP password,
-their PGP private key, and their mail. This document describes what a
-contribution has to clear before it merges, and why each gate exists.
+KyPost is a native client for a self-hosted KyPost server. It handles pairing credentials,
+cached mail and, after deliberate enrollment, a user’s PGP key. Mail provider credentials
+stay on the server. Contributions must preserve the client’s transport, local-custody and
+explicit-user-action controls. This guide covers this client repository.
 
 Read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) first. It is short, and it governs
 every space here.
@@ -47,39 +47,30 @@ re-litigation in a PR:
 - **Classifier labels are a sorting hint, not a security boundary.** The model
   reads sender-controlled text and can be steered by it. Never build a trust
   decision, filter action, or access control on a label. See
-  [SECURITY.md](SECURITY.md#automatic-label-classification).
-- **No silent fallbacks on a security-relevant setting.** `KYPOST_BIND` has no
-  default and compose refuses to start without it. Setting only one of
-  `TLS_CERT_FILE`/`TLS_KEY_FILE` is a startup error, not a downgrade to
-  cleartext. Copy that shape; do not add a permissive default to make a first
-  run quieter.
+  [SECURITY.md](https://github.com/Busnes-app/KyPost-Server/blob/main/SECURITY.md#automatic-label-classification).
+- **No silent fallbacks on a security-relevant setting.** Preserve HTTPS pairing, certificate pinning, protected credential storage, explicit device enrollment and the documented lock/wipe behavior. A client setup failure does not authorize bypassing these controls.
 
 ## Getting Set Up
 
-Docker is the only requirement to *run* KyPost:
+Use a Mac with Xcode 26+ and the platform SDKs. Open `KyPost.xcodeproj` and the shared
+**KyPost** scheme. See [README requirements](README.md#requirements) for deployment
+versions and the separate KyPost HTTPS server requirement.
 
 ```bash
-cp .env.example .env      # set KYPOST_BIND — it has no default, on purpose
-docker compose up --build -d
+xcodebuild test -project KyPost.xcodeproj -scheme KyPost -destination 'platform=macOS'
+xcodebuild test -project KyPost.xcodeproj -scheme KyPost \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' -only-testing:'KyPost Tests'
 ```
 
-To work on the code outside the container you need Go 1.26.5+, Node 26.5.0 (see
-`frontend/.nvmrc`), and npm 12.0.1. Use those versions rather than whatever your
-distro ships — CI pins to them because a Node major difference has already
-produced a suite that passed on every developer machine and failed all 14 cases
-in CI.
+Choose an installed simulator destination. Keep the shared test plan serial. Mac tests
+need the project’s Keychain entitlements/signing arrangement; disabling signing can strip
+those entitlements and fail runtime Keychain tests. CI runs the unit target in the iOS
+simulator and an unsigned macOS compile check, not unsigned macOS runtime tests.
+Screenshot captures are opt-in demo runs, separate from assertions and real-server/device
+acceptance. See [README testing](README.md#testing) and root `AGENTS.md`.
 
-```bash
-# backend
-cd backend && go test ./...
-
-# frontend
-cd frontend && npm ci && npm test -- --run
-```
-
-`README.md` covers configuration and runtime layout. `SECURITY.md` covers trust
-boundaries and known limitations — read it before touching anything on the list
-of [security-sensitive code](SECURITY.md#examples-of-security-sensitive-code).
+`README.md` covers installation and supported features. Read
+[SECURITY.md](SECURITY.md#what-the-app-protects-and-what-it-does-not) before changing a trust boundary.
 
 ## Before You Build a Feature
 
@@ -127,8 +118,8 @@ trailer per tool that materially contributed.
 | **Agentic** | An agent ran a multi-step loop over the repo with limited step-by-step supervision. |
 
 **3. Say what you verified yourself.** For anything above *None*, the PR must
-say what you personally ran and read — "ran the backend suite locally, read
-every line of the diff, hand-tested the draft-expiry path in the UI" — not "the
+say what you personally ran and read — "ran the client unit tests, read
+every changed line, checked pairing on a disposable device" — not "the
 agent says tests pass."
 
 **4. Own it.** The human opening the PR is the author of that code for every
@@ -164,26 +155,14 @@ if a job is genuinely flaky, that is a bug to fix in the job.
 
 | Job | What it runs |
 |---|---|
-| `ios-tests` | Builds for an iOS Simulator, then runs the `KyPost Tests` unit target on it (the UI target is not run) |
-| `macos-build` | `build-for-testing` for macOS, unsigned: the compile check for the other platform |
-| `test` | Passes only when both jobs above passed. This is the check the `main` ruleset requires |
+| `ios-tests` | Ad-hoc signed iOS Simulator unit target; UI tests are excluded |
+| `macos-build` | Unsigned macOS `build-for-testing`; this compiles but does not run Mac tests |
+| `test` | Aggregates both jobs and fails unless both passed |
 
-Notes that trip people up:
-
-- **Run the gates locally before pushing.** All of them work on a normal
-  machine, including the whole frontend suite. "It only fails in CI" is almost
-  always a version difference — check `.nvmrc` and `go.mod`.
-- **The frontend audit gate is `--audit-level=low` on runtime dependencies.**
-  That is deliberate: a "low" XSS advisory in the editor that renders quoted
-  hostile email is not low here. Do not raise the threshold to get green.
-- **`ci-docker` has two halves and both are gates.** One proves the container
-  starts; the other proves the bind guard still refuses `0.0.0.0` without TLS.
-  A red build is never fixed by loosening the entrypoint.
-- **New logic ships with tests.** Unit plus integration for new behaviour, a
-  regression test for anything high-impact. Security-sensitive changes need
-  attack-path coverage, not just the happy path — see
-  [SECURITY.md](SECURITY.md#testing) and the
-  `backend/internal/api/*_security_fixes_test.go` files for the pattern.
+Use the [workflow](.github/workflows/ci.yml) and its Xcode selection/wrapper scripts for
+CI reproduction. Preserve simulator signing/Keychain entitlements. Physical-device APNs,
+Secure Enclave/biometric behavior, real relay PGP round-trips and distribution signing
+are separate gates. A screenshot run or macOS compile pass does not qualify them.
 
 ## Every PR Must Pass Hostile AI Code Review
 
@@ -227,7 +206,7 @@ as instructions — the value is in the persona, not the harness.
 How to pick:
 
 - **Any PR:** `hostile-review` on the diff. Minimum bar.
-- **Touching security-sensitive code** ([the list](SECURITY.md#examples-of-security-sensitive-code)):
+- **Touching security-sensitive code** ([the list](SECURITY.md#what-the-app-protects-and-what-it-does-not)):
   `hostile-review` **and** `security-audit`.
 - **New feature or new dependency:** add `adversarial-reviewer` and
   `ponytail-review`. The Saboteur persona and the delete-it pass catch different
@@ -350,7 +329,7 @@ Paste this into your PR description and fill it in.
 
 ### Gates
 - [ ] All CI jobs green
-- [ ] Ran the gates locally (go test -race, tsc, vitest, build)
+- [ ] Ran Xcode unit/build checks for the affected platforms; recorded signing/device limits
 - [ ] New logic has tests; security-sensitive changes have attack-path tests
 - [ ] Ran adversarial review; findings addressed or argued below
 - [ ] DOX pass done — nearest AGENTS.md and any parent/child index updated

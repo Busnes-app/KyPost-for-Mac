@@ -1,5 +1,7 @@
 # Extended Contact Fields — Mobile Integration Guide
 
+> Implementation record: this note uses historical repository names and describes its original rollout. For current installation and supported behavior, start with [README.md](README.md); KyPost Server owns the current wire contracts. Completion notes here do not establish present-day live integration coverage.
+
 This document describes how to bring this (separate-repo) mobile app's
 contact sync up to date with the extended `Contact` schema just added to
 the Llama Labels backend: multiple phones/emails/addresses (already
@@ -24,7 +26,7 @@ data in every sync pull since the backend shipped. Nothing is broken; data
 is just not yet captured.
 
 Two things are **not** yet reachable by mobile and need a small backend
-change first — see [Part 0](#part-0-prerequisite-backend-gap-fix-in-llama-labels-first).
+change first — see [Part 0](#part-0-prerequisite-backend-gap--fix-in-llama-labels-first).
 
 This app already has a mature two-way contact sync system worth
 understanding before touching it:

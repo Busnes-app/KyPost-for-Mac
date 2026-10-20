@@ -92,25 +92,33 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 
 ## Requirements
 
-- Xcode 26 (deployment target macOS and iOS 26.0; iPhone, iPad and Mac)
-- A running llama-labels backend (the live deployment is behind Cloudflare at `mail.urlxl.com`)
-- For push: an APNs key configured on the backend
+- macOS 26.0+ or iOS/iPadOS 26.0+.
+- Your own reachable [KyPost server](https://github.com/Busnes-app/KyPost-Server) over HTTPS, with an everyday mailbox account.
+- For push: APNs configured on that server.
+- **Source builds only:** Xcode 26 or newer with the matching platform SDKs.
 
 The app uses SwiftData for persistence, URLSession for networking, and WebKit for rendering.
 
 Its one external dependency is **GopenPGP** — the same OpenPGP implementation Proton uses — consumed as a binary XCFramework through the local package in `Dependencies/GopenPGP`. That binary is built from source by `.github/workflows/gopenpgp-xcframework.yml`, from the upstream tag pinned in `Dependencies/gopenpgp.env`, using upstream's own `build.sh` plus one linker flag (`GODEBUG` default `asyncpreemptoff=1`) that keeps the embedded Go runtime's preemption signal from crashing the app; `Package.swift` pins its SHA-256, so the bytes cannot change without that line changing. Nothing outside `KyPost/Domain/Security/PgpCrypto.swift` and its conforming types may reference the library.
 
-## Download
+## Install and pair
 
-- **Mac:** download `KyPost-<version>.dmg` from [GitHub Releases](https://github.com/Busnes-app/KyPost-for-Mac/releases/latest), open it and drag KyPost to Applications. It is signed with Developer ID and notarised by Apple. KyPost is not on the Mac App Store.
-- **iPhone and iPad:** the App Store.
+As of 2026-10-20, GitHub Releases contains a GopenPGP dependency artifact, **not a KyPost
+application DMG**. The application release workflow exists, but its signed/notarized Mac
+DMG and App Store distribution have not been qualified here. Do not mistake the dependency
+release for an installable client or assume App Store availability.
 
-## Getting started
+For a source installation on a Mac:
 
-1. Open `KyPost.xcodeproj` in Xcode.
-2. Select the *KyPost* scheme and your destination (My Mac, or an iOS device or simulator).
-3. Build and run.
-4. Pair the device. In the web frontend, open **Settings → Security → Devices** and choose **Pair a new device**. On a Mac, click **Pair this device**: the browser opens a `kypost://native-pair?...` link in KyPost, which asks you to confirm the server. If nothing opens, the page shows the link; paste it in Settings → Connection → **Paste Pairing Link…**. On iOS, scan the QR code. Pairing registers the device and stores its credentials and the server's certificate pin in the Keychain.
+1. Clone this repository, open `KyPost.xcodeproj` in Xcode, and select the **KyPost** scheme.
+2. Choose My Mac, or an iPhone/iPad simulator. For a physical iOS device, configure your own Apple signing team/provisioning and the required capabilities; push and shared-group sign-on also need matching server/client configuration.
+3. Build and run. A simulator can exercise UI but does not qualify Secure Enclave custody, biometric behavior or real APNs delivery.
+4. In your server’s web frontend, open **Settings → Security → Devices → Pair a new device**. On a Mac choose **Pair this device**, or paste the displayed `kypost://native-pair?...` link in **Settings → Connection → Paste Pairing Link…**. On iOS scan the QR. Confirm the server; registration stores per-device credentials and the certificate pin in Keychain.
+5. Check inbox access and a controlled send/reply through the configured mail service. Configure APNs separately and observe actual delivery before calling push verified.
+
+When application releases are published, install the verified Mac DMG by dragging KyPost to
+Applications, or use the actual iOS distribution listing. Updates must retain the same
+signing identity and Keychain access groups to preserve access to existing pairing keys.
 
 Until you pair, the inbox says how: on a Mac it gives the web steps above, and on iOS it points to Settings → Connection.
 
@@ -130,7 +138,7 @@ The platforms split at the root view. iOS uses a tab layout (`MainTabView`). mac
 
 ### Wire contracts
 
-The Android reference repo (`llama-mobile`) defines the relay endpoints and the payload shapes. The primary documents are `Mobile_Mail_Relay.md` and `Mobile_Contact_Sync.md`:
+[KyPost Server](https://github.com/Busnes-app/KyPost-Server/tree/main/docs) owns the relay wire contracts, including `DEVICE_ENROLLMENT.md`, `E2E_PGP.md` and the mobile mail/contact documents. The Android client is a sibling implementation, not a replacement for those server contracts:
 
 - `GET /api/inbox` — emails grouped by tab (`{tabs, byTab, cursor, delta, removed, agedOut, hasMore, nextBefore}`);
   with `before=<messageId>&bodies=0`, one page of older mail (`{byTab, hasMore, nextBefore}`)
@@ -143,21 +151,23 @@ The Android reference repo (`llama-mobile`) defines the relay endpoints and the 
 - `GET /api/pgp/bootstrap` — the key custody of this account (`hasIdentity`, `protection`)
 - `POST /api/pgp/recipients/check` — contacts-only recipient key preflight (never `/resolve`)
 - `GET/POST /api/contacts/sync` — cursor-based contact sync
-- `GET /api/pgp/qr/token` — make a PGP key-pickup token and URL that expire in 2 minutes (pairing-auth `sub` and `hash`)
+- `GET /api/pgp/qr/token` — make a PGP key-pickup token and URL that expire in 2 minutes (per-device authentication headers; no account-wide `sub`/`hash` authentication)
 - `GET /api/pgp/qr/key?t=` — get a scanned public key and fingerprint (the token is the credential)
 - `POST /api/notifications/native/register` — APNs device registration
 
-Before you change any of these endpoints, read the Android implementation. Do not guess.
+Before changing a wire shape, read the server contract and both native implementations. Registration exchanges the one-time pairing token for `deviceId` and `deviceSecret`; subsequent calls use `X-Kypost-Device-Id` and `X-Kypost-Device-Secret`.
 
 ## Testing
 
 The unit tests use Swift Testing (`@Test` and `#expect`) and live in `KyPost Tests/`. The UI test stubs are in `KyPost UITests/`. Run the tests in Xcode with ⌘U, or with this command:
 
 ```sh
-xcodebuild test -project "KyPost.xcodeproj" -scheme "KyPost"
+xcodebuild test -project "KyPost.xcodeproj" -scheme "KyPost" -destination 'platform=macOS'
+# Run iOS-only code separately using an installed simulator destination:
+xcodebuild test -project "KyPost.xcodeproj" -scheme "KyPost" -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ```
 
-The network-facing tests run against a stubbed `HTTPClient`. They need no backend.
+Many network unit tests use a stubbed `HTTPClient`; they do not qualify live relay interoperability. Keep the shared test plan serial as documented in `AGENTS.md`. Screenshot tests skip unless `KYPOST_SCREENSHOTS=1`; `scripts/capture-screenshots.sh` captures demo appearance, not functional acceptance. Live relay send/read, device enrollment, physical-device APNs, Keychain and App Store release checks remain separate gates.
 
 ## Known gaps
 
