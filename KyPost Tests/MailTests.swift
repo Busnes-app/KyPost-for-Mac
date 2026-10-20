@@ -450,9 +450,9 @@ private func makeOutgoing(
 
     @Test func linksBecomeAnchors() {
         var text = AttributedString("llama")
-        text.link = URL(string: "https://mail.urlxl.com/x?a=1&b=2")
+        text.link = URL(string: "https://mail.example.com/x?a=1&b=2")
         let html = RichTextHTML.htmlDocument(from: text, fontTraits: noTraits)
-        #expect(html.contains(#"<a href="https://mail.urlxl.com/x?a=1&amp;b=2">llama</a>"#))
+        #expect(html.contains(#"<a href="https://mail.example.com/x?a=1&amp;b=2">llama</a>"#))
     }
 }
 
