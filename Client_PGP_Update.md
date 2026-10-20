@@ -1,5 +1,7 @@
 # PGP Key Exchange via QR Code — Mobile Integration Guide
 
+> Implementation record: this note uses historical repository names and describes its original rollout. For current installation and supported behavior, start with [README.md](README.md); KyPost Server owns the current wire contracts. Completion notes here do not establish present-day live integration coverage.
+
 This document describes how to add PGP key-exchange functionality to this (separate-repo) mobile app,
 enabling users to share their PGP public keys in person via QR code (akin to a PGP key-signing
 handshake). It mirrors `Client_Contact_Update.md`'s shape — concrete API contracts, suggested UI

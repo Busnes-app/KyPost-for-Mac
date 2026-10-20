@@ -1,5 +1,7 @@
 # Contact De-duplication — Mobile Integration Guide
 
+> Implementation record: this note uses historical repository names and describes its original rollout. For current installation and supported behavior, start with [README.md](README.md); KyPost Server owns the current wire contracts. Completion notes here do not establish present-day live integration coverage.
+
 This document describes how to expose the backend's contact
 de-duplication feature (`llama-labels` repo) to all three mobile/desktop
 clients: this repo's Android app, `kypost-for-Mac` (iOS/macOS), and
@@ -33,7 +35,7 @@ runs its existing sync pull to pick up the resulting tombstones and
 merged survivor. The server remains the sole authority on what counts as
 a duplicate and how fields merge — this doc is about *exposing and
 consuming* that decision, not duplicating it. See
-[Part 0](#part-0-prerequisite-backend-gap-fix-in-llama-labels-first) for
+[Part 0](#part-0-prerequisite-backend-gap--fix-in-llama-labels-first) for
 the one thing that has to change first.
 
 Full backend design rationale (why exact-match, why on-demand, the merge
