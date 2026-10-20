@@ -1,10 +1,10 @@
 blank_issues_enabled: true
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/Busness-app/KyPost-for-Mac/security/advisories/new
+    url: https://github.com/Busnes-app/KyPost-for-Mac/security/advisories/new
     about: Do not open a public issue. Report privately here — see SECURITY.md.
   - name: Server-side problem, not the client
-    url: https://github.com/Busness-app/KyPost-Server/issues
+    url: https://github.com/Busnes-app/KyPost-Server/issues
     about: >-
       Mail not fetched or labelled, pairing codes refused, IMAP/SMTP or
       reverse-proxy problems live in the server, not here.
