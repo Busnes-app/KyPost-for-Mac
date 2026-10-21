@@ -170,4 +170,29 @@ import Testing
         #expect(mode(true, "client", enrolled: true, "  ") == .refuse)
         #expect(mode(true, "client", enrolled: true) == .encryptAndSave)
     }
+
+    // MARK: - Save Draft (Linux trySaveDraft)
+
+    @Test func theDraftSaveTable() {
+        func mode(_ hasIdentity: Bool?, _ protection: String?, enrolled: Bool = true, _ address: String = "me@x") -> DraftSaveMode {
+            draftSaveMode(hasIdentity: hasIdentity, protection: protection, enrolled: enrolled, accountAddress: address)
+        }
+        #expect(mode(true, "client") == .encrypted)
+        #expect(mode(true, "client", enrolled: false) == .unavailable)
+        #expect(mode(true, "client", "  ") == .unavailable)
+        for enrolled in [false, true] {
+            for address in ["", "me@x"] {
+                #expect(mode(true, "server", enrolled: enrolled, address) == .plain)
+            }
+        }
+        #expect(mode(false, nil) == .plain)
+        #expect(mode(false, "") == .plain)
+        #expect(mode(false, "client") == .unavailable)
+        // Unknown never reads as plain: not loaded, failed, or unrecognised.
+        #expect(mode(nil, nil) == .unavailable)
+        #expect(mode(nil, "server") == .unavailable)
+        #expect(mode(true, nil) == .unavailable)
+        #expect(mode(true, "") == .unavailable)
+        #expect(mode(true, "future") == .unavailable)
+    }
 }

@@ -97,6 +97,42 @@ nonisolated func draftHandoffMode(
     return .encryptAndSave
 }
 
+/// What compose's Save Draft button may upload.
+nonisolated enum DraftSaveMode: Equatable, Sendable {
+    /// Encrypt and sign to the account's own key here; upload only `{to, pgpDraft}`.
+    case encrypted
+    /// Upload the fields as they are. Only where the relay already reads them
+    /// at send time: server custody, or no PGP identity at all.
+    case plain
+    /// Upload nothing, and hide the button.
+    case unavailable
+}
+
+/// Linux `Compose.qml` `trySaveDraft`. Reads bootstrap's raw answers, never
+/// `PgpKeyCustody`: that maps an unknown `hasIdentity` to `.noIdentity`, which
+/// would turn "unknown" into "plain". Fails closed on anything unrecognised.
+nonisolated func draftSaveMode(
+    hasIdentity: Bool?,
+    protection: String?,
+    enrolled: Bool,
+    accountAddress: String
+) -> DraftSaveMode {
+    let handoff = draftHandoffMode(
+        hasIdentity: hasIdentity, protection: protection,
+        enrolled: enrolled, accountAddress: accountAddress
+    )
+    if handoff == .encryptAndSave { return .encrypted }
+    switch hasIdentity {
+    case true?:
+        return protection == pgpProtectionServer ? .plain : .unavailable
+    case false?:
+        let blank = (protection ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return blank ? .plain : .unavailable
+    case nil:
+        return .unavailable
+    }
+}
+
 /// Compose's three recipient fields, split and de-overlapped.
 nonisolated struct RecipientFields: Equatable, Sendable {
     var to: [String] = []

@@ -180,7 +180,7 @@ Domain.
 - **Closing a compose with content asks first** (Android #118):
   `ComposeViewModel.closingNeedsConfirmation` — any recipient, pending
   recipient text, subject, attachment or non-blank body, a signature-only body
-  included — until the message was sent or handed off. Cancel asks; iOS
+  included — until the message was sent, handed off or saved to Drafts. Cancel asks; iOS
   refuses the swipe-down and `SheetDismissGuard` turns the refused attempt into
   the same prompt; macOS answers `windowShouldClose` through
   `WindowCloseGuard`. Both are proxies that forward every other delegate call
@@ -194,7 +194,7 @@ Domain.
   root `fullScreenCover` cannot present over it:
   `ComposeView` overlays `UnlockView` on itself (navigation bar included) and
   blocks the swipe-down while locked. `ComposeViewModel` takes `isLocked` and
-  refuses send, pickup re-send and webmail hand-off while it is true, on both
+  refuses send, pickup re-send, webmail hand-off and Save Draft while it is true, on both
   platforms. The lock also closes compose's own sheets and dialogs, which
   would otherwise sit above the cover.
 - **The signature is plain text placed by compose** (Android #177,
@@ -440,8 +440,21 @@ Domain.
   `openWithoutSave` (client custody, not enrolled) uploads nothing, opens
   webmail and leaves `isSent` false so the window still guards the message;
   `refuse` (unknown or server custody, blank address) uploads nothing and
-  shows an error. There is no plaintext `/api/mail/draft` path, and none may
-  be added as a fallback.
+  shows an error. The handoff never posts plaintext.
+- **Save Draft (⌘S) posts plaintext only when `draftSaveMode` is `plain`.**
+  `ComposeViewModel.saveDraft` decides the mode when it runs, from bootstrap's
+  raw `hasIdentity`/`protection` (never `PgpKeyCustody`, which reads unknown
+  as no identity): `encrypted` (exactly the handoff's `encryptAndSave`) goes
+  through `ClientEncryptedDraftSaver`; `plain` (server custody, or no
+  identity and no protection) posts the send body with no PGP flags through
+  `SendEmailUseCase.savePlainDraft`; `unavailable` (unknown custody,
+  client custody unenrolled or without an address) uploads nothing and hides
+  the button. No path falls back from encrypted to plain, and a refused plain
+  draft (a 409) is shown, never retried another way. Success sets
+  `didSaveDraft` and the window closes, because the relay cannot replace a
+  draft; failure keeps every field. The lock is checked on entry and again
+  before upload, and the button is disabled under Send's conditions plus the
+  lock.
 - **The keyless-recipient confirmation copy is contract.** It lives in
   `ComposeViewModel.pickupConfirmationMessage`, verbatim from
   `Client_Encrypted_Send.md`, and must name every address, say the plaintext
@@ -469,8 +482,8 @@ Domain.
   `idempotencyKey`. Any definite answer mints a new key, so a corrected
   message is never the refused request's duplicate.
 - **Entry points own `isSending`, and claim it before their first `await`.**
-  `send`, `confirmPickupFallback` and `handOffToWebmail` set it immediately
-  after their `!isSending, !isSent, !didSend` guard; `deliver` and `handOff`
+  `send`, `confirmPickupFallback`, `handOffToWebmail` and `saveDraft` set it
+  immediately after their `!isSending, !isSent, !didSend` guard; `deliver` and `handOff`
   never touch it (a nested `defer` would clear it early on the handoff path).
   With Encrypt on, the recipient preflight is a live round trip sitting right
   after that guard — claiming the flag any later lets a second ⌘↩ through and

@@ -727,6 +727,72 @@ private func makeOutgoing(
     }
 }
 
+// MARK: - Plain draft (server custody / no PGP)
+
+@Suite struct PlainDraftTransportTests {
+    private func save(
+        _ email: OutgoingEmail = makeOutgoing(),
+        status: Int = 200,
+        json: String = #"{"ok":true}"#,
+        requests: Box<[URLRequest]> = Box([])
+    ) async throws -> MailOutcome {
+        let client = stubClient(status: status, json: json) { request in
+            requests.mutate { $0.append(request) }
+        }
+        let db = try AppDatabase(inMemory: true)
+        let repository = MailRepository(
+            securePairingStore: try makePairedStore(),
+            emailDAO: EmailDAO(modelContainer: db.container),
+            httpClient: client
+        )
+        return await SendEmailUseCase(repository: repository).savePlainDraft(email)
+    }
+
+    /// Even an email carrying every PGP flag goes out without them: a plain
+    /// draft must not look like an encryption request the relay could act on.
+    @Test func oneDraftPostWithTheSendFieldsAndNoPgpFlags() async throws {
+        var email = makeOutgoing()
+        email.encrypt = true
+        email.sign = true
+        email.allowPickupFallback = true
+        email.idempotencyKey = "k1"
+        email.attachments = [OutgoingAttachment(name: "a.txt", mimeType: "text/plain", data: Data("a".utf8))]
+        let requests = Box<[URLRequest]>([])
+
+        #expect(try await save(email, requests: requests) == .success)
+
+        #expect(requests.value.count == 1)
+        let request = try #require(requests.value.first)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.absoluteString == "\(server)/api/mail/draft")
+        #expect(request.value(forHTTPHeaderField: "Idempotency-Key") == nil)
+        let body = try #require(request.httpBody)
+        let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let allowed: Set<String> = ["to", "cc", "bcc", "subject", "body", "mode", "attachments"]
+        #expect(Set(object.keys).isSubset(of: allowed))
+        for key in ["encrypt", "sign", "allowPickupFallback", "pgpDraft"] {
+            #expect(object[key] == nil)
+        }
+        #expect(object["subject"] as? String == "Hi")
+        #expect(object["cc"] as? String == "c@x.com")
+    }
+
+    @Test func onlyAnOkBodyIsAnAcknowledgement() async throws {
+        #expect(try await save(json: "{}") == .failure("Draft save was not acknowledged"))
+        #expect(try await save(json: #"{"ok":false}"#) == .failure("Draft save was not acknowledged"))
+    }
+
+    /// A 409 here is a refusal to store plaintext, not a cue to retry another
+    /// way: it fails, and never reads as `.clientSideNeeded`.
+    @Test func aClientSideConflictIsAFailure() async throws {
+        let outcome = try await save(status: 409, json: #"{"clientSideNeeded":true}"#)
+        guard case .failure = outcome else {
+            Issue.record("expected .failure, got \(outcome)")
+            return
+        }
+    }
+}
+
 // MARK: - SendEmailUseCase
 
 @Suite struct SendEmailUseCaseTests {

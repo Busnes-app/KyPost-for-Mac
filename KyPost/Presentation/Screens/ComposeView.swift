@@ -213,6 +213,9 @@ struct ComposeView: View {
         .onChange(of: viewModel.didSend) {
             if viewModel.didSend { dismiss() }
         }
+        .onChange(of: viewModel.didSaveDraft) {
+            if viewModel.didSaveDraft { dismiss() }
+        }
         // Quitting asks about unsent composes (macOS ⌘Q).
         .onAppear { OpenComposeRegistry.shared.register(viewModel) }
         .onDisappear { OpenComposeRegistry.shared.unregister(viewModel) }
@@ -648,11 +651,13 @@ struct ComposeView: View {
         ToolbarItemGroup {
             formattingControls
             attachButton
+            saveDraftButton
         }
 #else
         ToolbarItemGroup(placement: .bottomBar) {
             formattingControls
             Spacer()
+            saveDraftButton
             attachButton
         }
 #endif
@@ -686,6 +691,21 @@ struct ComposeView: View {
                 Label("Underline", systemImage: "underline")
             }
             .keyboardShortcut("u")
+        }
+    }
+
+    /// Hidden where nothing may be uploaded (`DraftSaveMode.unavailable`).
+    @ViewBuilder
+    private var saveDraftButton: some View {
+        if viewModel.draftSaveControls != .unavailable {
+            Button {
+                Task { await viewModel.saveDraft(fontTraits: fontTraits) }
+            } label: {
+                Label("Save Draft", systemImage: "square.and.arrow.down")
+            }
+            .keyboardShortcut("s")
+            .disabled(viewModel.isSending || viewModel.isSent || viewModel.sendOutcomeUnknown || isLocked)
+            .help("Save to Drafts (⌘S)")
         }
     }
 

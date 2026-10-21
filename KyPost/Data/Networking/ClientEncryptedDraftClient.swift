@@ -3,8 +3,9 @@
 //  KyPost
 //
 //  POST {srv}/api/mail/draft — saves a draft this device already encrypted
-//  and signed. The only draft upload this app has: the body is `to` and
-//  `pgpDraft`, and there is no plaintext shape to fall back to.
+//  and signed. The body is `to` and `pgpDraft` only. The plaintext shape
+//  (`RelayMailSource.savePlainDraft`) is for server-custody and no-PGP
+//  accounts, and is never a fallback from here.
 //
 //  Swift port of the saveClientEncryptedDraft half of kypost-android's
 //  RelayMailSource.
