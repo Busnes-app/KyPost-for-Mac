@@ -399,6 +399,7 @@ final class SingletonGraph {
             recipientPinStore: recipientPinStore,
             mailSignatureStore: mailSignatureStore,
             mailRepository: mailRepository,
+            pgpSendService: pgpSendService,
             forgetInbox: { [weak self] in self?.inboxViewModel.forgetAccount() }
         )
     }

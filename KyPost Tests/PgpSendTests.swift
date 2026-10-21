@@ -208,6 +208,72 @@ import Testing
     }
 }
 
+// MARK: - PgpSendService across an account teardown
+
+@Suite @MainActor struct PgpSendServiceTeardownTests {
+    private let json = #"{"hasIdentity":true,"protection":"server","suggestedUserIDs":["me@x.com","alias@y.com"]}"#
+
+    private func pairNextAccount(_ store: SecurePairingStore) throws {
+        try store.savePairing(Pairing(
+            sub: "u2",
+            deviceSecret: "s2",
+            srv: server,
+            registrationUrl: nil,
+            pairingToken: "pt2",
+            lastDeviceId: nil,
+            pairedAt: Date().addingTimeInterval(1)
+        ))
+    }
+
+    /// The next account's replies must not leave out this one's aliases.
+    @Test func teardownForgetsTheBootstrapAndTheNextAccountRefetches() async throws {
+        let calls = Box(0)
+        let store = try makePairedStore()
+        let service = PgpSendService(
+            client: PgpSendClient(httpClient: stubClient(json: json) { _ in calls.mutate { $0 += 1 } }),
+            securePairingStore: store
+        )
+        await service.loadIfNeeded()
+        #expect(service.ownAddresses == ["u1", "me@x.com", "alias@y.com"])
+
+        #expect(await AccountTeardown(erasePreservedStore: nil, pgpSendService: service).run())
+        #expect(service.custody == nil)
+        #expect(service.accountAddress.isEmpty)
+        #expect(service.ownAddresses.isEmpty)
+        // The pairing being left is retired: no fetch with its credentials.
+        await service.loadIfNeeded()
+        #expect(calls.value == 1)
+
+        try pairNextAccount(store)
+        #expect(service.ownAddresses == ["u2"])
+        await service.loadIfNeeded()
+        #expect(calls.value == 2)
+        #expect(service.custody == .serverHeld)
+    }
+
+    @Test func aBootstrapInFlightAcrossTheTeardownIsDropped() async throws {
+        let gate = RequestGate()
+        let json = json
+        let service = PgpSendService(
+            client: PgpSendClient(httpClient: HTTPClient(transport: { request in
+                await gate.hold()
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                return (Data(json.utf8), response)
+            })),
+            securePairingStore: try makePairedStore()
+        )
+
+        let load = Task { await service.loadIfNeeded() }
+        await gate.waitUntilHolding()
+        #expect(await AccountTeardown(erasePreservedStore: nil, pgpSendService: service).run())
+        await gate.open()
+        await load.value
+
+        #expect(service.custody == nil)
+        #expect(service.accountAddresses.isEmpty)
+    }
+}
+
 // MARK: - Compose: encrypted send flow
 
 /// Holds the *first* request that reaches it until `open()`, so a test can act

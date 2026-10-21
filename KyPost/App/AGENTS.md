@@ -77,8 +77,9 @@ contract.
 
 **Leaving an account is one list, `AccountTeardown`** (a store file kept
 under an in-memory session, enrollment vault,
-session and pending reports; notification history and pull cursor; recipient
-pins; mail signature; cached mail and cursors; the relay responses and cookies
+session and pending reports; `PgpSendService`'s cached bootstrap (custody
+and the addresses replies leave out; a load in flight is voided); notification
+history and pull cursor; recipient pins; mail signature; cached mail and cursors; the relay responses and cookies
 an older build's `.default` relay session left in `URLCache.shared` and
 `HTTPCookieStorage.shared`; the inbox's held actions and rows).
 `SettingsViewModel.unpair` runs it after clearing the pairing (and an older
@@ -96,9 +97,9 @@ pairing (the previous one stays, so a retry re-runs the teardown).
 **The pairing being left is retired, not just outlived.** A replacement keeps
 the old pairing readable until the new one is saved, so each teardown step
 that moves its own session or epoch (`MailRepository.forgetAccount`,
-`PushRepository.clearForUnpair`) first calls
+`PushRepository.clearForUnpair`, `PgpSendService.forgetAccount`) first calls
 `SecurePairingStore.retireCurrentPairing`, and work that reaches the relay for
-the account (mail requests, notification pulls, re-registration) reads
+the account (mail requests, notification pulls, re-registration, bootstrap) reads
 `loadActivePairing`, which refuses it until another pairing is saved. Capture
 the session/epoch *before* loading the pairing, or a request can pair the old
 credentials with the new session.
