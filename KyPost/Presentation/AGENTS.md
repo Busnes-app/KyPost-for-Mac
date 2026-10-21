@@ -431,6 +431,12 @@ Domain.
   it holds focus, and a hidden shortcut in pop-outs only
   (`EmailDetailView.isPopOut`). No Mark as Unread: `/api/inbox/actions` has
   no unread action (KyPost-Server `server_inbox.go`, 2026-10-13).
+  **Publish `MessageCommands` on macOS only** (`#if os(macOS)` in
+  `ReaderCommandHandling`): nothing on iOS reads it, and because it holds
+  closures every body pass publishes a new value. On iOS 26.5 that hung
+  the iPhone the moment a message was pushed: the main thread spun in one
+  Core Animation commit, re-running layout and never showing the reader
+  (iOS 27.0 did not hang). `ReaderOpenTests` (UI, iOS) guards it.
 - **A pop-out reader owns its row** (`EmailWindowView`,
   `InboxViewModel.resolveEmail`; root "Inbox search"). Never read the main
   list from the window's body. It resolves only while `MailAccessGate` is
@@ -569,6 +575,9 @@ Recorded so they aren't re-litigated as bugs:
   rows, reader failures and the Message menu, `TipJarStoreTests` for the tip
   transactions and status line, `ComposeBlankSubjectTests` in
   `ComposeParityTests.swift` for the blank-subject prompt).
+- Opening a message on an iPhone: `KyPost UITests/ReaderOpenTests`, under
+  `-destination 'platform=iOS Simulator,name=iPhone 17 Pro Max,OS=26.5'`
+  (not skipped, unlike the capture runs).
 - The Message menu's enablement and ⌫ routing are focus behaviour: check
   them in the running app (main window with and without the preview pane,
   a pop-out, typing ⌫ in the search field).

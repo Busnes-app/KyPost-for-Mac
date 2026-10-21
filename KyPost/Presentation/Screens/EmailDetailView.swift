@@ -1016,8 +1016,12 @@ private struct ReaderCommandHandling: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .focusedSceneValue(\.readerMessageCommands, commands)
 #if os(macOS)
+            // macOS only, like the menu reading it. `MessageCommands` holds
+            // closures, so every body pass publishes a new value; on iOS
+            // (26.5, iPhone stack) that republish re-ran layout forever and
+            // hung the app the moment a message was pushed.
+            .focusedSceneValue(\.readerMessageCommands, commands)
             // ⌫ in a pop-out. Never in the main window, where a bare ⌫
             // shortcut would fire while typing in the search field; there the
             // list's `onDeleteCommand` (undoable) takes it, or this one when
