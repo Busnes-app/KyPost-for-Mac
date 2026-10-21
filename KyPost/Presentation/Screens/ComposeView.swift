@@ -665,7 +665,7 @@ struct ComposeView: View {
             Button {
                 Task { await viewModel.send(fontTraits: fontTraits) }
             } label: {
-                if viewModel.isSending {
+                if viewModel.isSending, !viewModel.isSavingDraft {
                     ProgressView().controlSize(.small)
                 } else {
                     Label("Send", systemImage: "paperplane.fill")
@@ -701,8 +701,14 @@ struct ComposeView: View {
             Button {
                 Task { await viewModel.saveDraft(fontTraits: fontTraits) }
             } label: {
-                Label("Save Draft", systemImage: "square.and.arrow.down")
+                if viewModel.isSavingDraft {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Save Draft", systemImage: "square.and.arrow.down")
+                }
             }
+            .accessibilityLabel("Save Draft")
+            .accessibilityHint("Saves to Drafts and closes this window")
             .keyboardShortcut("s")
             .disabled(viewModel.isSending || viewModel.isSent || viewModel.sendOutcomeUnknown || isLocked)
             .help("Save to Drafts (⌘S)")

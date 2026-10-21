@@ -414,6 +414,9 @@ private func fields(_ body: String) throws -> [String: Any] {
         await gate.waitUntilHolding()
         #expect(compose.isSending)
 
+        // A send is not a draft save: Send keeps the spinner.
+        #expect(!compose.isSavingDraft)
+
         // The second ⌘↩, while the first send is parked in its preflight.
         await compose.send(fontTraits: noTraits)
 
@@ -964,6 +967,8 @@ extension ComposeEncryptedSendTests {
         let first = Task { await compose.saveDraft(fontTraits: noTraits) }
         await gate.waitUntilHolding()
         #expect(compose.isSending)
+        // The spinner belongs to Save Draft, not Send.
+        #expect(compose.isSavingDraft)
 
         await compose.saveDraft(fontTraits: noTraits)
         await compose.send(fontTraits: noTraits)
@@ -974,6 +979,7 @@ extension ComposeEncryptedSendTests {
         #expect(stub.drafts.value.count == 1)
         #expect(stub.sends.value.isEmpty)
         #expect(compose.didSaveDraft)
+        #expect(!compose.isSavingDraft)
 
         await compose.saveDraft(fontTraits: noTraits)
         #expect(stub.drafts.value.count == 1)

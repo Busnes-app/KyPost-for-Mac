@@ -454,7 +454,7 @@ Domain.
   `didSaveDraft` and the window closes, because the relay cannot replace a
   draft; failure keeps every field. The lock is checked on entry and again
   before upload, and the button is disabled under Send's conditions plus the
-  lock.
+  lock. While it runs, `isSavingDraft` puts the spinner on Save Draft, not Send.
 - **The keyless-recipient confirmation copy is contract.** It lives in
   `ComposeViewModel.pickupConfirmationMessage`, verbatim from
   `Client_Encrypted_Send.md`, and must name every address, say the plaintext

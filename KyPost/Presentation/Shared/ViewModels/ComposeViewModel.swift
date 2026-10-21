@@ -117,6 +117,9 @@ final class ComposeViewModel {
     /// Save Draft succeeded. The view dismisses on it: the relay cannot replace
     /// a draft, so a second save would be a second copy.
     private(set) var didSaveDraft = false
+    /// The in-flight work is a Save Draft, not a send: the view puts its
+    /// spinner on Save Draft and leaves Send's icon alone.
+    private(set) var isSavingDraft = false
 
     /// PGP send flags. Fresh per compose window, and `allowPickupFallback` is
     /// never stored anywhere: the one-time-link opt-in is per message by
@@ -359,7 +362,11 @@ final class ComposeViewModel {
         // Claimed before the first `await`, so a double ⌘S (or ⌘S then ⌘↩)
         // cannot post twice.
         isSending = true
-        defer { isSending = false }
+        isSavingDraft = true
+        defer {
+            isSending = false
+            isSavingDraft = false
+        }
         let email = outgoingEmail(fontTraits: fontTraits)
         // Decided now, not when the window opened; then the lock is checked
         // again right before anything leaves the device.
