@@ -243,6 +243,28 @@ import Testing
         #expect(sent.value[1].idempotencyKey == first)
     }
 
+    /// A blank subject was confirmed before the first attempt; the retry is
+    /// the same request and does not ask again.
+    @Test func theRetryOfABlankSubjectDoesNotAskAgain() async throws {
+        let sent = Box<[Sent]>([])
+        let compose = try makeCompose(sent: sent) { index in
+            if index == 0 { throw URLError(.timedOut) }
+            return (200, #"{"ok": true}"#)
+        }
+        compose.subject = " "
+
+        await compose.send(fontTraits: noTraits)
+        #expect(compose.confirmingBlankSubject)
+        await compose.sendWithoutSubject(fontTraits: noTraits)
+        #expect(compose.sendOutcomeUnknown)
+        await compose.sendAgainAfterUncertainOutcome(fontTraits: noTraits)
+
+        #expect(!compose.confirmingBlankSubject)
+        #expect(compose.didSend)
+        #expect(sent.value.count == 2)
+        #expect(sent.value[1].idempotencyKey == sent.value[0].idempotencyKey)
+    }
+
     /// After a definite refusal the corrected message is a new request: a
     /// relay remembering keys must not answer it with the refusal.
     @Test func aDefiniteAnswerStartsANewKey() async throws {

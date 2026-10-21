@@ -188,6 +188,13 @@ Domain.
   ask. Quitting on macOS asks once for every open compose: each registers in
   `OpenComposeRegistry` on appear, and `applicationShouldTerminate` shows the
   same Discard / Keep editing question as an alert.
+- **Send with a blank subject asks "Send without a subject?" first.**
+  `ComposeViewModel.send` sets `confirmingBlankSubject` (empty or
+  whitespace-only, `subjectIsBlank`) and sends nothing; the dialog's Send is
+  `sendWithoutSubject`, its default Add Subject cancels and focuses the
+  subject field. The answer is not remembered, except that
+  `sendAgainAfterUncertainOutcome` never asks (same request, same
+  Idempotency-Key). Save Draft and the pickup re-send never ask.
 - **A compose open when the lock engages stays, covered, and sends nothing.**
   The iOS shell owns the one compose sheet (`MailShellState.compose`, below),
   outside the router, so `dismissPresentedRoutes` cannot reach it and the
@@ -554,7 +561,8 @@ Recorded so they aren't re-litigated as bugs:
   `ThemeContrastTests` for WCAG AA, `RemoteContentBlockingTests` for the
   reader's block against real WebKit, `ReaderWindowTests.swift` for pop-out
   rows, reader failures and the Message menu, `TipJarStoreTests` for the tip
-  transactions and status line).
+  transactions and status line, `ComposeBlankSubjectTests` in
+  `ComposeParityTests.swift` for the blank-subject prompt).
 - The Message menu's enablement and ⌫ routing are focus behaviour: check
   them in the running app (main window with and without the preview pane,
   a pop-out, typing ⌫ in the search field).

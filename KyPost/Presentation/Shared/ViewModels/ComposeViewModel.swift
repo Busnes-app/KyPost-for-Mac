@@ -120,6 +120,10 @@ final class ComposeViewModel {
     /// The in-flight work is a Save Draft, not a send: the view puts its
     /// spinner on Save Draft and leaves Send's icon alone.
     private(set) var isSavingDraft = false
+    /// Send was pressed with a blank subject; drives the "Send without a
+    /// subject?" dialog. Answered by `sendWithoutSubject` or
+    /// `cancelSendWithoutSubject`.
+    private(set) var confirmingBlankSubject = false
 
     /// PGP send flags. Fresh per compose window, and `allowPickupFallback` is
     /// never stored anywhere: the one-time-link opt-in is per message by
@@ -621,12 +625,42 @@ final class ComposeViewModel {
 
     /// Sends the draft. `fontTraits` resolves bold/italic on body runs (from
     /// the view's font resolution context) so formatted text goes out as HTML.
+    /// A blank subject asks first (`confirmingBlankSubject`) and sends nothing.
     func send(fontTraits: @escaping RichTextHTML.FontTraits) async {
+        await send(fontTraits: fontTraits, askingAboutBlankSubject: true)
+    }
+
+    /// The user chose Send in the "Send without a subject?" dialog.
+    func sendWithoutSubject(fontTraits: @escaping RichTextHTML.FontTraits) async {
+        confirmingBlankSubject = false
+        await send(fontTraits: fontTraits, askingAboutBlankSubject: false)
+    }
+
+    /// The user chose Add Subject; the view moves focus to the subject field.
+    func cancelSendWithoutSubject() {
+        confirmingBlankSubject = false
+    }
+
+    /// Empty or whitespace-only: what the recipient would see as no subject.
+    var subjectIsBlank: Bool {
+        subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func send(
+        fontTraits: @escaping RichTextHTML.FontTraits,
+        askingAboutBlankSubject: Bool
+    ) async {
         // `didSend` as well as `isSent`: the window dismisses on `didSend`
         // through an onChange, and a second ⌘↩ in that gap would post the
         // message twice. Nothing goes out while the app is locked, and nothing
         // after a send that may already have gone out.
         guard !isSending, !isSent, !didSend, !sendOutcomeUnknown, !isLocked() else { return }
+        // Asked before anything is claimed or committed, so Add Subject leaves
+        // compose exactly as it was.
+        if askingAboutBlankSubject, subjectIsBlank {
+            confirmingBlankSubject = true
+            return
+        }
         // Claimed here, not in `deliver`: the recipient preflight below is an
         // `await` on a network round-trip, and a guard that only closes after
         // it leaves a window in which a second ⌘↩ passes the check above and
@@ -666,11 +700,13 @@ final class ComposeViewModel {
     /// The user checked Sent after an unconfirmed send and chose to send
     /// again. Carries the same `Idempotency-Key`, so a relay that already
     /// delivered the first attempt can answer without mailing it twice.
+    /// Never asks about a blank subject: this is the same request again, and
+    /// the first attempt already got past that question.
     func sendAgainAfterUncertainOutcome(fontTraits: @escaping RichTextHTML.FontTraits) async {
         guard sendOutcomeUnknown, !isSending, !isLocked() else { return }
         sendOutcomeUnknown = false
         errorMessage = nil
-        await send(fontTraits: fontTraits)
+        await send(fontTraits: fontTraits, askingAboutBlankSubject: false)
     }
 
     /// Builds the request once. `send` and the pickup re-send share the same
