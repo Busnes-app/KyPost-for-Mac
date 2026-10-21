@@ -36,6 +36,10 @@ final class PgpSendService {
     /// configured — in which case no delivery `From` can be built.
     private(set) var accountAddress = ""
 
+    /// All of bootstrap's `suggestedUserIDs`: the account address and its
+    /// send-as aliases. Empty until a successful load.
+    private(set) var accountAddresses: [String] = []
+
     init(client: PgpSendClient, securePairingStore: SecurePairingStore) {
         self.client = client
         self.securePairingStore = securePairingStore
@@ -65,6 +69,7 @@ final class PgpSendService {
         self.hasIdentity = hasIdentity
         self.protection = protection
         self.accountAddress = accountAddress
+        accountAddresses = [accountAddress]
         custody = pgpKeyCustody(hasIdentity: hasIdentity, protection: protection)
     }
 
@@ -80,6 +85,7 @@ final class PgpSendService {
             hasIdentity = response.hasIdentity
             protection = response.protection
             accountAddress = response.suggestedUserIDs?.first ?? ""
+            accountAddresses = response.suggestedUserIDs ?? []
             custody = pgpKeyCustody(
                 hasIdentity: response.hasIdentity,
                 protection: response.protection
@@ -98,6 +104,14 @@ final class PgpSendService {
                 "PGP bootstrap failed: \(String(describing: type(of: error)), privacy: .public) \(error.localizedDescription, privacy: .private)"
             )
         }
+    }
+
+    /// Every address of ours that a reply leaves out: the pairing's sub, plus
+    /// the account address and aliases once bootstrap has loaded. Before then
+    /// it is the sub alone, which is all Reply All ever excluded.
+    var ownAddresses: [String] {
+        let sub = (try? securePairingStore.loadPairing())?.sub
+        return (sub.map { [$0] } ?? []) + accountAddresses
     }
 
     /// The account's addresses, fetched fresh rather than from this

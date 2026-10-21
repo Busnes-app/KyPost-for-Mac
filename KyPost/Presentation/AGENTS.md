@@ -388,6 +388,12 @@ Domain.
   a short message. Reply/Forward quote the fetched body, so they open no draft
   until it has arrived (`draftBodyReadiness`): pressed while it loads or after
   it failed, they explain instead.
+- **Replies leave out every address of ours** (`ComposeDraft.reply` /
+  `replyAll`, fed `PgpSendService.ownAddresses`): the pairing's sub plus all
+  of bootstrap's `suggestedUserIDs` (send-as aliases), compared as bare
+  addresses, case-insensitively. Before bootstrap loads (the reader starts
+  it) only the sub is left out. A reply to a message we sent goes to its
+  original To minus us; a note to self opens with To empty, never to us.
 - **A notification-tap target is consumed once**, at the start of the hunt:
   `router.pendingMessageId` is cleared before the resync, found or not.
   `prepareForPushTap` switches to Inbox and waits out an in-flight refresh so

@@ -1021,27 +1021,42 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         return withSignature(body, signature: signature)
     }
 
-    static func reply(to email: Email) -> ComposeDraft {
+    /// Reply to the sender — or, on a message we sent (`ownAddresses` holds
+    /// its sender), to whoever it went to, as Apple Mail does.
+    static func reply(to email: Email, ownAddresses: [String]) -> ComposeDraft {
         ComposeDraft(
-            to: email.senderEmail.isEmpty ? email.senderName : email.senderEmail,
+            to: replyRecipients(of: email, own: normalized(ownAddresses)).joined(separator: ", "),
             subject: prefixed("Re:", email.subject),
             body: quotedBody(of: email)
         )
     }
 
-    /// Reply to the sender, Cc'ing everyone else on the original To/Cc —
-    /// minus the sender (already in To) and our own address (`ownAddress`,
-    /// the pairing's sub).
-    static func replyAll(to email: Email, ownAddress: String?) -> ComposeDraft {
-        var draft = reply(to: email)
-        var excluded = [email.senderEmail.lowercased()]
-        if let ownAddress { excluded.append(ownAddress.lowercased()) }
-        var seen = Set<String>()
+    /// Reply as above, Cc'ing everyone else on the original To/Cc — minus
+    /// whoever is already in To and every one of `ownAddresses` (the
+    /// pairing's sub and bootstrap's `suggestedUserIDs`, aliases included).
+    static func replyAll(to email: Email, ownAddresses: [String]) -> ComposeDraft {
+        var draft = reply(to: email, ownAddresses: ownAddresses)
+        var excluded = normalized(ownAddresses + [email.senderEmail, draft.to])
         let others = (addresses(in: email.sentTo) + addresses(in: email.cc)).filter {
-            !excluded.contains($0.lowercased()) && seen.insert($0.lowercased()).inserted
+            excluded.insert($0.lowercased()).inserted
         }
         draft.cc = others.joined(separator: ", ")
         return draft
+    }
+
+    /// The sender, unless the sender is us; then the original To minus us,
+    /// which is empty for a note to self — the user fills that in.
+    private static func replyRecipients(of email: Email, own: Set<String>) -> [String] {
+        guard !own.isDisjoint(with: normalized([email.senderEmail])) else {
+            return [email.senderEmail.isEmpty ? email.senderName : email.senderEmail]
+        }
+        var seen = own
+        return addresses(in: email.sentTo).filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    /// Bare, lowercased addresses from entries that may be "Name <addr>".
+    private static func normalized(_ entries: [String]) -> Set<String> {
+        Set(entries.flatMap(addresses(in:)).map { $0.lowercased() })
     }
 
     static func forward(_ email: Email) -> ComposeDraft {

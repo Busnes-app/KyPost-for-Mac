@@ -410,7 +410,7 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
             auth: RelayAuth(pairing: try #require(try makePairedStore().loadPairing()))
         ).searchMail(folder: "INBOX", query: "x", limit: 50)
 
-        let draft = ComposeDraft.replyAll(to: try #require(found.first), ownAddress: "me@example.com")
+        let draft = ComposeDraft.replyAll(to: try #require(found.first), ownAddresses: ["me@example.com"])
 
         #expect(draft.to == "ada@example.com")
         #expect(draft.cc == "bo@example.com, cy@example.com")
@@ -456,7 +456,7 @@ private func eventually(_ condition: () -> Bool) async -> Bool {
         await viewModel.submitSearch("x")
 
         let resolved = try #require(viewModel.email(for: MailRowKey(folder: "INBOX", serverId: "7")))
-        let draft = ComposeDraft.replyAll(to: resolved, ownAddress: "me@example.com")
+        let draft = ComposeDraft.replyAll(to: resolved, ownAddresses: ["me@example.com"])
 
         #expect(resolved.body == "b")
         #expect(draft.to == "ada@example.com")
