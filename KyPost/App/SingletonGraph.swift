@@ -125,6 +125,20 @@ final class SingletonGraph {
         )
     }
 
+    /// Builds a client-encrypted draft saver, or nil when unpaired. Per save,
+    /// like the sender.
+    func makeClientEncryptedDraftSaver(accountAddress: String) -> ClientEncryptedDraftSaver? {
+        guard let pairing = try? securePairingStore.loadPairing() else { return nil }
+        return ClientEncryptedDraftSaver(
+            opener: DeviceVaultOpener(vault: enrollmentVault, inspector: pgpCrypto),
+            transport: ClientEncryptedDraftClient(
+                httpClient: httpClient, serverUrl: pairing.srv, auth: RelayAuth(pairing: pairing)
+            ),
+            crypto: pgpCrypto,
+            accountAddress: accountAddress
+        )
+    }
+
     /// Builds a ceremony against the current pairing, or nil when unpaired.
     /// Rebuilt per attempt so a re-pair between attempts cannot reuse stale
     /// credentials.

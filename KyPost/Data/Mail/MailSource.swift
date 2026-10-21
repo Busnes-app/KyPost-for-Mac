@@ -67,11 +67,6 @@ protocol MailSource: Sendable {
     /// message went out: never retry on one, it would duplicate.
     @discardableResult
     func send(email: OutgoingEmail) async throws -> String
-    /// Saves a draft server-side (POST /api/mail/draft). Same body shape as
-    /// `send` minus the PGP flags; the response is `{"ok": true}` and every
-    /// failure is a plain-text error. The client-custody webmail handoff
-    /// depends on this call.
-    func saveDraft(email: OutgoingEmail) async throws
 }
 
 extension MailSource {

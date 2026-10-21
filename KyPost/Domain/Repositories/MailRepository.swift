@@ -448,17 +448,6 @@ final class MailRepository {
         }
     }
 
-    /// Saves a draft on the server so the webmail handoff has something to
-    /// open. Same failure mapping as `send`.
-    func saveDraft(_ email: OutgoingEmail) async -> MailOutcome {
-        do {
-            try await makeSource().saveDraft(email: email)
-            return .success
-        } catch {
-            return MailOutcome.from(error)
-        }
-    }
-
     /// The pairing a send is bound to, or nil when unpaired.
     func currentAccount() -> MailAccountBinding? {
         guard overrideSource == nil, let pairing = try? securePairingStore.loadPairing() else { return nil }

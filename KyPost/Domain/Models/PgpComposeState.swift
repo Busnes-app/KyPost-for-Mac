@@ -70,6 +70,33 @@ nonisolated func pgpComposeState(
     return PgpComposeState(canEncrypt: false, canSign: false, handoffToWebmail: false)
 }
 
+/// What compose's webmail handoff may do with the composed message.
+nonisolated enum DraftHandoffMode: Equatable, Sendable {
+    /// Encrypt and sign the draft to the account's own key on this device, and
+    /// upload only the ciphertext.
+    case encryptAndSave
+    /// Upload nothing and open webmail: this device holds no key to encrypt
+    /// with, and a client-custody draft is never posted in the clear.
+    case openWithoutSave
+    /// Upload nothing: custody is unknown or not client, or no `From` can be
+    /// built.
+    case refuse
+}
+
+/// Android `draftHandoffMode`. Decided when the handoff runs, never when the
+/// window opened: enrollment can change in between.
+nonisolated func draftHandoffMode(
+    hasIdentity: Bool?,
+    protection: String?,
+    enrolled: Bool,
+    accountAddress: String
+) -> DraftHandoffMode {
+    guard hasIdentity == true, protection == pgpProtectionClient else { return .refuse }
+    guard enrolled else { return .openWithoutSave }
+    guard !accountAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .refuse }
+    return .encryptAndSave
+}
+
 /// Compose's three recipient fields, split and de-overlapped.
 nonisolated struct RecipientFields: Equatable, Sendable {
     var to: [String] = []

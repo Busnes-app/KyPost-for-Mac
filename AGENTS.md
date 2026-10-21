@@ -206,6 +206,11 @@ Each rule below is a defect someone already found once.
 - **The Sent copy is encrypted to the public half of the vault key,** never to
   anything the server supplied. A hostile server handing back "your" key would
   otherwise get a readable copy of every message sent.
+- **A draft (`ClientEncryptedDraftSaver`) is the Sent-copy rule again:**
+  encrypted and signed to `ownPublicKey(signingKey)` only, with To, Cc, Bcc and
+  the real Subject as protected headers inside the ciphertext. The outer
+  envelope names From, To and Date; its `cc` is always empty. The upload is
+  `{to, pgpDraft}` and a 200 counts only with `{"ok": true}`.
 - **`tier == "key_changed"` is a broken TOFU pin** — a distinct, louder
   outcome checked *before* "no key on file", never folded into it.
 - **There is no pickup fallback here and there must not be.** The server-side

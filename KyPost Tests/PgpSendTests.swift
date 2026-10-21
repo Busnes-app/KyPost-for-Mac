@@ -319,7 +319,8 @@ private final class ComposeStub {
 @MainActor
 private func makeCompose(
     stub: ComposeStub,
-    paired: Bool = true
+    paired: Bool = true,
+    enrolled: Bool = false
 ) throws -> ComposeViewModel {
     let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
     let pairingStore = try makePairedStore(paired: paired)
@@ -345,6 +346,7 @@ private func makeCompose(
             securePairingStore: pairingStore
         ),
         isLocked: { false },
+        isEnrolled: { enrolled },
         debounceInterval: .zero
     )
 }
@@ -573,25 +575,50 @@ private func fields(_ body: String) throws -> [String: Any] {
         #expect(stub.sends.value.count == 1)
     }
 
-    @Test func theClientSideConflictSavesADraftAndHandsOffToWebmail() async throws {
+    /// The relay says this account encrypts on the client, and this device
+    /// is not enrolled: nothing is uploaded — never a plaintext draft — and
+    /// webmail opens with the message still here.
+    @Test func theClientSideConflictOnAnUnenrolledDeviceUploadsNoDraft() async throws {
         let stub = ComposeStub(
             bootstrap: #"{"hasIdentity":true,"protection":"client"}"#,
             sendResponses: [(409, #"{"clientSideNeeded":true}"#)]
         )
         let compose = try makeCompose(stub: stub)
+        await compose.loadPgpIdentityIfNeeded()
         compose.toInput = "alice@example.com"
         compose.subject = "Quarterly"
         compose.encrypt = true
 
         await compose.send(fontTraits: noTraits)
 
-        #expect(stub.drafts.value.count == 1)
-        #expect(stub.drafts.value[0].contains(#""subject":"Quarterly""#))
-        // A draft carries no PGP flags.
-        #expect(!stub.drafts.value[0].contains("encrypt"))
+        #expect(stub.sends.value.count == 1)
+        #expect(stub.drafts.value.isEmpty)
         #expect(compose.webmailHandoffURL?.absoluteString == "\(server)/read?mailbox=Drafts")
         #expect(compose.noticeMessage?.isEmpty == false)
-        #expect(compose.isSent)
+        #expect(compose.errorMessage == nil)
+        #expect(!compose.isSent)
+        #expect(compose.closingNeedsConfirmation)
+    }
+
+    /// A clientSideNeeded 409 on an account whose bootstrap said `server` is a
+    /// contradiction: refuse, and upload nothing.
+    @Test func theClientSideConflictOnAServerCustodyAccountIsRefused() async throws {
+        for enrolled in [false, true] {
+            let stub = ComposeStub(
+                bootstrap: #"{"hasIdentity":true,"protection":"server","suggestedUserIDs":["me@example.com"]}"#,
+                sendResponses: [(409, #"{"clientSideNeeded":true}"#)]
+            )
+            let compose = try makeCompose(stub: stub, enrolled: enrolled)
+            await compose.loadPgpIdentityIfNeeded()
+            compose.toInput = "alice@example.com"
+
+            await compose.send(fontTraits: noTraits)
+
+            #expect(stub.drafts.value.isEmpty)
+            #expect(compose.errorMessage?.isEmpty == false)
+            #expect(compose.webmailHandoffURL == nil)
+            #expect(!compose.isSent)
+        }
     }
 
     @Test func custodyDrivesWhetherTogglesAreOfferedAtAll() async throws {
@@ -618,19 +645,38 @@ private func fields(_ body: String) throws -> [String: Any] {
         #expect(compose.pendingPickup == nil)
     }
 
-    @Test func theHandoffButtonSavesADraftAndOpensDrafts() async throws {
+    /// The handoff button on an unenrolled device posts nothing at all.
+    @Test func theHandoffButtonOnAnUnenrolledDeviceOpensWebmailWithoutUploading() async throws {
         let stub = ComposeStub(bootstrap: #"{"hasIdentity":true,"protection":"client"}"#)
         let compose = try makeCompose(stub: stub)
+        await compose.loadPgpIdentityIfNeeded()
+        compose.toInput = "alice@example.com"
+        compose.subject = "Quarterly"
+
+        await compose.handOffToWebmail(fontTraits: noTraits)
+
+        #expect(stub.drafts.value.isEmpty)
+        #expect(stub.sends.value.isEmpty)
+        #expect(compose.webmailHandoffURL?.absoluteString == "\(server)/read?mailbox=Drafts")
+        #expect(compose.noticeMessage?.isEmpty == false)
+        #expect(!compose.isSent)
+        #expect(compose.closingNeedsConfirmation)
+
+        // The view clears it after opening, so it can't reopen on redraw.
+        compose.didOpenWebmail()
+        #expect(compose.webmailHandoffURL == nil)
+    }
+
+    /// Custody never loaded: the handoff refuses rather than guess.
+    @Test func theHandoffWithUnknownCustodyUploadsNothing() async throws {
+        let stub = ComposeStub(bootstrap: #"{"hasIdentity":true,"protection":"client"}"#)
+        let compose = try makeCompose(stub: stub, enrolled: true)
         compose.toInput = "alice@example.com"
 
         await compose.handOffToWebmail(fontTraits: noTraits)
 
-        #expect(stub.drafts.value.count == 1)
-        #expect(stub.sends.value.isEmpty)
-        #expect(compose.webmailHandoffURL?.absoluteString == "\(server)/read?mailbox=Drafts")
-
-        // The view clears it after opening, so it can't reopen on redraw.
-        compose.didOpenWebmail()
+        #expect(stub.drafts.value.isEmpty)
+        #expect(compose.errorMessage?.isEmpty == false)
         #expect(compose.webmailHandoffURL == nil)
     }
 }
