@@ -344,7 +344,7 @@ private func makeCompose(
         emailDAO: EmailDAO(modelContainer: db.container),
         httpClient: client
     )
-    return ComposeViewModel(
+    let compose = ComposeViewModel(
         sendEmail: SendEmailUseCase(repository: mailRepository),
         contacts: contacts,
         pgp: PgpSendService(
@@ -366,6 +366,10 @@ private func makeCompose(
         },
         debounceInterval: .zero
     )
+    // These tests are about the PGP path, not the blank-subject question
+    // (`ComposeBlankSubjectTests`); a subject keeps Send from stopping there.
+    compose.subject = "Status"
+    return compose
 }
 
 private struct StubDraftOpener: VaultOpening {

@@ -337,6 +337,7 @@ struct ComposeSendTests {
         let captured = Box<URLRequest?>(nil)
         let env = try await makeEnvironment(onSend: { captured.value = $0 })
         env.viewModel.toInput = "typed@x.com"
+        env.viewModel.subject = "Hi"
         await env.viewModel.send(fontTraits: plainTraits)
 
         let request = try #require(captured.value)
@@ -347,7 +348,7 @@ struct ComposeSendTests {
     @Test func sendsBareAddressesNotDisplayNames() async throws {
         let captured = Box<URLRequest?>(nil)
         let env = try await makeEnvironment(
-            draft: ComposeDraft(to: "alice@x.com", cc: "b@y.com", bcc: "c@z.com"),
+            draft: ComposeDraft(to: "alice@x.com", cc: "b@y.com", bcc: "c@z.com", subject: "Hi"),
             contacts: [makeContact("Alice Chen", "alice@x.com")],
             onSend: { captured.value = $0 }
         )
@@ -360,7 +361,7 @@ struct ComposeSendTests {
     }
 
     @Test func refusesToSendWithInvalidTypedText() async throws {
-        let env = try await makeEnvironment(draft: ComposeDraft(to: "a@x.com"))
+        let env = try await makeEnvironment(draft: ComposeDraft(to: "a@x.com", subject: "Hi"))
         env.viewModel.ccInput = "garbage"
         await env.viewModel.send(fontTraits: plainTraits)
 
