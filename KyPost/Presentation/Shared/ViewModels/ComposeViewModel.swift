@@ -154,6 +154,8 @@ final class ComposeViewModel {
     /// Whether this device holds the account's key, read at every use:
     /// enrollment can change while the window is open.
     private let isEnrolled: () -> Bool
+    /// Builds the draft saver for an account address; nil when unpaired.
+    private let makeDraftSaver: (String) -> ClientEncryptedDraftSaver?
 
     /// `debounceInterval` is injectable so tests don't sleep.
     init(
@@ -164,10 +166,14 @@ final class ComposeViewModel {
         signature: String = "",
         isLocked: @escaping () -> Bool,
         isEnrolled: (() -> Bool)? = nil,
+        makeDraftSaver: ((String) -> ClientEncryptedDraftSaver?)? = nil,
         debounceInterval: Duration = .milliseconds(150)
     ) {
         self.isLocked = isLocked
         self.isEnrolled = isEnrolled ?? { SingletonGraph.shared.enrollmentVault.isEnrolled }
+        self.makeDraftSaver = makeDraftSaver ?? {
+            SingletonGraph.shared.makeClientEncryptedDraftSaver(accountAddress: $0)
+        }
         self.sendEmail = sendEmail
         self.contacts = contacts
         self.pgp = pgp
@@ -791,6 +797,9 @@ final class ComposeViewModel {
     ///
     /// Like `deliver`, this does not own `isSending`.
     private func handOff(draft email: OutgoingEmail) async {
+        // `deliver` reaches here after a network round trip: a lock that
+        // engaged during it must stop the handoff, not prompt under the cover.
+        guard !isLocked() else { return }
         let mode = draftHandoffMode(
             hasIdentity: pgp.hasIdentity,
             protection: pgp.protection,
@@ -801,20 +810,24 @@ final class ComposeViewModel {
         case .refuse:
             errorMessage = pgp.hasIdentity == true && pgp.protection == pgpProtectionClient
                 ? "No mail address is configured for this account, so nothing was saved to Drafts."
-                : "Couldn't confirm how this account's key is held, so nothing was saved to Drafts."
+                : """
+                Couldn't confirm how this account's key is held, so nothing was saved to Drafts. \
+                Try again, or write this message in webmail in your browser.
+                """
         case .openWithoutSave:
             // Nothing uploaded and nothing sent: `isSent` stays false, so
             // closing the window still asks before the message is lost.
             errorMessage = nil
+            let explanation = """
+            This account's PGP key is held only by your browser, and this device isn't set up to \
+            encrypt for it, so nothing was saved and nothing was sent to webmail. Copy your text \
+            from here to finish it there, or set up encryption on this device in Settings.
+            """
             guard let url = sendEmail.webmailDraftsURL else {
-                noticeMessage = """
-                This account's PGP key is held only by your browser, and this device isn't set up                 to encrypt for it, so nothing was saved. Open webmail in your browser to write it                 there — your message stays here.
-                """
+                noticeMessage = explanation + " Open webmail in your browser."
                 return
             }
-            noticeMessage = """
-            This account's PGP key is held only by your browser, and this device isn't set up to             encrypt for it, so nothing was saved. We opened webmail to write it there — your             message stays here.
-            """
+            noticeMessage = explanation + " We opened webmail for you."
             webmailHandoffURL = url
         case .encryptAndSave:
             await saveEncryptedDraft(email)
@@ -822,9 +835,7 @@ final class ComposeViewModel {
     }
 
     private func saveEncryptedDraft(_ email: OutgoingEmail) async {
-        guard let saver = SingletonGraph.shared.makeClientEncryptedDraftSaver(
-            accountAddress: pgp.accountAddress
-        ) else {
+        guard let saver = makeDraftSaver(pgp.accountAddress) else {
             errorMessage = "Pair this device before sending."
             return
         }
@@ -834,12 +845,15 @@ final class ComposeViewModel {
             errorMessage = nil
             guard let url = sendEmail.webmailDraftsURL else {
                 noticeMessage = """
-                This account's PGP key is held only by your browser, so it has to send from                 there. We encrypted this message and saved it to Drafts — couldn't work out this                 server's web address, so open Drafts in your browser to finish sending it.
+                This account's PGP key is held only by your browser, so it has to send from \
+                there. We encrypted this message and saved it to Drafts. We couldn't work out \
+                this server's web address, so open Drafts in your browser to finish sending it.
                 """
                 return
             }
             noticeMessage = """
-            This account's PGP key is held only by your browser, so it has to send from there.             We encrypted this message, saved it to Drafts and opened webmail to finish sending it.
+            This account's PGP key is held only by your browser, so it has to send from there. \
+            We encrypted this message, saved it to Drafts and opened webmail to finish sending it.
             """
             webmailHandoffURL = url
         // Not an error: the user dismissed a prompt they raised.

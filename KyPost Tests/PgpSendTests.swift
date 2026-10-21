@@ -320,7 +320,8 @@ private final class ComposeStub {
 private func makeCompose(
     stub: ComposeStub,
     paired: Bool = true,
-    enrolled: Bool = false
+    enrolled: Bool = false,
+    draftOpener: VaultOpenOutcome = .opened(privateKey: Data("PRIVATE".utf8))
 ) throws -> ComposeViewModel {
     let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
     let pairingStore = try makePairedStore(paired: paired)
@@ -347,8 +348,39 @@ private func makeCompose(
         ),
         isLocked: { false },
         isEnrolled: { enrolled },
+        makeDraftSaver: { address in
+            ClientEncryptedDraftSaver(
+                opener: StubDraftOpener(outcome: draftOpener),
+                transport: ClientEncryptedDraftClient(
+                    httpClient: client, serverUrl: server, auth: RelayAuth(deviceId: "d", deviceSecret: "s")
+                ),
+                crypto: StubDraftCrypto(),
+                accountAddress: address,
+                session: EnrollmentSession()
+            )
+        },
         debounceInterval: .zero
     )
+}
+
+private struct StubDraftOpener: VaultOpening {
+    var outcome: VaultOpenOutcome
+    func open() async -> VaultOpenOutcome { outcome }
+}
+
+private struct StubDraftCrypto: PgpEncrypting {
+    func encryptAndSign(plaintext: Data, recipientKeys: [String], privateKey: Data) throws -> String {
+        "-----BEGIN PGP MESSAGE-----\nOPAQUE\n-----END PGP MESSAGE-----"
+    }
+    func ownPublicKey(privateKey: Data) throws -> String { "OWN" }
+}
+
+/// Compose shows notices verbatim: a lost line continuation shows up as a run
+/// of spaces mid-sentence.
+private func expectReadable(_ text: String?, sourceLocation: SourceLocation = #_sourceLocation) {
+    #expect(text?.isEmpty == false, sourceLocation: sourceLocation)
+    #expect(text?.contains("  ") == false, sourceLocation: sourceLocation)
+    #expect(text?.contains("\n") == false, sourceLocation: sourceLocation)
 }
 
 private let noTraits: RichTextHTML.FontTraits = { _ in (false, false) }
@@ -594,7 +626,7 @@ private func fields(_ body: String) throws -> [String: Any] {
         #expect(stub.sends.value.count == 1)
         #expect(stub.drafts.value.isEmpty)
         #expect(compose.webmailHandoffURL?.absoluteString == "\(server)/read?mailbox=Drafts")
-        #expect(compose.noticeMessage?.isEmpty == false)
+        expectReadable(compose.noticeMessage)
         #expect(compose.errorMessage == nil)
         #expect(!compose.isSent)
         #expect(compose.closingNeedsConfirmation)
@@ -658,7 +690,7 @@ private func fields(_ body: String) throws -> [String: Any] {
         #expect(stub.drafts.value.isEmpty)
         #expect(stub.sends.value.isEmpty)
         #expect(compose.webmailHandoffURL?.absoluteString == "\(server)/read?mailbox=Drafts")
-        #expect(compose.noticeMessage?.isEmpty == false)
+        expectReadable(compose.noticeMessage)
         #expect(!compose.isSent)
         #expect(compose.closingNeedsConfirmation)
 
@@ -676,7 +708,63 @@ private func fields(_ body: String) throws -> [String: Any] {
         await compose.handOffToWebmail(fontTraits: noTraits)
 
         #expect(stub.drafts.value.isEmpty)
-        #expect(compose.errorMessage?.isEmpty == false)
+        expectReadable(compose.errorMessage)
         #expect(compose.webmailHandoffURL == nil)
+    }
+
+    /// An enrolled device saves the draft encrypted, and only `to` and
+    /// `pgpDraft` reach the relay.
+    @Test func theHandoffOnAnEnrolledDeviceSavesAnEncryptedDraft() async throws {
+        let stub = ComposeStub(
+            bootstrap: #"{"hasIdentity":true,"protection":"client","suggestedUserIDs":["me@example.com"]}"#
+        )
+        let compose = try makeCompose(stub: stub, enrolled: true)
+        await compose.loadPgpIdentityIfNeeded()
+        compose.toInput = "alice@example.com"
+        compose.ccInput = "carol@example.com"
+        compose.subject = "Quarterly"
+
+        await compose.handOffToWebmail(fontTraits: noTraits)
+
+        #expect(stub.sends.value.isEmpty)
+        #expect(stub.drafts.value.count == 1)
+        let body = try fields(try #require(stub.drafts.value.first))
+        #expect(Set(body.keys) == ["to", "pgpDraft"])
+        #expect(body["to"] as? String == "alice@example.com")
+        let pgpDraft = try #require(body["pgpDraft"] as? String)
+        #expect(!pgpDraft.contains("Quarterly"))
+        #expect(!pgpDraft.contains("carol@example.com"))
+        #expect(compose.isSent)
+        #expect(compose.errorMessage == nil)
+        expectReadable(compose.noticeMessage)
+        #expect(compose.webmailHandoffURL?.absoluteString == "\(server)/read?mailbox=Drafts")
+    }
+
+    /// A failed unlock uploads nothing and leaves the message as it was.
+    @Test func aFailedUnlockDuringTheHandoffUploadsNothing() async throws {
+        let stub = ComposeStub(
+            bootstrap: #"{"hasIdentity":true,"protection":"client","suggestedUserIDs":["me@example.com"]}"#
+        )
+        let compose = try makeCompose(stub: stub, enrolled: true, draftOpener: .failed("bad seal"))
+        await compose.loadPgpIdentityIfNeeded()
+        compose.toInput = "alice@example.com"
+        compose.subject = "Quarterly"
+
+        await compose.handOffToWebmail(fontTraits: noTraits)
+
+        #expect(stub.drafts.value.isEmpty)
+        expectReadable(compose.errorMessage)
+        #expect(!compose.isSent)
+        #expect(compose.subject == "Quarterly")
+        #expect(compose.webmailHandoffURL == nil)
+
+        // A dismissed prompt is not an error.
+        let cancelled = try makeCompose(stub: stub, enrolled: true, draftOpener: .cancelled)
+        await cancelled.loadPgpIdentityIfNeeded()
+        cancelled.toInput = "alice@example.com"
+        await cancelled.handOffToWebmail(fontTraits: noTraits)
+        #expect(stub.drafts.value.isEmpty)
+        #expect(cancelled.errorMessage == nil)
+        #expect(!cancelled.isSent)
     }
 }
