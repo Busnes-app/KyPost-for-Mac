@@ -643,8 +643,8 @@ private func makeViewModel(_ h: Harness) -> InboxViewModel {
         let fetched = MailMessageBody(body: "the fetched text", bodyMode: "plain")
         #expect(draftBodyReadiness(for: paged, fetchedBody: fetched, fetchFailed: false) == .ready)
         let shown = emailWithFetchedBody(paged, fetched)
-        #expect(ComposeDraft.reply(to: shown).body.contains("the fetched text"))
-        #expect(ComposeDraft.replyAll(to: shown, ownAddress: nil).body.contains("the fetched text"))
+        #expect(ComposeDraft.reply(to: shown, ownAddresses: []).body.contains("the fetched text"))
+        #expect(ComposeDraft.replyAll(to: shown, ownAddresses: []).body.contains("the fetched text"))
         #expect(ComposeDraft.forward(shown).body.contains("the fetched text"))
 
         // A row that arrived with its body never waits.

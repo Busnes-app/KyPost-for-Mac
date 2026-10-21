@@ -165,7 +165,7 @@ struct SettingsView: View {
             .listRowBackground(theme.panel)
 
             Section("About") {
-                NavigationLink("About & Tip Jar") {
+                NavigationLink("About") {
                     AboutView()
                 }
             }

@@ -195,7 +195,7 @@ struct UnlockView: View {
         case .rejected(let delay):
             pinStatus = delay > 0 ? nil : "Incorrect PIN."
         case .notConfigured:
-            pinStatus = "There is no PIN set on this Mac."
+            pinStatus = "There is no PIN set on this device."
         case .gatedSecretUnavailable:
             pinStatus = """
                 Your PIN was correct, but KyPost couldn't read the credential it \
@@ -204,7 +204,7 @@ struct UnlockView: View {
                 """
         case .verifierUnavailable:
             pinStatus = """
-                KyPost can't check your PIN on this Mac right now — the key that \
+                KyPost can't check your PIN on this device right now — the key that \
                 protects it is unavailable. This does not mean the PIN is wrong. \
                 Restart, and use Reset below if it keeps happening.
                 """

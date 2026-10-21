@@ -121,6 +121,15 @@ struct MainTabView: View {
             MfaApprovalView(challenge: route.challenge)
                 .environment(\.theme, themeManager.palette)
         }
+        // A pairing just landed: load now rather than leaving "not paired"
+        // up until the next 90-second refresh (as `MacRootView` does).
+        .onReceive(NotificationCenter.default.publisher(for: .kyPostPaired)) { _ in
+            Task {
+                await inboxViewModel.load()
+                await inboxViewModel.loadSubfolders()
+                await contactsViewModel.sync()
+            }
+        }
         .lockAwareRouting(router)
 #if os(iOS)
         .fullScreenCover(isPresented: lockBinding) {

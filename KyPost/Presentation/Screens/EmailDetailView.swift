@@ -261,6 +261,11 @@ struct EmailDetailView: View {
             Text("Replying to encrypted mail isn't available in the app yet.")
         }
         .task {
+            // Bootstrap names the aliases replies leave out; until it
+            // answers, they leave out the pairing's address alone.
+            await SingletonGraph.shared.pgpSendService.loadIfNeeded()
+        }
+        .task {
             let listing = Task { await inboxViewModel.attachmentListing(for: email) }
             attachmentListing = listing
             // First: the PGP state the decrypt path reads is computed from the
@@ -307,13 +312,13 @@ struct EmailDetailView: View {
         // Dimmed instead, and pressing it explains.
         Group {
             Button {
-                replyOrExplain { compose(.reply(to: shown)) }
+                replyOrExplain { compose(.reply(to: shown, ownAddresses: ownAddresses)) }
             } label: {
                 Label("Reply", systemImage: "arrowshape.turn.up.left")
             }
             .help(replyAvailable ? "Reply to the sender" : replyUnavailableHelp)
             Button {
-                replyOrExplain { compose(.replyAll(to: shown, ownAddress: ownAddress)) }
+                replyOrExplain { compose(.replyAll(to: shown, ownAddresses: ownAddresses)) }
             } label: {
                 Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
             }
@@ -371,8 +376,8 @@ struct EmailDetailView: View {
     private var messageCommands: MessageCommands {
         let movable = !isActing
         return MessageCommands(
-            reply: { replyOrExplain { compose(.reply(to: shown)) } },
-            replyAll: { replyOrExplain { compose(.replyAll(to: shown, ownAddress: ownAddress)) } },
+            reply: { replyOrExplain { compose(.reply(to: shown, ownAddresses: ownAddresses)) } },
+            replyAll: { replyOrExplain { compose(.replyAll(to: shown, ownAddresses: ownAddresses)) } },
             forward: preparingForward ? nil : { replyOrExplain { forward() } },
             archive: movable ? { act(.archive) } : nil,
             junk: movable ? { act(.spam) } : nil,
@@ -529,9 +534,9 @@ struct EmailDetailView: View {
         !isLocked && MailAccessGate.isOpen() && SingletonGraph.shared.securePairingStore.isPaired
     }
 
-    /// Our own relay address (the pairing's sub), excluded from Reply All.
-    private var ownAddress: String? {
-        (try? SingletonGraph.shared.securePairingStore.loadPairing())?.sub
+    /// Our own addresses and aliases, left out of replies.
+    private var ownAddresses: [String] {
+        SingletonGraph.shared.pgpSendService.ownAddresses
     }
 
     private var hostileLocationProtectionActive: Bool {
@@ -1011,8 +1016,12 @@ private struct ReaderCommandHandling: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .focusedSceneValue(\.readerMessageCommands, commands)
 #if os(macOS)
+            // macOS only, like the menu reading it. `MessageCommands` holds
+            // closures, so every body pass publishes a new value; on iOS
+            // (26.5, iPhone stack) that republish re-ran layout forever and
+            // hung the app the moment a message was pushed.
+            .focusedSceneValue(\.readerMessageCommands, commands)
             // ⌫ in a pop-out. Never in the main window, where a bare ⌫
             // shortcut would fire while typing in the search field; there the
             // list's `onDeleteCommand` (undoable) takes it, or this one when

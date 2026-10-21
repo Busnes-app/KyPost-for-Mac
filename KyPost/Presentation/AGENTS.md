@@ -188,6 +188,16 @@ Domain.
   ask. Quitting on macOS asks once for every open compose: each registers in
   `OpenComposeRegistry` on appear, and `applicationShouldTerminate` shows the
   same Discard / Keep editing question as an alert.
+- **Send with a blank subject asks "Send without a subject?" first.**
+  `ComposeViewModel.send` sets `confirmingBlankSubject` (empty or
+  whitespace-only, `subjectIsBlank`) and sends nothing; the dialog's Send is
+  `sendWithoutSubject`, its default Add Subject cancels and focuses the
+  subject field. The answer is not remembered, except that
+  `sendAgainAfterUncertainOutcome` never asks (same request, same
+  Idempotency-Key). Save Draft and the pickup re-send never ask. It is an
+  `.alert`, not a `.confirmationDialog`: from the toolbar's Send, iOS 26
+  presents a dialog as a popover and drops its cancel-role button, so the
+  iPhone showed Send alone.
 - **A compose open when the lock engages stays, covered, and sends nothing.**
   The iOS shell owns the one compose sheet (`MailShellState.compose`, below),
   outside the router, so `dismissPresentedRoutes` cannot reach it and the
@@ -388,6 +398,12 @@ Domain.
   a short message. Reply/Forward quote the fetched body, so they open no draft
   until it has arrived (`draftBodyReadiness`): pressed while it loads or after
   it failed, they explain instead.
+- **Replies leave out every address of ours** (`ComposeDraft.reply` /
+  `replyAll`, fed `PgpSendService.ownAddresses`): the pairing's sub plus all
+  of bootstrap's `suggestedUserIDs` (send-as aliases), compared as bare
+  addresses, case-insensitively. Before bootstrap loads (the reader starts
+  it) only the sub is left out. A reply to a message we sent goes to its
+  original To minus us; a note to self opens with To empty, never to us.
 - **A notification-tap target is consumed once**, at the start of the hunt:
   `router.pendingMessageId` is cleared before the resync, found or not.
   `prepareForPushTap` switches to Inbox and waits out an in-flight refresh so
@@ -418,6 +434,12 @@ Domain.
   it holds focus, and a hidden shortcut in pop-outs only
   (`EmailDetailView.isPopOut`). No Mark as Unread: `/api/inbox/actions` has
   no unread action (KyPost-Server `server_inbox.go`, 2026-10-13).
+  **Publish `MessageCommands` on macOS only** (`#if os(macOS)` in
+  `ReaderCommandHandling`): nothing on iOS reads it, and because it holds
+  closures every body pass publishes a new value. On iOS 26.5 that hung
+  the iPhone the moment a message was pushed: the main thread spun in one
+  Core Animation commit, re-running layout and never showing the reader
+  (iOS 27.0 did not hang). `ReaderOpenTests` (UI, iOS) guards it.
 - **A pop-out reader owns its row** (`EmailWindowView`,
   `InboxViewModel.resolveEmail`; root "Inbox search"). Never read the main
   list from the window's body. It resolves only while `MailAccessGate` is
@@ -504,21 +526,10 @@ Domain.
   the surface as a Preferences tab. `AboutView` owns the version, 2026
   Busnes.app copyright, privacy-policy link, embedded MIT license, the
   Acknowledgements link (`AcknowledgementsView`: pushed on iOS, a sheet in
-  the macOS About window), and, on iOS only, the StoreKit 2 Tip Jar (the Mac
-  app is a Developer ID build from GitHub Releases, with no App Store to buy
-  through). The user-facing name
-  is **Tip Jar**, never "Donate": App Review reads "donate" as a charitable
-  donation, which it allows only for approved nonprofits, while a tip to the
-  developer through In-App Purchase is ordinary. The tip section shows one status line,
-  `TipJarStore.statusMessage`; do not render `errorMessage` beside it.
-  `TipJarStore` uses `CupOJoe4Mail` for one-off
-  purchases only; prices come from App Store Connect and must not be hardcoded.
-  Do not offer recurring support without an ongoing customer benefit.
-  `start()` keeps the `Transaction.updates` listener and drains
-  `Transaction.unfinished`: a tip that returns `.pending` (Ask to Buy) is
-  only ever finished there. Only verified transactions are finished. The
-  StoreKit surface is injected (`TipJarTransactionSource`) so
-  `TipJarStoreTests` runs without StoreKitTest or a simulator store.
+  the macOS About window). There is no tip jar or other purchase (root
+  "Release and store readiness"). If one is ever added back, App Review
+  reads "donate" as a charitable donation, allowed only for approved
+  nonprofits: call it a tip, through In-App Purchase.
 
 - Reuse `ContactSearch` for any contact matching; don't hand-roll a filter.
   `localizedCaseInsensitiveContains` over every contact per keystroke routes
@@ -553,8 +564,11 @@ Recorded so they aren't re-litigated as bugs:
   stack/split decision, what a switch keeps, and its Undo rule,
   `ThemeContrastTests` for WCAG AA, `RemoteContentBlockingTests` for the
   reader's block against real WebKit, `ReaderWindowTests.swift` for pop-out
-  rows, reader failures and the Message menu, `TipJarStoreTests` for the tip
-  transactions and status line).
+  rows, reader failures and the Message menu, `ComposeBlankSubjectTests` in
+  `ComposeParityTests.swift` for the blank-subject prompt).
+- Opening a message on an iPhone: `KyPost UITests/ReaderOpenTests`, under
+  `-destination 'platform=iOS Simulator,name=iPhone 17 Pro Max,OS=26.5'`
+  (not skipped, unlike the capture runs).
 - The Message menu's enablement and ⌫ routing are focus behaviour: check
   them in the running app (main window with and without the preview pane,
   a pop-out, typing ⌫ in the search field).

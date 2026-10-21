@@ -48,6 +48,8 @@ struct ComposeView: View {
     /// header and the body sit side by side.
     @State private var width: CGFloat = 0
     @FocusState private var focusedField: RecipientField?
+    /// Where Add Subject puts the cursor after a blank-subject send.
+    @FocusState private var subjectFocused: Bool
 
     /// Android's two-column compose threshold (KyPost-for-Android e247fc6e,
     /// 600dp), measured against the sheet, not the window.
@@ -179,6 +181,27 @@ struct ComposeView: View {
         } message: { pickup in
             Text(viewModel.pickupConfirmationMessage(for: pickup))
         }
+        // Every Send (button, ⌘↩) goes through `send`, which raises this for a
+        // blank subject. Add Subject is the default, so a reflexive Return
+        // goes back to editing rather than out. An alert, not a confirmation
+        // dialog: from the toolbar's Send, iOS 26 shows a dialog as a popover,
+        // which drops the cancel-role button, so Add Subject never appeared.
+        .alert(
+            "Send without a subject?",
+            isPresented: Binding(
+                get: { viewModel.confirmingBlankSubject },
+                set: { if !$0 { viewModel.cancelSendWithoutSubject() } }
+            )
+        ) {
+            Button("Send") {
+                Task { await viewModel.sendWithoutSubject(fontTraits: fontTraits) }
+            }
+            Button("Add Subject", role: .cancel) {
+                viewModel.cancelSendWithoutSubject()
+                subjectFocused = true
+            }
+            .keyboardShortcut(.defaultAction)
+        }
         // The handoff opens the user's browser, never an in-app web view: it
         // shares no session and would put an account-password field in here
         // (kypost-server docs/E2E_PGP.md requirement 5).
@@ -276,6 +299,7 @@ struct ComposeView: View {
             showFileImporter = false
             confirmingDiscard = false
             viewModel.cancelPickupFallback()
+            viewModel.cancelSendWithoutSubject()
         }
         .tint(theme.accent)
     }
@@ -464,6 +488,7 @@ struct ComposeView: View {
                 TextField("", text: $viewModel.subject)
                     .font(AppFont.ui(14, weight: .medium))
                     .textFieldStyle(.plain)
+                    .focused($subjectFocused)
             }
         }
 #if os(iOS)

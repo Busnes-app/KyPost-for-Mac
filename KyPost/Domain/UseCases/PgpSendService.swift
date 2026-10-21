@@ -36,6 +36,14 @@ final class PgpSendService {
     /// configured — in which case no delivery `From` can be built.
     private(set) var accountAddress = ""
 
+    /// All of bootstrap's `suggestedUserIDs`: the account address and its
+    /// send-as aliases. Empty until a successful load.
+    private(set) var accountAddresses: [String] = []
+
+    /// Bumped by `forgetAccount`: a bootstrap that answers after it is the
+    /// account just left, and is dropped.
+    private var accountGeneration = 0
+
     init(client: PgpSendClient, securePairingStore: SecurePairingStore) {
         self.client = client
         self.securePairingStore = securePairingStore
@@ -65,21 +73,27 @@ final class PgpSendService {
         self.hasIdentity = hasIdentity
         self.protection = protection
         self.accountAddress = accountAddress
+        accountAddresses = [accountAddress]
         custody = pgpKeyCustody(hasIdentity: hasIdentity, protection: protection)
     }
 
     /// Loads key custody once per session. Cheap to call from every compose
     /// window's `.task`.
     func loadIfNeeded() async {
+        // Before the pairing is read, so a load cannot pair the old
+        // account's credentials with the new generation.
+        let generation = accountGeneration
         guard custody == nil, let credentials = pairingCredentials else { return }
         do {
             let response = try await client.fetchBootstrap(
                 serverUrl: credentials.serverUrl,
                 auth: credentials.auth
             )
+            guard generation == accountGeneration else { return }
             hasIdentity = response.hasIdentity
             protection = response.protection
             accountAddress = response.suggestedUserIDs?.first ?? ""
+            accountAddresses = response.suggestedUserIDs ?? []
             custody = pgpKeyCustody(
                 hasIdentity: response.hasIdentity,
                 protection: response.protection
@@ -98,6 +112,30 @@ final class PgpSendService {
                 "PGP bootstrap failed: \(String(describing: type(of: error)), privacy: .public) \(error.localizedDescription, privacy: .private)"
             )
         }
+    }
+
+    /// Drops the cached bootstrap (an `AccountTeardown` step): custody and the
+    /// aliases replies leave out belong to the account being left. A load in
+    /// flight is voided, and the next one fetches for whichever account is
+    /// paired then.
+    func forgetAccount() {
+        // Before the generation moves, as `MailRepository.forgetAccount` does:
+        // a load under the new generation must not read the old pairing.
+        securePairingStore.retireCurrentPairing()
+        accountGeneration += 1
+        custody = nil
+        hasIdentity = nil
+        protection = nil
+        accountAddress = ""
+        accountAddresses = []
+    }
+
+    /// Every address of ours that a reply leaves out: the pairing's sub, plus
+    /// the account address and aliases once bootstrap has loaded. Before then
+    /// it is the sub alone, which is all Reply All ever excluded.
+    var ownAddresses: [String] {
+        let sub = (try? securePairingStore.loadActivePairing())?.sub
+        return (sub.map { [$0] } ?? []) + accountAddresses
     }
 
     /// The account's addresses, fetched fresh rather than from this
@@ -136,7 +174,7 @@ final class PgpSendService {
     }
 
     private var pairingCredentials: (serverUrl: String, auth: RelayAuth)? {
-        guard let pairing = try? securePairingStore.loadPairing(), !pairing.srv.isEmpty else {
+        guard let pairing = try? securePairingStore.loadActivePairing(), !pairing.srv.isEmpty else {
             return nil
         }
         return (pairing.srv, RelayAuth(pairing: pairing))

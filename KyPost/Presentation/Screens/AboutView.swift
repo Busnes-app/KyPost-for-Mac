@@ -2,12 +2,10 @@
 //  AboutView.swift
 //  KyPost
 //
-//  Shared About and Support surface for iOS and macOS. The Tip Jar is
-//  iOS only: the Mac app is distributed outside the App Store.
+//  Shared About surface for iOS and macOS.
 //
 
 import SwiftUI
-import StoreKit
 #if os(macOS)
 import AppKit
 #endif
@@ -16,10 +14,6 @@ struct AboutView: View {
     @Environment(\.theme) private var theme
     #if os(macOS)
     @State private var showAcknowledgements = false
-    #else
-    // iOS only. The Mac app ships from GitHub Releases, signed with Developer
-    // ID, where StoreKit has no App Store to sell through.
-    @State private var tipJar = TipJarStore()
     #endif
 
     private let privacyPolicyURL = URL(string: "https://www.kypost.org/privacy.html")!
@@ -109,35 +103,6 @@ struct AboutView: View {
             .listRowBackground(theme.panel)
 
             Section {
-                Text("If KyPost is useful to you, you can support its continued development with a one-off tip.")
-                    .foregroundStyle(theme.secondaryInk)
-
-                ForEach(tipJar.products, id: \.id) { product in
-                    Button {
-                        Task { await tipJar.purchase(product) }
-                    } label: {
-                        LabeledContent {
-                            Text(product.displayPrice)
-                        } label: {
-                            Label(product.displayName, systemImage: "heart")
-                        }
-                    }
-                    .disabled(tipJar.isLoading)
-                }
-
-                if let status = tipJar.statusMessage {
-                    Text(status)
-                        .font(AppFont.ui(13))
-                        .foregroundStyle(theme.secondaryInk)
-                }
-            } header: {
-                Text("Tip Jar")
-            } footer: {
-                Text("Payments are processed securely by Apple.")
-            }
-            .listRowBackground(theme.panel)
-
-            Section {
                 Link("Privacy Policy", destination: privacyPolicyURL)
                 NavigationLink("Acknowledgements") {
                     AcknowledgementsView()
@@ -156,7 +121,6 @@ struct AboutView: View {
         .scrollContentBackground(.hidden)
         .background(theme.bg)
         .navigationTitle("About")
-        .task { await tipJar.start() }
     }
     #endif
 

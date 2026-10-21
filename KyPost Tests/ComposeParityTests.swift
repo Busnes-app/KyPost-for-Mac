@@ -255,6 +255,128 @@ private func makeCompose(
     }
 }
 
+// MARK: - Blank subject
+
+/// Send with no subject asks "Send without a subject?" instead of sending.
+@MainActor
+@Suite struct ComposeBlankSubjectTests {
+    private let traits: RichTextHTML.FontTraits = { _ in (false, false) }
+
+    /// `posts` collects the paths of every send or draft upload.
+    private func makeBlankCompose(
+        subject: String = "",
+        posts: Box<[String]>,
+        bootstrap: String = "{}"
+    ) throws -> ComposeViewModel {
+        try makeCompose(
+            draft: ComposeDraft(to: "a@example.com", subject: subject, body: "Hello"),
+            bootstrap: bootstrap,
+            onRequest: { request in
+                let path = request.url?.path ?? ""
+                if path == "/api/mail/draft" || path == "/api/mail/send" {
+                    posts.mutate { $0.append(path) }
+                }
+            }
+        )
+    }
+
+    @Test(arguments: ["", "   ", " \n\t "])
+    func aBlankSubjectAsksAndSendsNothing(subject: String) async throws {
+        let posts = Box<[String]>([])
+        let compose = try makeBlankCompose(subject: subject, posts: posts)
+
+        await compose.send(fontTraits: traits)
+
+        #expect(compose.confirmingBlankSubject)
+        #expect(posts.value.isEmpty)
+        #expect(!compose.didSend && !compose.isSending)
+        #expect(compose.to.map(\.address) == ["a@example.com"])
+    }
+
+    @Test func aSubjectSendsWithoutAsking() async throws {
+        let posts = Box<[String]>([])
+        let compose = try makeBlankCompose(subject: "Hi", posts: posts)
+
+        await compose.send(fontTraits: traits)
+
+        #expect(!compose.confirmingBlankSubject)
+        #expect(posts.value == ["/api/mail/send"])
+        #expect(compose.didSend)
+    }
+
+    @Test func confirmingSendsItOnce() async throws {
+        let posts = Box<[String]>([])
+        let compose = try makeBlankCompose(posts: posts)
+
+        await compose.send(fontTraits: traits)
+        await compose.sendWithoutSubject(fontTraits: traits)
+
+        #expect(!compose.confirmingBlankSubject)
+        #expect(posts.value == ["/api/mail/send"])
+        #expect(compose.didSend)
+    }
+
+    /// Add Subject sends nothing, and the confirmation is not remembered: a
+    /// later Send with the subject still blank asks again.
+    @Test func addSubjectSendsNothingAndTheNextSendAsksAgain() async throws {
+        let posts = Box<[String]>([])
+        let compose = try makeBlankCompose(posts: posts)
+
+        await compose.send(fontTraits: traits)
+        compose.cancelSendWithoutSubject()
+        #expect(!compose.confirmingBlankSubject)
+        #expect(posts.value.isEmpty)
+        #expect(compose.closingNeedsConfirmation)
+
+        await compose.send(fontTraits: traits)
+        #expect(compose.confirmingBlankSubject)
+        #expect(posts.value.isEmpty)
+
+        compose.cancelSendWithoutSubject()
+        compose.subject = "Hi"
+        await compose.send(fontTraits: traits)
+        #expect(posts.value == ["/api/mail/send"])
+    }
+
+    @Test func saveDraftNeverAsks() async throws {
+        let posts = Box<[String]>([])
+        let compose = try makeBlankCompose(
+            posts: posts,
+            bootstrap: #"{"hasIdentity":true,"protection":"server"}"#
+        )
+        await compose.loadPgpIdentityIfNeeded()
+
+        await compose.saveDraft(fontTraits: traits)
+
+        #expect(!compose.confirmingBlankSubject)
+        #expect(posts.value == ["/api/mail/draft"])
+        #expect(compose.didSaveDraft)
+    }
+
+    /// The dialog's Send is still a send: refused while locked.
+    @Test func confirmingWhileLockedSendsNothing() async throws {
+        let posts = Box<[String]>([])
+        var locked = false
+        let compose = try makeCompose(
+            draft: ComposeDraft(to: "a@example.com", body: "Hello"),
+            isLocked: { locked },
+            onRequest: { request in
+                if request.url?.path == "/api/mail/send" {
+                    posts.mutate { $0.append("/api/mail/send") }
+                }
+            }
+        )
+
+        await compose.send(fontTraits: traits)
+        #expect(compose.confirmingBlankSubject)
+        locked = true
+        await compose.sendWithoutSubject(fontTraits: traits)
+
+        #expect(posts.value.isEmpty)
+        #expect(!compose.didSend)
+    }
+}
+
 // MARK: - mailto
 
 @Suite struct MailtoLinkParserTests {
