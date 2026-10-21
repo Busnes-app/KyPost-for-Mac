@@ -80,7 +80,10 @@ Default section order:
 - Run: `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`.
 - iOS-only code (`#if os(iOS)`, e.g. `KyIdentitySignOnCoordinatorTests`) runs
   only under an iOS destination: `xcodebuild test -scheme "KyPost"
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`.
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5'`. Name
+  the `OS`: without it xcodebuild picks the newest runtime, and a runtime
+  with no matching device fails the destination (iOS 27.1 ships only
+  "iPhone Duo").
 - `KyPost.xctestplan` is the shared test plan, referenced from the
   shared scheme. Both test targets set `parallelizable: false`, and that must
   stay off.

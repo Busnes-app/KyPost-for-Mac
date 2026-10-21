@@ -256,7 +256,7 @@ private struct StartupGatePlaceholder: View {
     var body: some View {
         VStack(spacing: 12) {
             ProgressView()
-            Text("Checking this Mac…")
+            Text("Checking this device…")
                 .font(AppFont.ui(13))
                 .foregroundStyle(theme.secondaryInk)
         }

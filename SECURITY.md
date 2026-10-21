@@ -286,8 +286,9 @@ comment in `KyPost/KyPost.entitlements` for what to do in that case.
 ## Export compliance
 
 `ITSAppUsesNonExemptEncryption` is set to **true** in the build settings, so every upload
-answers the questionnaire the same way instead of a person answering it from memory once
-per release.
+answers App Store Connect's first export question the same way. It does not answer the
+rest: without an `ITSEncryptionExportComplianceCode`, each build waits in "Missing
+Compliance" until someone completes the encryption questions for it in App Store Connect.
 
 That value is deliberate and is the conservative reading. KyPost implements OpenPGP for
 the **confidentiality of message content**, using GopenPGP rather than the encryption

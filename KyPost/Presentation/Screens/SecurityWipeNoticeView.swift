@@ -36,7 +36,7 @@ struct ManualRecoveryView: View {
                 .font(AppFont.ui(17, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
             Text("""
-                KyPost erased what it could from this Mac and could not finish. \
+                KyPost erased what it could from this device and could not finish. \
                 Some data may still be here, so the app will not open. \
                 Delete KyPost and install it again to clear it.
                 """)
@@ -99,8 +99,8 @@ struct SecurityWipeNoticeBanner: View {
 
     private var title: String {
         switch result {
-        case .complete: "This Mac was erased"
-        case .incomplete: "This Mac was only partly erased"
+        case .complete: "This device was erased"
+        case .incomplete: "This device was only partly erased"
         }
     }
 

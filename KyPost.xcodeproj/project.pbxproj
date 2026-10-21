@@ -315,9 +315,11 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "KyPost adds an invitation to your calendar only when you tap Add to Calendar. It never reads your calendar.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "KyPost uses the camera to scan pairing QR codes.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "KyPost uses the camera to scan QR codes: to pair this device with your server, and to add a contact's encryption key.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "KyPost reads and updates Apple Contacts to keep them in sync with your KyPost contacts, only when you turn on Sync with Apple Contacts.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "KyPost uses Face ID to unlock the app and to release your pairing credential.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "KyPost connects to your KyPost server when it runs on your local network.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "KyPost saves an image from an email to your photo library only when you choose Save Image. It never reads your photos.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -371,9 +373,11 @@
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "KyPost adds an invitation to your calendar only when you tap Add to Calendar. It never reads your calendar.";
-				INFOPLIST_KEY_NSCameraUsageDescription = "KyPost uses the camera to scan pairing QR codes.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "KyPost uses the camera to scan QR codes: to pair this device with your server, and to add a contact's encryption key.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "KyPost reads and updates Apple Contacts to keep them in sync with your KyPost contacts, only when you turn on Sync with Apple Contacts.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "KyPost uses Face ID to unlock the app and to release your pairing credential.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "KyPost connects to your KyPost server when it runs on your local network.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "KyPost saves an image from an email to your photo library only when you choose Save Image. It never reads your photos.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;

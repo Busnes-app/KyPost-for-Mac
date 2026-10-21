@@ -99,7 +99,7 @@ struct AppPinSetupView: View {
                         : "Incorrect PIN."
                     return
                 case .notConfigured:
-                    message = "There is no PIN set on this Mac."
+                    message = "There is no PIN set on this device."
                     return
                 case .gatedSecretUnavailable:
                     // Not reachable from here — this path never unlocks — but
