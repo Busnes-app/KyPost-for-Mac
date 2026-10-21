@@ -24,6 +24,7 @@ struct AccountTeardown {
     var recipientPinStore: RecipientPinStore?
     var mailSignatureStore: MailSignatureStore?
     var mailRepository: MailRepository?
+    var pgpSendService: PgpSendService?
     /// Account state held outside the stores — the inbox's held list
     /// actions, rows on screen and in-flight refreshes
     /// (`InboxViewModel.forgetAccount`).
@@ -55,6 +56,10 @@ struct AccountTeardown {
         // speak for whatever device is paired next.
         enrollmentVault?.forgetPendingReports()
         EnrollmentSession.shared.clear()
+        // Bootstrap's custody and addresses: the next account's replies must
+        // not leave out this one's aliases. Before any suspension, so a
+        // bootstrap answering mid-teardown is dropped.
+        pgpSendService?.forgetAccount()
         // Notification history is the account's sender and subject lines,
         // and the pull cursor is a position in the account's queue.
         do {

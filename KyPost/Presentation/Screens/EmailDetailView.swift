@@ -261,6 +261,11 @@ struct EmailDetailView: View {
             Text("Replying to encrypted mail isn't available in the app yet.")
         }
         .task {
+            // Bootstrap names the aliases replies leave out; until it
+            // answers, they leave out the pairing's address alone.
+            await SingletonGraph.shared.pgpSendService.loadIfNeeded()
+        }
+        .task {
             let listing = Task { await inboxViewModel.attachmentListing(for: email) }
             attachmentListing = listing
             // First: the PGP state the decrypt path reads is computed from the
@@ -307,13 +312,13 @@ struct EmailDetailView: View {
         // Dimmed instead, and pressing it explains.
         Group {
             Button {
-                replyOrExplain { compose(.reply(to: shown)) }
+                replyOrExplain { compose(.reply(to: shown, ownAddresses: ownAddresses)) }
             } label: {
                 Label("Reply", systemImage: "arrowshape.turn.up.left")
             }
             .help(replyAvailable ? "Reply to the sender" : replyUnavailableHelp)
             Button {
-                replyOrExplain { compose(.replyAll(to: shown, ownAddress: ownAddress)) }
+                replyOrExplain { compose(.replyAll(to: shown, ownAddresses: ownAddresses)) }
             } label: {
                 Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
             }
@@ -371,8 +376,8 @@ struct EmailDetailView: View {
     private var messageCommands: MessageCommands {
         let movable = !isActing
         return MessageCommands(
-            reply: { replyOrExplain { compose(.reply(to: shown)) } },
-            replyAll: { replyOrExplain { compose(.replyAll(to: shown, ownAddress: ownAddress)) } },
+            reply: { replyOrExplain { compose(.reply(to: shown, ownAddresses: ownAddresses)) } },
+            replyAll: { replyOrExplain { compose(.replyAll(to: shown, ownAddresses: ownAddresses)) } },
             forward: preparingForward ? nil : { replyOrExplain { forward() } },
             archive: movable ? { act(.archive) } : nil,
             junk: movable ? { act(.spam) } : nil,
@@ -529,9 +534,9 @@ struct EmailDetailView: View {
         !isLocked && MailAccessGate.isOpen() && SingletonGraph.shared.securePairingStore.isPaired
     }
 
-    /// Our own relay address (the pairing's sub), excluded from Reply All.
-    private var ownAddress: String? {
-        (try? SingletonGraph.shared.securePairingStore.loadPairing())?.sub
+    /// Our own addresses and aliases, left out of replies.
+    private var ownAddresses: [String] {
+        SingletonGraph.shared.pgpSendService.ownAddresses
     }
 
     private var hostileLocationProtectionActive: Bool {

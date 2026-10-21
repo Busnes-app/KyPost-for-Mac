@@ -174,10 +174,107 @@ struct ComposeDraftCodingTests {
         )
         email.sentTo = "me@x.com, Other <other@x.com>"
         email.cc = "third@x.com"
-        let draft = ComposeDraft.replyAll(to: email, ownAddress: "me@x.com")
+        let draft = ComposeDraft.replyAll(to: email, ownAddresses: ["me@x.com"])
 
         #expect(draft.to == "sender@x.com")
         #expect(draft.cc == "other@x.com, third@x.com")
+    }
+}
+
+// MARK: - Own addresses in replies
+
+@Suite("Reply recipients")
+struct ReplyRecipientTests {
+    private func email(from sender: String, to: String, cc: String = "") -> Email {
+        var email = Email(
+            serverId: "1",
+            folder: "INBOX",
+            senderName: "",
+            senderEmail: sender,
+            subject: "Hi",
+            body: "Body",
+            keywords: [],
+            receivedAt: Date(),
+            read: false,
+            starred: false
+        )
+        email.sentTo = to
+        email.cc = cc
+        return email
+    }
+
+    @Test func replyAllLeavesOutEveryAlias() {
+        let message = email(
+            from: "sender@x.com",
+            to: "me@x.com, sales@x.com, other@x.com",
+            cc: "Me Too <alias@y.com>, third@x.com"
+        )
+        let draft = ComposeDraft.replyAll(
+            to: message,
+            ownAddresses: ["me@x.com", "me@x.com", "sales@x.com", "alias@y.com"]
+        )
+
+        #expect(draft.to == "sender@x.com")
+        #expect(draft.cc == "other@x.com, third@x.com")
+    }
+
+    @Test func comparesWholeAddressIgnoringCase() {
+        let message = email(from: "sender@x.com", to: "ME@X.COM, Other <Other@X.com>, me@x.co")
+        let draft = ComposeDraft.replyAll(to: message, ownAddresses: ["Me@x.com"])
+
+        #expect(draft.cc == "Other@X.com, me@x.co")
+    }
+
+    @Test func ownAddressesMayCarryDisplayNames() {
+        let message = email(from: "sender@x.com", to: "\"Me\" <me@x.com>, other@x.com")
+        let draft = ComposeDraft.replyAll(to: message, ownAddresses: ["Me Myself <ME@x.com>"])
+
+        #expect(draft.cc == "other@x.com")
+    }
+
+    @Test func replyAllToOwnSentMessageAddressesItsRecipients() {
+        let message = email(
+            from: "alias@y.com",
+            to: "Ann <ann@x.com>, me@x.com, bob@x.com",
+            cc: "alias@y.com, carl@x.com, ann@x.com"
+        )
+        let draft = ComposeDraft.replyAll(to: message, ownAddresses: ["me@x.com", "alias@y.com"])
+
+        #expect(draft.to == "ann@x.com, bob@x.com")
+        #expect(draft.cc == "carl@x.com")
+    }
+
+    @Test func replyToOwnSentMessageAddressesItsRecipients() {
+        let message = email(from: "Me@X.com", to: "me@x.com, ann@x.com", cc: "carl@x.com")
+        let draft = ComposeDraft.reply(to: message, ownAddresses: ["me@x.com"])
+
+        #expect(draft.to == "ann@x.com")
+        #expect(draft.cc.isEmpty)
+    }
+
+    @Test func noteToSelfLeavesToEmpty() {
+        let message = email(from: "me@x.com", to: "alias@y.com")
+        let draft = ComposeDraft.replyAll(to: message, ownAddresses: ["me@x.com", "alias@y.com"])
+
+        #expect(draft.to.isEmpty)
+        #expect(draft.cc.isEmpty)
+    }
+
+    /// Before bootstrap loads, `PgpSendService.ownAddresses` is the pairing's
+    /// sub alone: that one is left out, an alias is not, nothing else drops.
+    @Test func withoutBootstrapOnlyThePrimaryIsLeftOut() {
+        let message = email(from: "sender@x.com", to: "me@x.com, alias@y.com", cc: "other@x.com")
+        let draft = ComposeDraft.replyAll(to: message, ownAddresses: ["me@x.com"])
+
+        #expect(draft.to == "sender@x.com")
+        #expect(draft.cc == "alias@y.com, other@x.com")
+    }
+
+    @Test func plainReplyToSomeoneElseIsUnchanged() {
+        let message = email(from: "sender@x.com", to: "me@x.com, other@x.com")
+
+        #expect(ComposeDraft.reply(to: message, ownAddresses: ["me@x.com"]).to == "sender@x.com")
+        #expect(ComposeDraft.reply(to: message, ownAddresses: []).to == "sender@x.com")
     }
 }
 

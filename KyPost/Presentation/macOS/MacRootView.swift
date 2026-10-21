@@ -711,10 +711,13 @@ struct MacRootView: View {
             }
         )
         if let email = singleSelectedEmail, mayComposeFromList(email) {
-            commands.reply = { openWindow(id: "compose", value: ComposeDraft.reply(to: email)) }
+            commands.reply = {
+                let own = SingletonGraph.shared.pgpSendService.ownAddresses
+                openWindow(id: "compose", value: ComposeDraft.reply(to: email, ownAddresses: own))
+            }
             commands.replyAll = {
-                let own = (try? SingletonGraph.shared.securePairingStore.loadPairing())?.sub
-                openWindow(id: "compose", value: ComposeDraft.replyAll(to: email, ownAddress: own))
+                let own = SingletonGraph.shared.pgpSendService.ownAddresses
+                openWindow(id: "compose", value: ComposeDraft.replyAll(to: email, ownAddresses: own))
             }
             commands.forward = { forwardFromList(email) }
         }
