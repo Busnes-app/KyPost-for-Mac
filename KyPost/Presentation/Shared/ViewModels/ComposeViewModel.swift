@@ -11,6 +11,11 @@
 //  confirmation and its byte-identical re-send, and the client-custody webmail
 //  handoff. None of the PGP flags are ever persisted.
 //
+//  The handoff never posts a draft in the clear (`draftHandoffMode`): an
+//  enrolled device encrypts and signs it to the account's own key and uploads
+//  only the ciphertext; a device that is not enrolled uploads nothing and just
+//  opens webmail; anything else is refused.
+//
 
 import Foundation
 import Observation
@@ -146,6 +151,11 @@ final class ComposeViewModel {
     /// checks it: a compose open when the lock engaged stays on screen under
     /// the cover, and the cover is not the control.
     private let isLocked: () -> Bool
+    /// Whether this device holds the account's key, read at every use:
+    /// enrollment can change while the window is open.
+    private let isEnrolled: () -> Bool
+    /// Builds the draft saver for an account address; nil when unpaired.
+    private let makeDraftSaver: (String) -> ClientEncryptedDraftSaver?
 
     /// `debounceInterval` is injectable so tests don't sleep.
     init(
@@ -155,9 +165,15 @@ final class ComposeViewModel {
         draft: ComposeDraft? = nil,
         signature: String = "",
         isLocked: @escaping () -> Bool,
+        isEnrolled: (() -> Bool)? = nil,
+        makeDraftSaver: ((String) -> ClientEncryptedDraftSaver?)? = nil,
         debounceInterval: Duration = .milliseconds(150)
     ) {
         self.isLocked = isLocked
+        self.isEnrolled = isEnrolled ?? { SingletonGraph.shared.enrollmentVault.isEnrolled }
+        self.makeDraftSaver = makeDraftSaver ?? {
+            SingletonGraph.shared.makeClientEncryptedDraftSaver(accountAddress: $0)
+        }
         self.sendEmail = sendEmail
         self.contacts = contacts
         self.pgp = pgp
@@ -221,7 +237,7 @@ final class ComposeViewModel {
     /// while the app runs, and a value captured when the window opened would
     /// keep offering an on-device send after the key was wiped.
     var pgpComposeControls: PgpComposeState {
-        pgp.composeState(deviceEnrolled: SingletonGraph.shared.enrollmentVault.isEnrolled)
+        pgp.composeState(deviceEnrolled: isEnrolled())
     }
 
     /// On the client-side path the two chips are one decision: the relay
@@ -290,8 +306,9 @@ final class ComposeViewModel {
         keylessWarning = []
     }
 
-    /// Client-custody account: the key exists only in the user's browser, so
-    /// save the composed message as a server-side draft and send them there.
+    /// Client-custody account: hand the message to webmail, where the browser
+    /// holds the key. Saves an encrypted draft first when this device can
+    /// encrypt (`handOff`).
     func handOffToWebmail(fontTraits: @escaping RichTextHTML.FontTraits) async {
         guard !isSending, !isSent, !didSend, !sendOutcomeUnknown, !isLocked() else { return }
         // A fresh attempt starts with a clean slate: an earlier notice or
@@ -685,23 +702,7 @@ final class ComposeViewModel {
             return
         }
 
-        let draft = ClientSendDraft(
-            to: email.to.joined(separator: ", "),
-            cc: email.cc.joined(separator: ", "),
-            bcc: email.bcc.joined(separator: ", "),
-            subject: email.subject,
-            body: email.body,
-            mode: email.mode,
-            attachments: email.attachments.map {
-                OutgoingMimeAttachment(
-                    name: $0.name,
-                    mimeType: $0.mimeType,
-                    dataBase64: $0.data.base64EncodedString()
-                )
-            }
-        )
-
-        switch await sender.send(draft: draft) {
+        switch await sender.send(draft: Self.clientDraft(from: email)) {
         case .sent(_, let warning):
             errorMessage = nil
             if warning.isEmpty {
@@ -767,46 +768,114 @@ final class ComposeViewModel {
         }
     }
 
-    /// Saves the message as a server-side draft and points the view at
-    /// webmail's Drafts view, where the browser holds the key.
-    private func handOff(draft: OutgoingEmail) async {
-        var draft = draft
-        // A draft has no PGP semantics; RelaySendRequest drops the flags, but
-        // keep the value honest for anything that inspects it later.
-        draft.encrypt = false
-        draft.sign = false
-        draft.allowPickupFallback = false
+    /// What the on-device paths encrypt, from the request compose built once.
+    private static func clientDraft(from email: OutgoingEmail) -> ClientSendDraft {
+        ClientSendDraft(
+            to: email.to.joined(separator: ", "),
+            cc: email.cc.joined(separator: ", "),
+            bcc: email.bcc.joined(separator: ", "),
+            subject: email.subject,
+            body: email.body,
+            mode: email.mode,
+            attachments: email.attachments.map {
+                OutgoingMimeAttachment(
+                    name: $0.name,
+                    mimeType: $0.mimeType,
+                    dataBase64: $0.data.base64EncodedString()
+                )
+            }
+        )
+    }
 
-        switch await sendEmail.saveDraft(draft) {
-        case .success, .sentWithWarning:
+    /// Hands the message to webmail's Drafts, where the browser holds the key.
+    ///
+    /// **A draft is never posted in the clear.** The mode is decided now, not
+    /// when the window opened: an enrolled device encrypts the draft to the
+    /// account's own key and uploads only that; a device that is not enrolled
+    /// uploads nothing and opens webmail with the message still here; unknown
+    /// or server custody, or no account address, is refused.
+    ///
+    /// Like `deliver`, this does not own `isSending`.
+    private func handOff(draft email: OutgoingEmail) async {
+        // `deliver` reaches here after a network round trip: a lock that
+        // engaged during it must stop the handoff, not prompt under the cover.
+        guard !isLocked() else { return }
+        let mode = draftHandoffMode(
+            hasIdentity: pgp.hasIdentity,
+            protection: pgp.protection,
+            enrolled: isEnrolled(),
+            accountAddress: pgp.accountAddress
+        )
+        switch mode {
+        case .refuse:
+            errorMessage = pgp.hasIdentity == true && pgp.protection == pgpProtectionClient
+                ? "No mail address is configured for this account, so nothing was saved to Drafts."
+                : """
+                Couldn't confirm how this account's key is held, so nothing was saved to Drafts. \
+                Try again, or write this message in webmail in your browser.
+                """
+        case .openWithoutSave:
+            // Nothing uploaded and nothing sent: `isSent` stays false, so
+            // closing the window still asks before the message is lost.
+            errorMessage = nil
+            let explanation = """
+            This account's PGP key is held only by your browser, and this device isn't set up to \
+            encrypt for it, so nothing was saved and nothing was sent to webmail. Copy your text \
+            from here to finish it there, or set up encryption on this device in Settings.
+            """
+            guard let url = sendEmail.webmailDraftsURL else {
+                noticeMessage = explanation + " Open webmail in your browser."
+                return
+            }
+            noticeMessage = explanation + " We opened webmail for you."
+            webmailHandoffURL = url
+        case .encryptAndSave:
+            await saveEncryptedDraft(email)
+        }
+    }
+
+    private func saveEncryptedDraft(_ email: OutgoingEmail) async {
+        guard let saver = makeDraftSaver(pgp.accountAddress) else {
+            errorMessage = "Pair this device before sending."
+            return
+        }
+        switch await saver.save(draft: Self.clientDraft(from: email)) {
+        case .saved:
             isSent = true
             errorMessage = nil
             guard let url = sendEmail.webmailDraftsURL else {
                 noticeMessage = """
-                This account's PGP key is held only by your browser, so it has to sign and \
-                encrypt there. We saved this message to Drafts — couldn't work out this \
-                server's web address, so open Drafts in your browser to finish sending it.
+                This account's PGP key is held only by your browser, so it has to send from \
+                there. We encrypted this message and saved it to Drafts. We couldn't work out \
+                this server's web address, so open Drafts in your browser to finish sending it.
                 """
                 return
             }
             noticeMessage = """
-            This account's PGP key is held only by your browser, so it has to sign and encrypt \
-            there. We saved this message to Drafts and opened webmail to finish sending it.
+            This account's PGP key is held only by your browser, so it has to send from there. \
+            We encrypted this message, saved it to Drafts and opened webmail to finish sending it.
             """
             webmailHandoffURL = url
-        case .unauthorized:
-            errorMessage = "Not authorized — re-pair the device or check credentials."
-        case .notPaired:
-            errorMessage = "Pair this device before sending."
-        case .invalid(let message), .failure(let message),
-             .notConfigured(let message), .upstreamFailure(let message),
-             .mayHaveBeenSent(let message):
-            errorMessage = "Couldn't save this as a draft: \(message)"
-        case .rateLimited:
-            errorMessage = "Couldn't save this as a draft — too many attempts. Try again shortly."
-        case .clientSideNeeded, .keylessRecipients:
-            // A draft carries no PGP flags, so neither refusal is reachable.
-            errorMessage = "Couldn't save this as a draft."
+        // Not an error: the user dismissed a prompt they raised.
+        case .cancelled:
+            errorMessage = nil
+        case .notEnrolled:
+            errorMessage = "This device is no longer set up to encrypt. Enroll it again in Settings."
+        case .noSecureLockScreen:
+            errorMessage = "This device has no passcode or biometric lock, so it can't hold your key."
+        case .noAccountAddress:
+            errorMessage = "No mail address is configured for this account, so nothing was saved to Drafts."
+        case .noRecipient:
+            errorMessage = "Add a recipient in To before saving this to Drafts."
+        case .unsealFailed(let message):
+            errorMessage = "Couldn't unlock this device's key: \(message)"
+        case .encryptFailed(let message):
+            errorMessage = "Couldn't encrypt this draft: \(message)"
+        case .saveFailed(let outcome):
+            let reason = outcome.reason
+            errorMessage = reason.isEmpty
+                ? "Couldn't save this as a draft."
+                : "Couldn't save this as a draft: \(reason)"
         }
     }
 }

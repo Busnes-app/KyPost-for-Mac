@@ -139,6 +139,87 @@ private let envelope = OutgoingEnvelope(
         #expect(!content.contains("Subject:"))
     }
 
+    // MARK: - Protected recipients (drafts)
+
+    /// A draft's recipients ride inside the ciphertext, both as top-level
+    /// protected headers and in the memoryhole part.
+    @Test func recipientsAreProtectedHeadersInBothPlaces() throws {
+        let content = PgpMimeWriter.buildProtectedContent(
+            contentType: "text/plain", body: "b", subject: "s",
+            to: ["a@example.com", "b@example.com"], cc: ["c@example.com"], bcc: ["d@example.com"],
+            boundaryToken: { "T" }
+        )
+        let parts = content.components(separatedBy: "\r\n\r\n")
+        let top = parts[0].components(separatedBy: "\r\n")
+        for header in ["To: a@example.com, b@example.com", "Cc: c@example.com", "Bcc: d@example.com"] {
+            #expect(top.contains(header))
+        }
+        #expect(parts[1].contains("text/rfc822-headers"))
+        let headers = try #require(parts.dropFirst(2).first).components(separatedBy: "\r\n")
+        #expect(Array(headers.prefix(4)) == [
+            "Subject: s", "To: a@example.com, b@example.com", "Cc: c@example.com", "Bcc: d@example.com",
+        ])
+    }
+
+    /// Recipient strings are user input. A CR/LF inside one must not start a
+    /// header line of its own.
+    @Test func aRecipientCannotInjectAHeader() {
+        let content = PgpMimeWriter.buildProtectedContent(
+            contentType: "text/plain", body: "b", subject: "s",
+            to: ["a@example.com\r\nX-Injected: yes"], cc: ["c@example.com\nReply-To: evil@example.com"],
+            bcc: ["d@example.com\r\n\r\nbody"],
+            boundaryToken: { "T" }
+        )
+        let lines = content.components(separatedBy: "\r\n")
+        #expect(!lines.contains { $0.hasPrefix("X-Injected") || $0.hasPrefix("Reply-To") || $0 == "body" })
+        #expect(lines.contains("To: a@example.com X-Injected: yes"))
+        #expect(lines.contains("Bcc: d@example.com body"))
+    }
+
+    /// The send path passes no recipients, and its bytes are exactly what they
+    /// were before recipients could be protected.
+    @Test func withoutRecipientsTheBytesAreUnchanged() {
+        let content = PgpMimeWriter.buildProtectedContent(
+            contentType: "text/plain; charset=utf-8", body: "hello", subject: "Hi",
+            attachments: [OutgoingMimeAttachment(name: "a.txt", mimeType: "text/plain", dataBase64: "QQ==")],
+            boundaryToken: { "T" }
+        )
+        let expected = [
+            "Subject: Hi",
+            "Content-Type: multipart/mixed; boundary=\"kypost-protected-T\"; protected-headers=\"v1\"",
+            "",
+            "--kypost-protected-T",
+            "Content-Type: text/rfc822-headers; protected-headers=\"v1\"",
+            "Content-Disposition: inline",
+            "",
+            "Subject: Hi",
+            "",
+            "--kypost-protected-T",
+            "Content-Type: text/plain; charset=utf-8",
+            "",
+            "hello",
+            "",
+            "--kypost-protected-T",
+            "Content-Type: text/plain; name=\"a.txt\"",
+            "Content-Transfer-Encoding: base64",
+            "Content-Disposition: attachment; filename=\"a.txt\"",
+            "",
+            "QQ==",
+            "",
+            "--kypost-protected-T--",
+            "",
+        ].joined(separator: "\r\n")
+        #expect(content == expected)
+
+        let noSubject = PgpMimeWriter.buildProtectedContent(
+            contentType: "text/plain", body: "b", subject: "", boundaryToken: { "T" }
+        )
+        #expect(noSubject == [
+            "Content-Type: multipart/mixed; boundary=\"kypost-protected-T\"; protected-headers=\"v1\"",
+            "", "--kypost-protected-T", "Content-Type: text/plain", "", "b", "", "--kypost-protected-T--", "",
+        ].joined(separator: "\r\n"))
+    }
+
     /// RFC 2045 caps an encoded line at 76 characters, and a parser that
     /// enforces it would reject an unbroken one.
     @Test func attachmentBase64IsWrappedAt76Columns() throws {

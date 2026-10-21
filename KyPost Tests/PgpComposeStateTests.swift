@@ -149,4 +149,25 @@ import Testing
         #expect(!afterWipe.clientSide)
         #expect(afterWipe.handoffToWebmail)
     }
+
+    // MARK: - Draft handoff (Android draftHandoffMode)
+
+    @Test func theDraftHandoffTable() {
+        func mode(_ hasIdentity: Bool?, _ protection: String?, enrolled: Bool, _ address: String = "me@example.com") -> DraftHandoffMode {
+            draftHandoffMode(hasIdentity: hasIdentity, protection: protection, enrolled: enrolled, accountAddress: address)
+        }
+        // No identity, or unknown: refuse, enrolled or not.
+        for enrolled in [false, true] {
+            #expect(mode(nil, "client", enrolled: enrolled) == .refuse)
+            #expect(mode(false, "client", enrolled: enrolled) == .refuse)
+            // Anything but client custody: refuse.
+            #expect(mode(true, "server", enrolled: enrolled) == .refuse)
+            #expect(mode(true, nil, enrolled: enrolled) == .refuse)
+            #expect(mode(true, "hybrid", enrolled: enrolled) == .refuse)
+        }
+        #expect(mode(true, "client", enrolled: false) == .openWithoutSave)
+        #expect(mode(true, "client", enrolled: false, "") == .openWithoutSave)
+        #expect(mode(true, "client", enrolled: true, "  ") == .refuse)
+        #expect(mode(true, "client", enrolled: true) == .encryptAndSave)
+    }
 }

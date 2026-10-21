@@ -364,39 +364,6 @@ private func makeOutgoing(
         let data = try await source.downloadAttachment(folder: "INBOX", messageId: "42", index: 1)
         #expect(String(decoding: data, as: UTF8.self) == "raw-bytes")
     }
-
-    @Test func saveDraftPostsTheSendShapeWithoutPgpFields() async throws {
-        var email = makeOutgoing()
-        email.encrypt = true
-        email.sign = true
-        email.allowPickupFallback = true
-        let client = stubClient(json: #"{"ok": true}"#) { request in
-            #expect(request.url!.absoluteString == "\(server)/api/mail/draft")
-            #expect(request.httpMethod == "POST")
-            #expect(request.value(forHTTPHeaderField: "X-Kypost-Device-Id") == "u1")
-            let body = request.httpBody.flatMap { String(decoding: $0, as: UTF8.self) } ?? ""
-            #expect(body.contains(#""to":"a@x.com, b@x.com""#))
-            #expect(body.contains(#""mode":"plain""#))
-            // A draft has no PGP semantics; the server would ignore them and
-            // sending them invites confusion.
-            #expect(!body.contains("encrypt"))
-            #expect(!body.contains("sign"))
-            #expect(!body.contains("allowPickupFallback"))
-        }
-        let source = RelayMailSource(httpClient: client, serverUrl: server, auth: auth)
-        try await source.saveDraft(email: email)
-    }
-
-    @Test func saveDraftSurfacesAPlainTextFailure() async {
-        let source = RelayMailSource(
-            httpClient: stubClient(status: 500, json: "could not save draft"),
-            serverUrl: server,
-            auth: auth
-        )
-        await #expect(throws: NetworkError.server(statusCode: 500)) {
-            try await source.saveDraft(email: makeOutgoing())
-        }
-    }
 }
 
 // MARK: - Rich text → HTML (compose mode:"html")
@@ -754,14 +721,9 @@ private func makeOutgoing(
         #expect(outcome == .notPaired)
     }
 
-    @Test func saveDraftIsSuccessAndNeedsAPairing() async throws {
-        let paired = try makeRepository(client: stubClient(json: #"{"ok": true}"#), paired: true)
-        #expect(await paired.saveDraft(makeOutgoing()) == .success)
-        #expect(paired.pairedServerUrl == server)
-
-        let unpaired = try makeRepository(client: stubClient(), paired: false)
-        #expect(await unpaired.saveDraft(makeOutgoing()) == .notPaired)
-        #expect(unpaired.pairedServerUrl == nil)
+    @Test func thePairedServerUrlNeedsAPairing() throws {
+        #expect(try makeRepository(client: stubClient(), paired: true).pairedServerUrl == server)
+        #expect(try makeRepository(client: stubClient(), paired: false).pairedServerUrl == nil)
     }
 }
 

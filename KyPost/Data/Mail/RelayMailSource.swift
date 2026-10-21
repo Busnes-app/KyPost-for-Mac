@@ -12,7 +12,8 @@
 //    GET  /api/mail/search?q&mailbox&limit  (every field: `field` is not sent)
 //    GET  /api/inbox/folders
 //    POST /api/mail/send  (encrypt/sign/allowPickupFallback — Client_Encrypted_Send.md)
-//    POST /api/mail/draft (same shape as send, minus the PGP flags)
+//  POST /api/mail/draft is not here: a draft is only ever saved encrypted
+//  (`ClientEncryptedDraftClient`), and this source has no plaintext shape for it.
 //  Binding contract: send body uses comma-joined recipient strings plus a
 //  "mode" field; /api/inbox returns emails grouped by tab.
 //
@@ -335,8 +336,7 @@ nonisolated struct RelaySendAttachmentDTO: Encodable, Equatable, Sendable {
 }
 
 /// Send body with comma-joined recipients (Mobile_Mail_Relay.md Part 6) —
-/// differs from contact sync's array-of-objects shape. POST /api/mail/draft
-/// takes the same shape minus the PGP flags.
+/// differs from contact sync's array-of-objects shape.
 struct RelaySendRequest: Encodable, Equatable, Sendable {
     var to: String
     var cc: String
@@ -357,9 +357,7 @@ struct RelaySendRequest: Encodable, Equatable, Sendable {
     /// An RSVP. Omitted on every other send.
     var calendarReply: RelayCalendarReplyDTO?
 
-    /// `pgpFlags: false` builds the draft-save body, which carries no PGP
-    /// fields at all.
-    init(from email: OutgoingEmail, pgpFlags: Bool = true) {
+    init(from email: OutgoingEmail) {
         to = email.to.joined(separator: ", ")
         cc = email.cc.joined(separator: ", ")
         bcc = email.bcc.joined(separator: ", ")
@@ -369,10 +367,9 @@ struct RelaySendRequest: Encodable, Equatable, Sendable {
         attachments = email.attachments.isEmpty
             ? nil
             : email.attachments.map(RelaySendAttachmentDTO.init)
-        let pgp = pgpFlags
-        encrypt = pgp && email.encrypt ? true : nil
-        sign = pgp && email.sign ? true : nil
-        allowPickupFallback = pgp && email.encrypt && email.allowPickupFallback ? true : nil
+        encrypt = email.encrypt ? true : nil
+        sign = email.sign ? true : nil
+        allowPickupFallback = email.encrypt && email.allowPickupFallback ? true : nil
     }
 
     /// An RSVP: plain text, and never a PGP flag — the relay refuses
@@ -657,16 +654,6 @@ final class RelayMailSource: MailSource {
             jsonBody: RelaySendRequest(calendarReply: draft)
         )
         return response.calendarReply == true
-    }
-
-    func saveDraft(email: OutgoingEmail) async throws {
-        // {"ok": true} — same shape as the bulk-action reply, so no extra DTO.
-        _ = try await httpClient.post(
-            RelayActionResponse.self,
-            url: try endpoint("api/mail/draft"),
-            headers: auth.headerFields,
-            jsonBody: RelaySendRequest(from: email, pgpFlags: false)
-        )
     }
 
     /// Which PGP refusal a relay 409 body represents, or nil for an ordinary

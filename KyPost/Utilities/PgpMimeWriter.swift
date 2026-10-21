@@ -96,22 +96,33 @@ nonisolated enum PgpMimeWriter {
     }
 
     /// Wraps the real content in a protected-headers part carrying the true
-    /// Subject.
+    /// Subject and, for a draft, its recipients.
     ///
     /// The outer envelope's Subject is a fixed placeholder, so this is the only
     /// place the real one travels. `PgpMimeReader` lifts it back out as
-    /// `DecryptedBody.protectedSubject`.
+    /// `DecryptedBody.protectedSubject`. `to`, `cc` and `bcc` are for a draft
+    /// saved to Drafts, whose outer envelope names only To: the Cc and Bcc the
+    /// user typed travel only here, inside the ciphertext. The send path leaves
+    /// them empty, and its bytes are then exactly what they were without them.
     static func buildProtectedContent(
         contentType: String,
         body: String,
         subject: String,
+        to: [String] = [],
+        cc: [String] = [],
+        bcc: [String] = [],
         attachments: [OutgoingMimeAttachment] = [],
         boundaryToken: () -> String = randomBoundaryToken
     ) -> String {
         let clean = sanitizeHeaderValue(subject)
         let boundary = "kypost-protected-\(boundaryToken())"
-        var lines: [String] = []
-        if !clean.isEmpty { lines.append("Subject: \(clean)") }
+        var headers: [String] = []
+        if !clean.isEmpty { headers.append("Subject: \(clean)") }
+        for (name, addresses) in [("To", to), ("Cc", cc), ("Bcc", bcc)] {
+            let joined = joinAddresses(addresses)
+            if !joined.isEmpty { headers.append("\(name): \(joined)") }
+        }
+        var lines = headers
         lines.append(
             "Content-Type: multipart/mixed; boundary=\"\(boundary)\"; protected-headers=\"v1\""
         )
@@ -120,12 +131,12 @@ nonisolated enum PgpMimeWriter {
         // off the top-level header above, but Thunderbird, Mutt and K-9 look
         // for it here — without this part they show the outer placeholder
         // instead of the real subject.
-        if !clean.isEmpty {
+        if !headers.isEmpty {
             lines.append("--\(boundary)")
             lines.append("Content-Type: text/rfc822-headers; protected-headers=\"v1\"")
             lines.append("Content-Disposition: inline")
             lines.append("")
-            lines.append("Subject: \(clean)")
+            lines.append(contentsOf: headers)
             lines.append("")
         }
         lines.append("--\(boundary)")

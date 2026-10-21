@@ -615,7 +615,6 @@ struct DemoMailSource: MailSource {
 
     @discardableResult
     func send(email: OutgoingEmail) async throws -> String { "" }
-    func saveDraft(email: OutgoingEmail) async throws {}
 }
 
 #endif

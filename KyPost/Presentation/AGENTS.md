@@ -429,9 +429,19 @@ Domain.
   `Domain/Models/PgpKeyCustody.swift` maps `/api/pgp/bootstrap` to
   `serverHeld` / `clientHeld` / `noIdentity`, and anything unrecognised
   degrades to `clientHeld`. Compose shows Encrypt/Sign **only** for
-  `serverHeld`; `clientHeld` gets the webmail handoff (save a draft, then
-  `openURL`, never an in-app WebView), and `.noIdentity` or a nil custody shows
-  nothing at all.
+  `serverHeld`; `clientHeld` gets the webmail handoff (`openURL`, never an
+  in-app WebView), and `.noIdentity` or a nil custody shows nothing at all.
+- **The webmail handoff never posts a draft in the clear.** Both callers
+  (`handOffToWebmail`, `deliver`'s `.clientSideNeeded`) go through `handOff`,
+  which reads `draftHandoffMode` when it runs, never when the window opened:
+  `encryptAndSave` (client custody, enrolled, account address) encrypts and
+  signs the draft on this device to the account's own key
+  (`ClientEncryptedDraftSaver`) and uploads only `{to, pgpDraft}`;
+  `openWithoutSave` (client custody, not enrolled) uploads nothing, opens
+  webmail and leaves `isSent` false so the window still guards the message;
+  `refuse` (unknown or server custody, blank address) uploads nothing and
+  shows an error. There is no plaintext `/api/mail/draft` path, and none may
+  be added as a fallback.
 - **The keyless-recipient confirmation copy is contract.** It lives in
   `ComposeViewModel.pickupConfirmationMessage`, verbatim from
   `Client_Encrypted_Send.md`, and must name every address, say the plaintext
