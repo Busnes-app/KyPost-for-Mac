@@ -194,7 +194,10 @@ Domain.
   `sendWithoutSubject`, its default Add Subject cancels and focuses the
   subject field. The answer is not remembered, except that
   `sendAgainAfterUncertainOutcome` never asks (same request, same
-  Idempotency-Key). Save Draft and the pickup re-send never ask.
+  Idempotency-Key). Save Draft and the pickup re-send never ask. It is an
+  `.alert`, not a `.confirmationDialog`: from the toolbar's Send, iOS 26
+  presents a dialog as a popover and drops its cancel-role button, so the
+  iPhone showed Send alone.
 - **A compose open when the lock engages stays, covered, and sends nothing.**
   The iOS shell owns the one compose sheet (`MailShellState.compose`, below),
   outside the router, so `dismissPresentedRoutes` cannot reach it and the

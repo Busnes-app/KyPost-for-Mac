@@ -183,14 +183,15 @@ struct ComposeView: View {
         }
         // Every Send (button, ⌘↩) goes through `send`, which raises this for a
         // blank subject. Add Subject is the default, so a reflexive Return
-        // goes back to editing rather than out.
-        .confirmationDialog(
+        // goes back to editing rather than out. An alert, not a confirmation
+        // dialog: from the toolbar's Send, iOS 26 shows a dialog as a popover,
+        // which drops the cancel-role button, so Add Subject never appeared.
+        .alert(
             "Send without a subject?",
             isPresented: Binding(
                 get: { viewModel.confirmingBlankSubject },
                 set: { if !$0 { viewModel.cancelSendWithoutSubject() } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
             Button("Send") {
                 Task { await viewModel.sendWithoutSubject(fontTraits: fontTraits) }
