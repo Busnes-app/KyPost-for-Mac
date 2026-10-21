@@ -190,8 +190,13 @@ final class ScreenshotTests: XCTestCase {
         // 1. Your inbox, at a glance. The 13-inch iPad shows list and reader
         // side by side (`ShellLayout.split`); an empty "Select an email" pane
         // reads as unfinished, so open a message beside the list first.
+        // The first tap after launch can go unanswered on iPadOS 27 — the
+        // row stays unselected — so tap again while the placeholder shows.
         if isPad {
             tapIfPresent(row(in: app, containing: "Key rotation"))
+            if app.staticTexts["Select an email"].exists {
+                tapIfPresent(row(in: app, containing: "Key rotation"))
+            }
         }
         capture(app, "01-inbox")
 
