@@ -36,6 +36,13 @@ struct SendEmailUseCase {
         return await repository.send(email)
     }
 
+    /// Saves to Drafts readable by the relay. No recipient or address check:
+    /// a draft may be incomplete. Compose calls this only for
+    /// `DraftSaveMode.plain`.
+    func savePlainDraft(_ email: OutgoingEmail) async -> MailOutcome {
+        await repository.savePlainDraft(email)
+    }
+
     /// Webmail's Drafts view on the paired server, or nil when there is no
     /// usable pairing URL — compose then explains instead of linking.
     var webmailDraftsURL: URL? {

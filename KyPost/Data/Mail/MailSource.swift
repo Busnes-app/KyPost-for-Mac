@@ -67,6 +67,10 @@ protocol MailSource: Sendable {
     /// message went out: never retry on one, it would duplicate.
     @discardableResult
     func send(email: OutgoingEmail) async throws -> String
+    /// Saves `email` to Drafts **readable by the relay**. Only for accounts
+    /// whose sends the relay already reads (`DraftSaveMode.plain`); a
+    /// client-custody draft goes through `ClientEncryptedDraftClient`.
+    func savePlainDraft(email: OutgoingEmail) async throws
 }
 
 extension MailSource {

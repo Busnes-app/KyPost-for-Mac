@@ -213,6 +213,9 @@ struct ComposeView: View {
         .onChange(of: viewModel.didSend) {
             if viewModel.didSend { dismiss() }
         }
+        .onChange(of: viewModel.didSaveDraft) {
+            if viewModel.didSaveDraft { dismiss() }
+        }
         // Quitting asks about unsent composes (macOS ⌘Q).
         .onAppear { OpenComposeRegistry.shared.register(viewModel) }
         .onDisappear { OpenComposeRegistry.shared.unregister(viewModel) }
@@ -648,11 +651,13 @@ struct ComposeView: View {
         ToolbarItemGroup {
             formattingControls
             attachButton
+            saveDraftButton
         }
 #else
         ToolbarItemGroup(placement: .bottomBar) {
             formattingControls
             Spacer()
+            saveDraftButton
             attachButton
         }
 #endif
@@ -660,7 +665,7 @@ struct ComposeView: View {
             Button {
                 Task { await viewModel.send(fontTraits: fontTraits) }
             } label: {
-                if viewModel.isSending {
+                if viewModel.isSending, !viewModel.isSavingDraft {
                     ProgressView().controlSize(.small)
                 } else {
                     Label("Send", systemImage: "paperplane.fill")
@@ -686,6 +691,27 @@ struct ComposeView: View {
                 Label("Underline", systemImage: "underline")
             }
             .keyboardShortcut("u")
+        }
+    }
+
+    /// Hidden where nothing may be uploaded (`DraftSaveMode.unavailable`).
+    @ViewBuilder
+    private var saveDraftButton: some View {
+        if viewModel.draftSaveControls != .unavailable {
+            Button {
+                Task { await viewModel.saveDraft(fontTraits: fontTraits) }
+            } label: {
+                if viewModel.isSavingDraft {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Label("Save Draft", systemImage: "square.and.arrow.down")
+                }
+            }
+            .accessibilityLabel("Save Draft")
+            .accessibilityHint("Saves to Drafts and closes this window")
+            .keyboardShortcut("s")
+            .disabled(viewModel.isSending || viewModel.isSent || viewModel.sendOutcomeUnknown || isLocked)
+            .help("Save to Drafts (⌘S)")
         }
     }
 

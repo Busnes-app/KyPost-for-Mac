@@ -448,6 +448,17 @@ final class MailRepository {
         }
     }
 
+    /// A draft the relay can read (`MailSource.savePlainDraft`). Never the
+    /// fallback for an encrypted save.
+    func savePlainDraft(_ email: OutgoingEmail) async -> MailOutcome {
+        do {
+            try await makeSource().savePlainDraft(email: email)
+            return .success
+        } catch {
+            return MailOutcome.from(error)
+        }
+    }
+
     /// The pairing a send is bound to, or nil when unpaired.
     func currentAccount() -> MailAccountBinding? {
         guard overrideSource == nil, let pairing = try? securePairingStore.loadPairing() else { return nil }

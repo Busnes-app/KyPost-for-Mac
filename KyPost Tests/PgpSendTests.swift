@@ -252,6 +252,7 @@ private final class ComposeStub {
     private let check: String
     private let sendResponses: [(status: Int, json: String)]
     private let sendIndex = Box(0)
+    private let draftResponse: (status: Int, json: String)
     /// Optional per-path delay hook, for tests that need a request parked.
     private let beforeResponse: (@Sendable (String) async -> Void)?
 
@@ -259,11 +260,13 @@ private final class ComposeStub {
         bootstrap: String = #"{"hasIdentity":true,"protection":"server"}"#,
         check: String = #"{"results":[]}"#,
         sendResponses: [(status: Int, json: String)] = [(200, #"{"ok":true,"sentSaved":true}"#)],
+        draftResponse: (status: Int, json: String) = (200, #"{"ok":true}"#),
         beforeResponse: (@Sendable (String) async -> Void)? = nil
     ) {
         self.bootstrap = bootstrap
         self.check = check
         self.sendResponses = sendResponses
+        self.draftResponse = draftResponse
         self.beforeResponse = beforeResponse
     }
 
@@ -274,6 +277,7 @@ private final class ComposeStub {
         let bootstrap = bootstrap
         let check = check
         let sendResponses = sendResponses
+        let draftResponse = draftResponse
         let beforeResponse = beforeResponse
         return HTTPClient { request in
             let path = request.url?.path ?? ""
@@ -288,7 +292,8 @@ private final class ComposeStub {
                 json = check
             case "/api/mail/draft":
                 drafts.mutate { $0.append(body) }
-                json = #"{"ok":true}"#
+                status = draftResponse.status
+                json = draftResponse.json
             case "/api/mail/send":
                 sends.mutate { $0.append(body) }
                 // Walks the script and then repeats its last entry. An empty
@@ -408,6 +413,9 @@ private func fields(_ body: String) throws -> [String: Any] {
         let first = Task { await compose.send(fontTraits: noTraits) }
         await gate.waitUntilHolding()
         #expect(compose.isSending)
+
+        // A send is not a draft save: Send keeps the spinner.
+        #expect(!compose.isSavingDraft)
 
         // The second ⌘↩, while the first send is parked in its preflight.
         await compose.send(fontTraits: noTraits)
@@ -766,5 +774,214 @@ private func fields(_ body: String) throws -> [String: Any] {
         #expect(stub.drafts.value.isEmpty)
         #expect(cancelled.errorMessage == nil)
         #expect(!cancelled.isSent)
+    }
+}
+
+// MARK: - Compose: Save Draft
+
+private let clientBootstrap = #"{"hasIdentity":true,"protection":"client","suggestedUserIDs":["me@example.com"]}"#
+
+extension ComposeEncryptedSendTests {
+    /// Server custody: the relay reads this account's sends anyway, so the
+    /// draft goes up as it is, and the window may close.
+    @Test func saveDraftOnServerCustodyPostsOnePlainDraft() async throws {
+        let stub = ComposeStub()
+        let compose = try makeCompose(stub: stub)
+        await compose.loadPgpIdentityIfNeeded()
+        #expect(compose.draftSaveControls == .plain)
+        compose.toInput = "alice@example.com"
+        compose.ccInput = "carol@example.com"
+        compose.subject = "Quarterly"
+        compose.body = AttributedString("Numbers attached.")
+
+        await compose.saveDraft(fontTraits: noTraits)
+
+        #expect(stub.drafts.value.count == 1)
+        let body = try fields(try #require(stub.drafts.value.first))
+        #expect(body["subject"] as? String == "Quarterly")
+        #expect((body["cc"] as? String)?.contains("carol@example.com") == true)
+        #expect(stub.sends.value.isEmpty)
+        #expect(compose.didSaveDraft)
+        #expect(!compose.isSent)
+        #expect(compose.webmailHandoffURL == nil)
+        #expect(compose.errorMessage == nil)
+        #expect(!compose.closingNeedsConfirmation)
+    }
+
+    /// No PGP identity: a draft needs no recipient.
+    @Test func saveDraftWithNoIdentityNeedsNoRecipient() async throws {
+        let stub = ComposeStub(bootstrap: #"{"hasIdentity":false}"#)
+        let compose = try makeCompose(stub: stub)
+        await compose.loadPgpIdentityIfNeeded()
+        compose.subject = "Ideas"
+
+        await compose.saveDraft(fontTraits: noTraits)
+
+        #expect(stub.drafts.value.count == 1)
+        #expect(compose.didSaveDraft)
+        #expect(compose.errorMessage == nil)
+    }
+
+    /// Client custody on an enrolled device: only `{to, pgpDraft}` leaves.
+    @Test func saveDraftOnClientCustodySavesItEncrypted() async throws {
+        let stub = ComposeStub(bootstrap: clientBootstrap)
+        let compose = try makeCompose(stub: stub, enrolled: true)
+        await compose.loadPgpIdentityIfNeeded()
+        #expect(compose.draftSaveControls == .encrypted)
+        compose.toInput = "alice@example.com"
+        compose.ccInput = "carol@example.com"
+        compose.subject = "Quarterly"
+
+        await compose.saveDraft(fontTraits: noTraits)
+
+        #expect(stub.sends.value.isEmpty)
+        #expect(stub.drafts.value.count == 1)
+        let body = try fields(try #require(stub.drafts.value.first))
+        #expect(Set(body.keys) == ["to", "pgpDraft"])
+        let pgpDraft = try #require(body["pgpDraft"] as? String)
+        #expect(!pgpDraft.contains("Quarterly"))
+        #expect(!pgpDraft.contains("carol@example.com"))
+        #expect(compose.didSaveDraft)
+        #expect(!compose.isSent)
+        #expect(compose.webmailHandoffURL == nil)
+    }
+
+    /// Nothing may be uploaded where the device holds no key or custody is
+    /// not known: the button is hidden, and a call anyway posts nothing.
+    @Test func saveDraftUploadsNothingWhenUnavailable() async throws {
+        let unenrolled = ComposeStub(bootstrap: clientBootstrap)
+        let notLoaded = ComposeStub()
+        let failed = ComposeStub(bootstrap: "not json")
+        for (stub, load) in [(unenrolled, true), (notLoaded, false), (failed, true)] {
+            let compose = try makeCompose(stub: stub)
+            if load { await compose.loadPgpIdentityIfNeeded() }
+            #expect(compose.draftSaveControls == .unavailable)
+            compose.toInput = "alice@example.com"
+            compose.subject = "Quarterly"
+
+            await compose.saveDraft(fontTraits: noTraits)
+
+            #expect(stub.drafts.value.isEmpty)
+            #expect(stub.sends.value.isEmpty)
+            #expect(!compose.didSaveDraft)
+            expectReadable(compose.errorMessage)
+            #expect(compose.closingNeedsConfirmation)
+        }
+    }
+
+    @Test func anEncryptedDraftNeedsARecipientInTo() async throws {
+        let stub = ComposeStub(bootstrap: clientBootstrap)
+        let compose = try makeCompose(stub: stub, enrolled: true)
+        await compose.loadPgpIdentityIfNeeded()
+        compose.subject = "Quarterly"
+
+        await compose.saveDraft(fontTraits: noTraits)
+
+        #expect(stub.drafts.value.isEmpty)
+        #expect(!compose.didSaveDraft)
+        #expect(compose.errorMessage == "Add a recipient in To before saving this to Drafts.")
+    }
+
+    /// A failed unlock keeps everything; a dismissed one says nothing.
+    @Test func aFailedOrCancelledUnlockSavesNothing() async throws {
+        let stub = ComposeStub(bootstrap: clientBootstrap)
+        let compose = try makeCompose(stub: stub, enrolled: true, draftOpener: .failed("bad seal"))
+        await compose.loadPgpIdentityIfNeeded()
+        compose.toInput = "alice@example.com"
+        compose.subject = "Quarterly"
+        compose.attachments = [ComposeAttachment(name: "a.txt", mimeType: "text/plain", data: Data("a".utf8))]
+
+        await compose.saveDraft(fontTraits: noTraits)
+
+        #expect(stub.drafts.value.isEmpty)
+        #expect(stub.sends.value.isEmpty)
+        expectReadable(compose.errorMessage)
+        #expect(!compose.didSaveDraft)
+        #expect(!compose.isSent)
+        #expect(compose.to.map(\.address) == ["alice@example.com"])
+        #expect(compose.subject == "Quarterly")
+        #expect(compose.attachments.count == 1)
+
+        let cancelled = try makeCompose(stub: stub, enrolled: true, draftOpener: .cancelled)
+        await cancelled.loadPgpIdentityIfNeeded()
+        cancelled.toInput = "alice@example.com"
+        await cancelled.saveDraft(fontTraits: noTraits)
+        #expect(stub.drafts.value.isEmpty)
+        #expect(cancelled.errorMessage == nil)
+        #expect(!cancelled.didSaveDraft)
+    }
+
+    /// Attack path: a stale custody cache, or a relay claiming custody
+    /// changed. A refused plain draft is shown as an error and is never
+    /// retried, encrypted or otherwise.
+    @Test func aRefusedPlainDraftIsNeverRetried() async throws {
+        let answers: [(status: Int, json: String)] = [
+            (409, #"{"clientSideNeeded":true}"#), (200, "{}"), (502, ""),
+        ]
+        for answer in answers {
+            let stub = ComposeStub(
+                bootstrap: #"{"hasIdentity":true,"protection":"server","suggestedUserIDs":["me@example.com"]}"#,
+                draftResponse: answer
+            )
+            let compose = try makeCompose(stub: stub, enrolled: true)
+            await compose.loadPgpIdentityIfNeeded()
+            compose.toInput = "alice@example.com"
+            compose.subject = "Quarterly"
+
+            await compose.saveDraft(fontTraits: noTraits)
+
+            #expect(stub.drafts.value.count == 1, "\(answer.status)")
+            #expect(try fields(stub.drafts.value[0])["pgpDraft"] == nil)
+            #expect(stub.sends.value.isEmpty)
+            expectReadable(compose.errorMessage)
+            #expect(!compose.didSaveDraft)
+            #expect(compose.subject == "Quarterly")
+            #expect(compose.closingNeedsConfirmation)
+        }
+    }
+
+    @Test func invalidUncommittedRecipientTextSavesNothing() async throws {
+        let stub = ComposeStub()
+        let compose = try makeCompose(stub: stub)
+        await compose.loadPgpIdentityIfNeeded()
+        compose.toInput = "not-an-address"
+
+        await compose.saveDraft(fontTraits: noTraits)
+
+        #expect(stub.drafts.value.isEmpty)
+        #expect(compose.errorMessage?.isEmpty == false)
+        #expect(!compose.didSaveDraft)
+    }
+
+    /// A double ⌘S, or ⌘S then ⌘↩, while the first save is in flight posts
+    /// nothing extra; nor does a save after one succeeded.
+    @Test func aSaveInFlightBlocksASecondSaveAndASend() async throws {
+        let gate = RequestGate()
+        let stub = ComposeStub(beforeResponse: { path in
+            if path == "/api/mail/draft" { await gate.hold() }
+        })
+        let compose = try makeCompose(stub: stub)
+        await compose.loadPgpIdentityIfNeeded()
+        compose.toInput = "alice@example.com"
+
+        let first = Task { await compose.saveDraft(fontTraits: noTraits) }
+        await gate.waitUntilHolding()
+        #expect(compose.isSending)
+        // The spinner belongs to Save Draft, not Send.
+        #expect(compose.isSavingDraft)
+
+        await compose.saveDraft(fontTraits: noTraits)
+        await compose.send(fontTraits: noTraits)
+
+        await gate.open()
+        await first.value
+
+        #expect(stub.drafts.value.count == 1)
+        #expect(stub.sends.value.isEmpty)
+        #expect(compose.didSaveDraft)
+        #expect(!compose.isSavingDraft)
+
+        await compose.saveDraft(fontTraits: noTraits)
+        #expect(stub.drafts.value.count == 1)
     }
 }

@@ -31,7 +31,7 @@ The platforms split at the root view. iOS uses a tab layout (`MainTabView`). mac
 - `GET /api/inbox/folders?parent=` — folder listing (full paths, for example `INBOX/Receipts`)
 - `POST /api/inbox/actions` — bulk read, archive, spam, delete and move
 - `POST /api/mail/send` — comma-joined recipient strings
-- `POST /api/mail/draft` — save a draft (the same body shape as send, without the PGP flags)
+- `POST /api/mail/draft` — save a draft: `{to, pgpDraft}` (encrypted on the device, client custody) or the send body without the PGP flags (plain, server custody or no PGP identity only); a 200 counts only with `{"ok": true}`
 - `GET /api/pgp/bootstrap` — the key custody of this account (`hasIdentity`, `protection`)
 - `POST /api/pgp/recipients/check` — contacts-only recipient key preflight (never `/resolve`)
 - `GET/POST /api/contacts/sync` — cursor-based contact sync

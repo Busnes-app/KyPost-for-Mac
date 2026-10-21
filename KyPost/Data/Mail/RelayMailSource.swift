@@ -12,8 +12,9 @@
 //    GET  /api/mail/search?q&mailbox&limit  (every field: `field` is not sent)
 //    GET  /api/inbox/folders
 //    POST /api/mail/send  (encrypt/sign/allowPickupFallback — Client_Encrypted_Send.md)
-//  POST /api/mail/draft is not here: a draft is only ever saved encrypted
-//  (`ClientEncryptedDraftClient`), and this source has no plaintext shape for it.
+//    POST /api/mail/draft (`savePlainDraft`: the send body with no PGP flags, for
+//         server-custody and no-PGP accounts only; a client-custody draft is
+//         saved encrypted by `ClientEncryptedDraftClient`)
 //  Binding contract: send body uses comma-joined recipient strings plus a
 //  "mode" field; /api/inbox returns emails grouped by tab.
 //
@@ -641,6 +642,29 @@ final class RelayMailSource: MailSource {
             return response.warning ?? ""
         } catch NetworkError.conflict(let body) {
             throw Self.conflictError(body: body) ?? NetworkError.conflict(body: body)
+        }
+    }
+
+    /// POST /api/mail/draft with the send body minus every PGP flag. No
+    /// `Idempotency-Key`: each save is one new draft. A 409 is not a send
+    /// refusal here, so it skips `conflictError` and fails as it is — never
+    /// read as "save it encrypted instead".
+    func savePlainDraft(email: OutgoingEmail) async throws {
+        var plain = email
+        plain.encrypt = false
+        plain.sign = false
+        plain.allowPickupFallback = false
+        // {"ok": true} only: a draft the user believes saved but is not would
+        // be lost when the window closes.
+        let response = try await httpClient.post(
+            RelayActionResponse.self,
+            url: try endpoint("api/mail/draft"),
+            headers: auth.headerFields,
+            jsonBody: RelaySendRequest(from: plain),
+            timeout: email.attachments.isEmpty ? nil : Self.sendWithAttachmentsTimeout
+        )
+        guard response.ok == true else {
+            throw MailSourceError.malformedResponse("Draft save was not acknowledged")
         }
     }
 

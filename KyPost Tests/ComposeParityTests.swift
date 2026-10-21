@@ -105,6 +105,7 @@ private func makeCompose(
     draft: ComposeDraft? = nil,
     signature: String = "",
     isLocked: @escaping () -> Bool = { false },
+    bootstrap: String = "{}",
     onRequest: (@Sendable (URLRequest) -> Void)? = nil
 ) throws -> ComposeViewModel {
     let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
@@ -125,7 +126,7 @@ private func makeCompose(
         )),
         contacts: contacts,
         pgp: PgpSendService(
-            client: PgpSendClient(httpClient: stubClient(onRequest: onRequest)),
+            client: PgpSendClient(httpClient: stubClient(json: bootstrap, onRequest: onRequest)),
             securePairingStore: pairingStore
         ),
         draft: draft,
@@ -178,6 +179,7 @@ private func makeCompose(
 
         await compose.send(fontTraits: traits)
         await compose.handOffToWebmail(fontTraits: traits)
+        await compose.saveDraft(fontTraits: traits)
         #expect(requests.value.isEmpty)
         #expect(!compose.didSend && !compose.isSent)
         #expect(compose.subject == "Hi")
@@ -187,6 +189,62 @@ private func makeCompose(
         await compose.send(fontTraits: traits)
         #expect(!requests.value.isEmpty)
         #expect(compose.didSend)
+    }
+
+    /// Save Draft checks the lock on entry and again right before upload, so
+    /// a lock that engages in between still posts nothing.
+    @Test func saveDraftPostsNothingWhileLocked() async throws {
+        let posts = Box<[String]>([])
+        let checks = Box(0)
+        var lockAfter = 0
+        let compose = try makeCompose(
+            draft: ComposeDraft(to: "a@example.com", subject: "Hi", body: "Draft"),
+            isLocked: {
+                checks.mutate { $0 += 1 }
+                return checks.value > lockAfter
+            },
+            bootstrap: #"{"hasIdentity":true,"protection":"server"}"#,
+            onRequest: { request in
+                let path = request.url?.path ?? ""
+                if path == "/api/mail/draft" || path == "/api/mail/send" {
+                    posts.mutate { $0.append(path) }
+                }
+            }
+        )
+        await compose.loadPgpIdentityIfNeeded()
+        #expect(compose.draftSaveControls == .plain)
+        let traits: RichTextHTML.FontTraits = { _ in (false, false) }
+
+        // Locked on entry.
+        await compose.saveDraft(fontTraits: traits)
+        #expect(posts.value.isEmpty)
+
+        // Unlocked on entry, locked by the re-check before upload.
+        checks.value = 0
+        lockAfter = 1
+        await compose.saveDraft(fontTraits: traits)
+        #expect(checks.value == 2)
+        #expect(posts.value.isEmpty)
+        #expect(!compose.didSaveDraft)
+        #expect(compose.closingNeedsConfirmation)
+
+        lockAfter = .max
+        await compose.saveDraft(fontTraits: traits)
+        #expect(posts.value == ["/api/mail/draft"])
+        #expect(compose.didSaveDraft)
+    }
+
+    /// A saved draft is in Drafts: closing loses nothing.
+    @Test func aSavedDraftClosesWithoutAsking() async throws {
+        let compose = try makeCompose(
+            draft: ComposeDraft(subject: "Hi"),
+            bootstrap: #"{"hasIdentity":true,"protection":"server"}"#
+        )
+        await compose.loadPgpIdentityIfNeeded()
+        #expect(compose.closingNeedsConfirmation)
+        await compose.saveDraft(fontTraits: { _ in (false, false) })
+        #expect(compose.didSaveDraft)
+        #expect(!compose.closingNeedsConfirmation)
     }
 
     /// Markup in a signature reaches the editor as the characters typed.

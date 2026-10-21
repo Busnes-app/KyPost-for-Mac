@@ -11,10 +11,15 @@
 //  confirmation and its byte-identical re-send, and the client-custody webmail
 //  handoff. None of the PGP flags are ever persisted.
 //
-//  The handoff never posts a draft in the clear (`draftHandoffMode`): an
-//  enrolled device encrypts and signs it to the account's own key and uploads
-//  only the ciphertext; a device that is not enrolled uploads nothing and just
-//  opens webmail; anything else is refused.
+//  Two draft paths, neither a fallback for the other:
+//  - The webmail handoff never posts a draft in the clear (`draftHandoffMode`):
+//    an enrolled device encrypts and signs it to the account's own key and
+//    uploads only the ciphertext; a device that is not enrolled uploads nothing
+//    and just opens webmail; anything else is refused.
+//  - Save Draft (`draftSaveMode`) stores the message in Drafts and closes the
+//    window: encrypted as above for client custody, as a plain draft only for
+//    server custody or no PGP identity, where the relay reads sends anyway.
+//    Unknown custody uploads nothing.
 //
 
 import Foundation
@@ -109,6 +114,12 @@ final class ComposeViewModel {
     private(set) var isSending = false
     private(set) var errorMessage: String?
     private(set) var didSend = false
+    /// Save Draft succeeded. The view dismisses on it: the relay cannot replace
+    /// a draft, so a second save would be a second copy.
+    private(set) var didSaveDraft = false
+    /// The in-flight work is a Save Draft, not a send: the view puts its
+    /// spinner on Save Draft and leaves Send's icon alone.
+    private(set) var isSavingDraft = false
 
     /// PGP send flags. Fresh per compose window, and `allowPickupFallback` is
     /// never stored anywhere: the one-time-link opt-in is per message by
@@ -196,7 +207,7 @@ final class ComposeViewModel {
     /// click where a wrong close costs the message. Nothing to lose once it
     /// went out (or was handed to webmail).
     var closingNeedsConfirmation: Bool {
-        guard !didSend, !isSent else { return false }
+        guard !didSend, !isSent, !didSaveDraft else { return false }
         let typed = [subject, toInput, ccInput, bccInput, String(body.characters)]
         return !to.isEmpty || !cc.isEmpty || !bcc.isEmpty || !attachments.isEmpty
             || typed.contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -238,6 +249,17 @@ final class ComposeViewModel {
     /// keep offering an on-device send after the key was wiped.
     var pgpComposeControls: PgpComposeState {
         pgp.composeState(deviceEnrolled: isEnrolled())
+    }
+
+    /// What Save Draft may upload; the button is hidden for `.unavailable`.
+    /// Re-derived on every read, like `pgpComposeControls`.
+    var draftSaveControls: DraftSaveMode {
+        draftSaveMode(
+            hasIdentity: pgp.hasIdentity,
+            protection: pgp.protection,
+            enrolled: isEnrolled(),
+            accountAddress: pgp.accountAddress
+        )
     }
 
     /// On the client-side path the two chips are one decision: the relay
@@ -325,6 +347,58 @@ final class ComposeViewModel {
         isSending = true
         defer { isSending = false }
         await handOff(draft: outgoingEmail(fontTraits: fontTraits))
+    }
+
+    /// Save Draft (⌘S): stores the message in Drafts, after which the view
+    /// closes. Encrypted for client custody, plain only where the relay
+    /// already reads sends (`draftSaveMode`); never one in place of the other.
+    func saveDraft(fontTraits: @escaping RichTextHTML.FontTraits) async {
+        guard !isSending, !isSent, !didSend, !didSaveDraft, !sendOutcomeUnknown, !isLocked() else { return }
+        noticeMessage = nil
+        keylessWarning = []
+        for field in RecipientField.allCases where !commitPendingInput(for: field) {
+            return
+        }
+        // Claimed before the first `await`, so a double ⌘S (or ⌘S then ⌘↩)
+        // cannot post twice.
+        isSending = true
+        isSavingDraft = true
+        defer {
+            isSending = false
+            isSavingDraft = false
+        }
+        let email = outgoingEmail(fontTraits: fontTraits)
+        // Decided now, not when the window opened; then the lock is checked
+        // again right before anything leaves the device.
+        let mode = draftSaveControls
+        guard !isLocked() else { return }
+        let outcome: DraftSaveOutcome
+        switch mode {
+        case .unavailable:
+            errorMessage = draftSaveUnavailableMessage
+            return
+        case .encrypted:
+            if let saver = makeDraftSaver(pgp.accountAddress) {
+                outcome = await saver.save(draft: Self.clientDraft(from: email))
+            } else {
+                outcome = .saveFailed(.notPaired)
+            }
+        case .plain:
+            let result = await sendEmail.savePlainDraft(email)
+            outcome = result == .success ? .saved : .saveFailed(result)
+        }
+        if reportDraftSave(outcome) {
+            didSaveDraft = true
+        }
+    }
+
+    private var draftSaveUnavailableMessage: String {
+        guard pgp.hasIdentity == true, pgp.protection == pgpProtectionClient else {
+            return "Couldn't confirm how this account's key is held, so nothing was saved to Drafts. Try again."
+        }
+        return isEnrolled()
+            ? "No mail address is configured for this account, so nothing was saved to Drafts."
+            : "This device isn't set up to encrypt for this account, so nothing was saved to Drafts. Use Encrypt in webmail, or set up encryption on this device in Settings."
     }
 
     /// Called by the view once it has opened `webmailHandoffURL`, so a redraw
@@ -839,23 +913,30 @@ final class ComposeViewModel {
             errorMessage = "Pair this device before sending."
             return
         }
-        switch await saver.save(draft: Self.clientDraft(from: email)) {
-        case .saved:
-            isSent = true
-            errorMessage = nil
-            guard let url = sendEmail.webmailDraftsURL else {
-                noticeMessage = """
-                This account's PGP key is held only by your browser, so it has to send from \
-                there. We encrypted this message and saved it to Drafts. We couldn't work out \
-                this server's web address, so open Drafts in your browser to finish sending it.
-                """
-                return
-            }
+        guard reportDraftSave(await saver.save(draft: Self.clientDraft(from: email))) else { return }
+        isSent = true
+        guard let url = sendEmail.webmailDraftsURL else {
             noticeMessage = """
-            This account's PGP key is held only by your browser, so it has to send from there. \
-            We encrypted this message, saved it to Drafts and opened webmail to finish sending it.
+            This account's PGP key is held only by your browser, so it has to send from \
+            there. We encrypted this message and saved it to Drafts. We couldn't work out \
+            this server's web address, so open Drafts in your browser to finish sending it.
             """
-            webmailHandoffURL = url
+            return
+        }
+        noticeMessage = """
+        This account's PGP key is held only by your browser, so it has to send from there. \
+        We encrypted this message, saved it to Drafts and opened webmail to finish sending it.
+        """
+        webmailHandoffURL = url
+    }
+
+    /// Sets `errorMessage` for a draft save, shared by the handoff and Save
+    /// Draft. True when the draft was saved.
+    private func reportDraftSave(_ outcome: DraftSaveOutcome) -> Bool {
+        switch outcome {
+        case .saved:
+            errorMessage = nil
+            return true
         // Not an error: the user dismissed a prompt they raised.
         case .cancelled:
             errorMessage = nil
@@ -877,6 +958,7 @@ final class ComposeViewModel {
                 ? "Couldn't save this as a draft."
                 : "Couldn't save this as a draft: \(reason)"
         }
+        return false
     }
 }
 

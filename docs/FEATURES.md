@@ -11,6 +11,7 @@ Commands and unlinked file paths below are relative to the repository root.
 - **HTML email rendering** — a themed WebKit reader on both platforms. Links open in the default browser. The app renders plain-text messages natively.
 - **macOS features** — a three-pane split view, pop-out email windows (double-click or right-click a message; each keeps its message when the main window changes folder, and a restored one reopens it from the cache), a preview pane you can turn on and off, drag-and-drop of emails onto sidebar folders to move them, and a native Preferences window (⌘,). Apple Mail's shortcuts, in the Message menu: Reply ⌘R, Reply All ⇧⌘R, Forward ⇧⌘F, Archive ⌃⌘A, Move to Junk ⇧⌘J, Mark as Read ⇧⌘U, and ⌫ to delete in the list or a pop-out reader. They act on the selection or the open message and are off while nothing is selected, the app is locked, or it is not paired. There is no Mark as Unread: the relay has no unread action. Elsewhere: ⌘N new email, ⇧⌘N refresh, ⇧⌘S contact sync. A failed attachment download, Save As or mark-as-read is said in a toast.
 - **Compose and send** through the relay. A send that times out or gets a server error may still have gone out, so the app does not offer Send again until you have checked Sent and chosen to retry; the retry carries the same `Idempotency-Key`. On macOS, quitting asks before it discards a message you have not sent, and sends archive, move and delete actions still in their Undo window first.
+- **Save Draft (⌘S)** stores the message in the account's Drafts folder and closes compose. For an account whose key only you hold, an enrolled device saves it encrypted and signed to your own key. For an account whose key the server holds, or with no PGP key, it saves a plain draft, which the server can read, as it reads those accounts' sends. When the app cannot tell how the key is held, or the device is not enrolled for a client-held key, the button is hidden and nothing is uploaded. A failed save keeps the window and the message open.
 - **Push notifications** (APNs) for new mail and MFA challenges. A polling fallback also runs (90 s in the foreground, background refresh on iOS).
 - **MFA approval** — approve login challenges from a notification tap.
 - **Contact sync** — two-way sync with the relay. Local edits win first, and the reconciliation keeps the data safe from conflicts. Changes not yet synced survive a server history reset, and a sync never deletes more than half of the cards it manages in Apple Contacts in one pass. Contacts carry the full extended schema: groups, photo, IM and social handles, websites, relations, extra dates, phonetic names, department, custom fields, pronouns, and a PGP public key.
@@ -90,9 +91,8 @@ Commands and unlinked file paths below are relative to the repository root.
 
 ## Known gaps
 
-- **Draft saving from compose.** The PGP webmail handoff saves an encrypted
-  draft from an enrolled device, but there is no Save Draft button and no
-  auto-save.
+- **No draft auto-save, and no editing a saved draft.** Save Draft stores a
+  new copy each time, so compose closes after it.
 - **QR scanning with the camera on macOS.** Paste the pairing links and PGP key
   links instead. Camera scanning works on iOS.
 - **The on-device encrypted send and read paths have not been exercised against a
