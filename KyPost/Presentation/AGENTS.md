@@ -517,21 +517,10 @@ Domain.
   the surface as a Preferences tab. `AboutView` owns the version, 2026
   Busnes.app copyright, privacy-policy link, embedded MIT license, the
   Acknowledgements link (`AcknowledgementsView`: pushed on iOS, a sheet in
-  the macOS About window), and, on iOS only, the StoreKit 2 Tip Jar (the Mac
-  app is a Developer ID build from GitHub Releases, with no App Store to buy
-  through). The user-facing name
-  is **Tip Jar**, never "Donate": App Review reads "donate" as a charitable
-  donation, which it allows only for approved nonprofits, while a tip to the
-  developer through In-App Purchase is ordinary. The tip section shows one status line,
-  `TipJarStore.statusMessage`; do not render `errorMessage` beside it.
-  `TipJarStore` uses `CupOJoe4Mail` for one-off
-  purchases only; prices come from App Store Connect and must not be hardcoded.
-  Do not offer recurring support without an ongoing customer benefit.
-  `start()` keeps the `Transaction.updates` listener and drains
-  `Transaction.unfinished`: a tip that returns `.pending` (Ask to Buy) is
-  only ever finished there. Only verified transactions are finished. The
-  StoreKit surface is injected (`TipJarTransactionSource`) so
-  `TipJarStoreTests` runs without StoreKitTest or a simulator store.
+  the macOS About window). There is no tip jar or other purchase (root
+  "Release and store readiness"). If one is ever added back, App Review
+  reads "donate" as a charitable donation, allowed only for approved
+  nonprofits: call it a tip, through In-App Purchase.
 
 - Reuse `ContactSearch` for any contact matching; don't hand-roll a filter.
   `localizedCaseInsensitiveContains` over every contact per keystroke routes
@@ -566,8 +555,7 @@ Recorded so they aren't re-litigated as bugs:
   stack/split decision, what a switch keeps, and its Undo rule,
   `ThemeContrastTests` for WCAG AA, `RemoteContentBlockingTests` for the
   reader's block against real WebKit, `ReaderWindowTests.swift` for pop-out
-  rows, reader failures and the Message menu, `TipJarStoreTests` for the tip
-  transactions and status line, `ComposeBlankSubjectTests` in
+  rows, reader failures and the Message menu, `ComposeBlankSubjectTests` in
   `ComposeParityTests.swift` for the blank-subject prompt).
 - The Message menu's enablement and ⌫ routing are focus behaviour: check
   them in the running app (main window with and without the preview pane,

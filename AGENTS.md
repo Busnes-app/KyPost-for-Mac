@@ -1206,9 +1206,9 @@ an event only when asked and syncs no calendar.
   so that identity is a secret. A re-run never replaces a published disk
   image. GopenPGP releases are created `--latest=false`, so "Latest" on the
   Releases page is always the app.
-- **No StoreKit on the Mac.** A Developer ID build has no App Store to buy
-  through, so the Tip Jar is iOS only (`AboutView`). Do not add an in-app
-  purchase to the Mac app.
+- **No StoreKit, no in-app purchase.** The tip jar was removed before the
+  first App Store submission; the app sells nothing on any platform. The Mac
+  app is a Developer ID build with no App Store to buy through in any case.
 - **The build number is the workflow run**, `<run_number>.<run_attempt>`,
   passed as `CURRENT_PROJECT_VERSION` to archive and checked in the archive
   before upload. `project.pbxproj` keeps `1`; do not commit CI's value back.
