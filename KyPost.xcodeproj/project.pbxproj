@@ -312,7 +312,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = KyPost/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = KyPost;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "KyPost adds an invitation to your calendar only when you tap Add to Calendar. It never reads your calendar.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "KyPost uses the camera to scan QR codes: to pair this device with your server, and to add a contact's encryption key.";
@@ -370,7 +369,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = KyPost/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = KyPost;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				INFOPLIST_KEY_NSCalendarsWriteOnlyAccessUsageDescription = "KyPost adds an invitation to your calendar only when you tap Add to Calendar. It never reads your calendar.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "KyPost uses the camera to scan QR codes: to pair this device with your server, and to add a contact's encryption key.";
