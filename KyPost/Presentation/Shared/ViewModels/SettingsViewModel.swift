@@ -132,7 +132,21 @@ final class SettingsViewModel {
 
     // MARK: - Pairing status
 
-    var isPaired: Bool { securePairingStore.isPaired }
+    /// The pairing lives in the Keychain, which Observation cannot see.
+    /// `isPaired` and `pairingDisplay` read this so that bumping it
+    /// (`pairingDidChange`) redraws Settings; without it a pairing stored by
+    /// the pairing sheet left "Not paired" on screen until a relaunch.
+    private var pairingRevision = 0
+
+    /// A pairing was stored (`.kyPostPaired`): re-read it.
+    func pairingDidChange() {
+        pairingRevision += 1
+    }
+
+    var isPaired: Bool {
+        _ = pairingRevision
+        return securePairingStore.isPaired
+    }
 
     var pairedServerHost: String? {
         guard let pairing = try? securePairingStore.loadPairing() else { return nil }
@@ -143,6 +157,7 @@ final class SettingsViewModel {
     /// build's display-only stand-in. Nil reads as "Not paired". Views use
     /// this; actions keep using `isPaired`.
     var pairingDisplay: PairingDisplay? {
+        _ = pairingRevision
         if let pairingDisplayOverride { return pairingDisplayOverride }
         guard let pairing = try? securePairingStore.loadPairing() else { return nil }
         return PairingDisplay(
