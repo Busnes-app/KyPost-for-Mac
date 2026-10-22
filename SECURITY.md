@@ -285,12 +285,22 @@ comment in `KyPost/KyPost.entitlements` for what to do in that case.
 
 ## Export compliance
 
-`ITSAppUsesNonExemptEncryption` is set to **true** in the build settings, so every upload
-answers App Store Connect's first export question the same way. It does not answer the
-rest: without an `ITSEncryptionExportComplianceCode`, each build waits in "Missing
-Compliance" until someone completes the encryption questions for it in App Store Connect.
+The build does **not** carry `ITSAppUsesNonExemptEncryption`. Each build therefore waits
+in "Missing Compliance" until someone answers the encryption questions for it in App Store
+Connect, and those answers are the declaration: **uses encryption: yes; standard
+algorithms, not proprietary; not available in France.**
 
-That value is deliberate and is the conservative reading. KyPost implements OpenPGP for
+It used to be set to **true** in the build settings. App Store Connect then refused every
+upload ("Invalid Export Compliance Code") because the app record carries an encryption
+declaration filed on 2026-08-28 for the French store, still in review and without a code,
+and a build that declares encryption must carry that declaration's
+`ITSEncryptionExportComplianceCode`. The app is not offered in France, and App Store
+Connect creates no declaration for standard third-party cryptography outside France
+(its API answers 409 to one), so there is no code to give. Leaving the key out moves the
+same answers from the plist to App Store Connect. If Apple withdraws the August
+declaration, setting the key back to `YES` is safe again.
+
+Answering yes is deliberate and is the conservative reading. KyPost implements OpenPGP for
 the **confidentiality of message content**, using GopenPGP rather than the encryption
 Apple's operating systems provide. That is what makes it non-exempt:
 
@@ -300,7 +310,7 @@ Apple's operating systems provide. That is what makes it non-exempt:
 - It is not "encryption available only through Apple's operating system", which is the
   other common route. The crypto is a third-party binary in this repository.
 
-Declaring `false` here would be faster and would be a misdeclaration.
+Declaring `false`, in the plist or in App Store Connect, would be faster and would be a misdeclaration.
 
 **This is not the whole obligation, and the remaining part is not a code change.** An app
 declaring non-exempt encryption is normally self-classified as mass market under ECCN
@@ -308,7 +318,7 @@ declaring non-exempt encryption is normally self-classified as mass market under
 Store Connect will ask for the resulting documentation. That filing is a human step and
 it has not been done. Someone with the authority to make an export-control declaration
 on behalf of this project needs to confirm the classification before the first
-submission — treat the plist key as recording a decision, not as making one.
+submission — treat the App Store Connect answers as recording a decision, not as making one.
 
 ## Supported versions
 
