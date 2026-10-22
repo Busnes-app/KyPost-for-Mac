@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Observation
 import SwiftData
 import Testing
 @testable import KyPost
@@ -204,6 +205,32 @@ import Testing
 
         #expect(try await graph.emailDAO.getFolder(folder: "INBOX").isEmpty)
         #expect(graph.mailCursorStore.cursor(pairingId: "u1", folder: "INBOX") == "")
+    }
+
+    /// Pairing again after an unpair redraws Settings. The pairing is in the
+    /// Keychain, which Observation cannot see, so Settings showed "Not paired"
+    /// and Pair Device until a relaunch.
+    @Test func aNewPairingRedrawsSettings() async throws {
+        let graph = try makeGraph()
+        let viewModel = makeViewModel(graph)
+        #expect(viewModel.pairingDisplay == nil)
+
+        nonisolated(unsafe) var redrawn = false
+        withObservationTracking {
+            _ = viewModel.pairingDisplay
+            _ = viewModel.isPaired
+        } onChange: {
+            redrawn = true
+        }
+        try graph.securePairingStore.savePairing(Pairing(
+            sub: "u1", deviceSecret: "", srv: server, registrationUrl: nil,
+            pairingToken: "pt", lastDeviceId: "d1", pairedAt: Date()
+        ), pinnedSpkiHash: "hash-a")
+        viewModel.pairingDidChange()
+
+        #expect(redrawn)
+        #expect(viewModel.pairingDisplay?.serverHost == "relay.example.com")
+        #expect(viewModel.isPaired)
     }
 
     /// Pairing account B over A, with no unpair in between, runs the same

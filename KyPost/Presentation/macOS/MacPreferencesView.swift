@@ -142,6 +142,9 @@ private struct ConnectionPane: View {
             PushPairingView(initialParams: nil)
                 .environment(\.theme, themeManager.palette)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .kyPostPaired)) { _ in
+            viewModel.pairingDidChange()
+        }
         .confirmationDialog(
             "Unpair this device?",
             isPresented: $showUnpairConfirmation,
