@@ -353,7 +353,7 @@ while true; do
   warn "an Issuer ID looks like 69a6de70-1234-47e3-e053-5b8c7c11a4d1. Try again."
 done
 confirm "Does that key's Access column say Admin?" \
-  || warn "release.yml's App Store export needs Admin; the Mac release still works without it."
+  || warn "release.yml needs Admin: without it the Developer ID (Mac) and App Store (iOS) exports both fail with 'Cloud signing permission error'."
 say "Checking the key and Issuer ID with Apple…"
 if xcrun notarytool history --key "$ASC_KEY_FILE" --key-id "$ASC_KEY_ID" \
      --issuer "$ASC_ISSUER_ID" >/dev/null 2>&1; then
