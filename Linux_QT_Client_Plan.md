@@ -67,16 +67,16 @@ fully-adaptive tree:
    - Re-registration silently 401s once the short-lived `pairingToken` expires —
      token rotation after pairing never reaches the server (latent, unfixed).
      Don't re-register on every launch and assume it worked.
-   - `mail.urlxl.com` sits behind Cloudflare (bare `urlxl.com` → 530). Set a
+   - `mail.example.com` sits behind Cloudflare (bare `example.com` → 530). Set a
      real User-Agent on QNAM from day one.
    - Deployment lag: the backend deploys via the user's Docker pipeline on a
      remote host. **Verify the UnifiedPush commits are actually deployed to
-     `mail.urlxl.com` before any live E2E** — the attachments endpoints had the
+     `mail.example.com` before any live E2E** — the attachments endpoints had the
      same "committed but 404s live" window.
 
 ## Locked decisions carried over (do not relitigate)
 
-- **Relay-only.** No IMAP/SMTP anywhere. `mail.urlxl.com` is the sole
+- **Relay-only.** No IMAP/SMTP anywhere. `mail.example.com` is the sole
   transport. Search is local-cache-only.
 - **Wire contracts come from `llama-mobile`** (`Mobile_Mail_Relay.md`,
   `Mobile_Contact_Sync.md`) and, for post-July-2026 features, this repo's
@@ -324,7 +324,7 @@ the app; (c) **D-Bus activation delivers a push with the app closed**;
 foreground; (e) deep links open/focus the app on both (`x-scheme-handler` /
 `urls` hook). Also in this phase: check whether UT's Qt 6 framework has landed
 (it would erase the dual-Qt burden — check before writing compat code), and
-confirm the UnifiedPush commits are deployed to `mail.urlxl.com`.
+confirm the UnifiedPush commits are deployed to `mail.example.com`.
 
 **Phase 2 — Core data.** Models, SQLite schema + DAOs, settings/cursor stores,
 SecureStore (both backends). DAO round-trip tests. Runs under both Qt majors in CI.
@@ -365,7 +365,7 @@ KNotifications tap-through, push-activation cold-start path (parse payload →
 notify → exit or stay resident), polling pause/resume on
 `Qt.application.state`. UT: lifecycle handling (aggressive suspension —
 refresh + subscriber reconnect on resume), ContentHub export, in-app MFA/mail
-banners. Live E2E against `mail.urlxl.com` on all three targets: pair,
+banners. Live E2E against `mail.example.com` on all three targets: pair,
 register a real ntfy.sh endpoint, receive a real mail push (distributor path
 on Plasma, subscriber path on UT), verify MFA arrives via polling only,
 verify a deleted ntfy topic gets the device row cleaned up server-side and
