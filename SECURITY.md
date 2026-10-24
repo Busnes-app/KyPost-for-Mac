@@ -10,6 +10,9 @@ deployment hardening), see [SECURITY.md in the server
 repository](https://github.com/Busnes-app/kypost-server/blob/main/SECURITY.md).
 Report server vulnerabilities there, not here.
 
+How the protections below fit together is argued in [docs/ASSURANCE-CASE.md](docs/ASSURANCE-CASE.md).
+How to check the GopenPGP binary and a release is in [docs/VERIFYING-RELEASES.md](docs/VERIFYING-RELEASES.md).
+
 ## Reporting Security Vulnerabilities
 
 Report vulnerabilities in the Mac app via GitHub Security Advisories rather than opening

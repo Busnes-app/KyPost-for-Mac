@@ -164,6 +164,19 @@ CI reproduction. Preserve simulator signing/Keychain entitlements. Physical-devi
 Secure Enclave/biometric behavior, real relay PGP round-trips and distribution signing
 are separate gates. A screenshot run or macOS compile pass does not qualify them.
 
+### Coding standard
+
+Contributions follow these style guides. The compiler is the only tool that checks them,
+through the CI jobs above; there is no linter or formatter.
+
+| Language | Style guide | Enforced by |
+|---|---|---|
+| Swift | The [Swift API Design Guidelines](https://www.swift.org/documentation/api-design-guidelines/) | The Swift compiler in `ios-tests` and `macos-build`, with the project's settings: default `MainActor` isolation, approachable concurrency and member import visibility. Warnings do not fail the build. |
+
+Beyond what the compiler checks: keep to the naming and comment density of the file you are
+editing, keep `import Gopenpgp` inside `Domain/Security/GopenPGPCrypto.swift` (and its tests), and follow the
+view and theming contracts in [KyPost/Presentation/AGENTS.md](KyPost/Presentation/AGENTS.md).
+
 ## Every PR Must Pass Hostile AI Code Review
 
 Beyond CI, every pull request gets an adversarial review pass. This is a
