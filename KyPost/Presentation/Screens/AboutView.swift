@@ -16,7 +16,7 @@ struct AboutView: View {
     @State private var showAcknowledgements = false
     #endif
 
-    private let privacyPolicyURL = URL(string: "https://www.kypost.org/privacy.html")!
+    private let privacyPolicyURL = URL(string: "https://busnes.app/privacy.html")!
 
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
