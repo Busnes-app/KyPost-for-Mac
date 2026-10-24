@@ -122,7 +122,8 @@ used for signatures or integrity.
 - **A key enrolled before the seal** stays in the clear in the Keychain until its first
   presence-checked open. In the Simulator, the device key is an ordinary Keychain key, not a
   Secure Enclave one.
-- No static analysis tool runs in CI. No independent security audit has taken place.
+- No static analysis covers the Swift code: CodeQL's default setup here analyses only the
+  GitHub Actions workflows. No independent security audit has taken place.
 
 Each item is in [SECURITY.md](../SECURITY.md) with what to do about it.
 
