@@ -138,8 +138,10 @@ nonisolated func decideVaultImport(
         // Durable already: nothing to write, and completion is idempotent.
         // A redelivery under the other version rewrites, so a restated
         // acknowledgement names the version the server now holds.
-        if previous.material == ring.original,
-           (previous.envelopeVersion ?? envelopeVersionKeyring) == version {
+        if previous.material == ring.original {
+            guard (previous.envelopeVersion ?? envelopeVersionKeyring) == version else {
+                return .store(record, install: .keyring(ring), report: report)
+            }
             return .replay(install: .keyring(ring), report: report)
         }
         guard let held = reopenPgpKeyring(previous.material, inspector: inspector),
