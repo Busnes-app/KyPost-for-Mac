@@ -21,6 +21,8 @@ import Foundation
 /// **v2 → v3:** the plaintext became the complete `kypost-pgp-keyring-v1`
 /// ring rather than one armored key. Framing and AAD layout are unchanged;
 /// only the domain string differs, so a v3 envelope can never be opened as v2.
+/// **v4/v5:** the v2/v3 plaintexts sealed with RFC 9180 HPKE; the AAD bytes
+/// become the HPKE `info`.
 nonisolated func envelopeDomain(version: Int) -> String {
     "kypost-device-envelope/v\(version)"
 }
@@ -30,10 +32,28 @@ nonisolated func envelopeDomain(version: Int) -> String {
 nonisolated let envelopeVersionLegacy = 2
 /// The complete `kypost-pgp-keyring-v1` ring, for a converted account.
 nonisolated let envelopeVersionKeyring = 3
+/// The v2 plaintext under HPKE.
+nonisolated let envelopeVersionLegacyHPKE = 4
+/// The v3 plaintext under HPKE.
+nonisolated let envelopeVersionKeyringHPKE = 5
 /// What this build can open, and what it publishes as `envelopeVersions`.
 /// Publishing without the list resets the server's claim to `[2]`, and the
-/// browser then refuses to seal v3.
-nonisolated let supportedEnvelopeVersions = [envelopeVersionLegacy, envelopeVersionKeyring]
+/// browser then refuses to seal anything newer.
+nonisolated let supportedEnvelopeVersions = [
+    envelopeVersionLegacy, envelopeVersionKeyring, envelopeVersionLegacyHPKE, envelopeVersionKeyringHPKE,
+]
+
+/// True for the versions whose plaintext is a `kypost-pgp-keyring-v1` ring.
+nonisolated func envelopeCarriesKeyring(_ version: Int) -> Bool {
+    version == envelopeVersionKeyring || version == envelopeVersionKeyringHPKE
+}
+
+nonisolated func envelopeIsHPKE(_ version: Int) -> Bool {
+    version == envelopeVersionLegacyHPKE || version == envelopeVersionKeyringHPKE
+}
+
+/// RFC 9180 mode_base, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM.
+nonisolated let deviceEnvelopeHPKESuite = HPKE.Ciphersuite.P256_SHA256_AES_GCM_256
 
 /// The v2 domain, kept as a name because tests and the legacy path read it.
 nonisolated let envelopeInfo = envelopeDomain(version: envelopeVersionLegacy)
@@ -44,13 +64,17 @@ nonisolated let maxDeviceEnvelopeV3Bytes = 128 * 1024
 private let envelopeAlgorithm = "ECDH-P256+HKDF-SHA256+A256GCM"
 private let gcmTagBytes = 16
 private let envelopeKeysV3: Set<String> = ["v", "alg", "epk", "iv", "ct"]
+private let hpkeEnvelopeAlgorithm = "HPKE-Base-P256-SHA256-A256GCM"
+private let hpkeEnvelopeKeys: Set<String> = ["v", "alg", "enc", "ct"]
 
 /// The version is parsed once and travels with the fields, so the opener
 /// cannot be pointed at a different domain than the envelope declared.
 nonisolated struct DeviceEnvelopeFields: Equatable, Sendable {
     var version: Int = envelopeVersionLegacy
     /// The browser's ephemeral public key, raw SEC1 (65 bytes, 0x04-prefixed).
+    /// For HPKE this is `enc`, which for DHKEM(P-256) is the same point.
     var epk: Data
+    /// Empty for HPKE, which derives its own nonce.
     var iv: Data
     var ct: Data
 }
@@ -69,12 +93,14 @@ nonisolated struct DeviceEnvelopeFields: Equatable, Sendable {
 /// fields, the whole envelope fits in 128 KiB, base64 is canonical and padded,
 /// and the ephemeral point must be on P-256. v2 keeps its historical leniency
 /// (a quoted `"2"` has always opened). A v3 envelope is never retried as v2.
+/// v4/v5 are as strict as v3 with exactly `v`, `alg`, `enc`, `ct`; the
+/// 128 KiB bound applies to v5.
 nonisolated func parseDeviceEnvelope(
     _ json: String,
     allowedVersions: Set<Int> = Set(supportedEnvelopeVersions)
 ) -> DeviceEnvelopeFields? {
-    if allowedVersions.contains(envelopeVersionKeyring),
-       !allowedVersions.contains(envelopeVersionLegacy),
+    if !allowedVersions.isEmpty,
+       allowedVersions.isSubset(of: [envelopeVersionKeyring, envelopeVersionKeyringHPKE]),
        json.utf8.count > maxDeviceEnvelopeV3Bytes {
         return nil
     }
@@ -85,12 +111,18 @@ nonisolated func parseDeviceEnvelope(
     let version: Int
     if jsonPrimitiveContent(object["v"]) == String(envelopeVersionLegacy) {
         version = envelopeVersionLegacy
-    } else if let number = object["v"] as? NSNumber, isJSONInteger(number, equalTo: envelopeVersionKeyring) {
-        version = envelopeVersionKeyring
+    } else if let number = object["v"] as? NSNumber,
+              let strict = [envelopeVersionKeyring, envelopeVersionLegacyHPKE, envelopeVersionKeyringHPKE]
+                  .first(where: { isJSONInteger(number, equalTo: $0) }) {
+        version = strict
     } else {
         return nil
     }
-    guard allowedVersions.contains(version),
+    guard allowedVersions.contains(version) else { return nil }
+    if envelopeIsHPKE(version) {
+        return parseHPKEEnvelope(object, version: version, byteCount: data.count)
+    }
+    guard object["alg"] as? String == envelopeAlgorithm,
           object["alg"] as? String == envelopeAlgorithm,
           let epkText = object["epk"] as? String,
           let ivText = object["iv"] as? String,
@@ -124,6 +156,26 @@ nonisolated func parseDeviceEnvelope(
     }
     guard iv.count == 12, ct.count > gcmTagBytes else { return nil }
     return DeviceEnvelopeFields(version: version, epk: epk, iv: iv, ct: ct)
+}
+
+/// v4/v5 framing. `enc` must be an on-curve uncompressed point.
+private nonisolated func parseHPKEEnvelope(
+    _ object: [String: Any],
+    version: Int,
+    byteCount: Int
+) -> DeviceEnvelopeFields? {
+    guard Set(object.keys) == hpkeEnvelopeKeys,
+          object["alg"] as? String == hpkeEnvelopeAlgorithm,
+          version != envelopeVersionKeyringHPKE || byteCount <= maxDeviceEnvelopeV3Bytes,
+          let encText = object["enc"] as? String,
+          let ctText = object["ct"] as? String,
+          let enc = strictBase64(encText),
+          let ct = strictBase64(ctText),
+          enc.count == 65, enc.first == 0x04,
+          (try? P256.KeyAgreement.PublicKey(x963Representation: enc)) != nil,
+          ct.count > gcmTagBytes
+    else { return nil }
+    return DeviceEnvelopeFields(version: version, epk: enc, iv: Data(), ct: ct)
 }
 
 /// Standard alphabet, padded, canonical. Foundation alone accepts encodings
@@ -199,23 +251,23 @@ enum DeviceEnvelopeError: Error, Equatable {
 /// the one alarm this feature has. A doc comment is not a contract across
 /// three implementations.
 ///
-/// The domain is the version's: v3 additionally requires a non-empty device
-/// id and a full 40- or 64-digit fingerprint, the only lengths a validated
-/// active key can have. The device id goes in unchanged — no trimming,
+/// The domain is the version's: v3 and later additionally require a non-empty
+/// device id and a full 40- or 64-digit fingerprint, the only lengths a
+/// validated active key can have. The device id goes in unchanged — no trimming,
 /// normalisation or case folding.
 nonisolated func deviceEnvelopeAAD(
     version: Int = envelopeVersionLegacy,
     deviceId: String,
     pgpFingerprint: String
 ) throws -> Data {
-    guard version == envelopeVersionLegacy || version == envelopeVersionKeyring else {
+    guard supportedEnvelopeVersions.contains(version) else {
         throw DeviceEnvelopeError.unsupportedVersion
     }
     let fingerprint = pgpFingerprint.uppercased().filter { !$0.isWhitespace }
     guard !fingerprint.isEmpty,
           fingerprint.allSatisfy({ $0.isHexDigit && $0.isASCII && !$0.isLowercase })
     else { throw DeviceEnvelopeError.malformedFingerprint }
-    if version == envelopeVersionKeyring {
+    if version != envelopeVersionLegacy {
         guard !deviceId.isEmpty else { throw DeviceEnvelopeError.emptyDeviceId }
         guard fingerprint.count == 40 || fingerprint.count == 64 else {
             throw DeviceEnvelopeError.malformedFingerprint
@@ -270,6 +322,36 @@ nonisolated func openDeviceEnvelope(
         tag: fields.ct.suffix(gcmTagBytes)
     ) else { return nil }
     return try? AES.GCM.open(box, using: key, authenticating: aad)
+}
+
+/// Opens any supported version with the device key, or nil when
+/// authentication fails (hostile or stale, never a retry).
+///
+/// **Throws only when the device key operation itself fails** — a dismissed
+/// presence prompt, a busy Secure Enclave — so the caller never reports that
+/// as a substituted key. `peer` is the envelope's point, already imported.
+/// For HPKE `aad` is passed as the `info`; the HPKE AAD is empty.
+nonisolated func openDeviceEnvelope(
+    with key: any DeviceAgreementKey,
+    peer: P256.KeyAgreement.PublicKey,
+    fields: DeviceEnvelopeFields,
+    aad: Data
+) throws -> Data? {
+    if envelopeIsHPKE(fields.version) {
+        var recipient = try HPKE.Recipient(
+            privateKey: key,
+            ciphersuite: deviceEnvelopeHPKESuite,
+            info: aad,
+            encapsulatedKey: fields.epk
+        )
+        return try? recipient.open(fields.ct)
+    }
+    return openDeviceEnvelope(
+        sharedSecret: try key.sharedSecretFromKeyAgreement(with: peer),
+        ownRawPublicKey: key.publicKey.x963Representation,
+        fields: fields,
+        aad: aad
+    )
 }
 
 nonisolated func bigEndianUInt16(_ value: Int) -> Data {

@@ -13,10 +13,10 @@ import LocalAuthentication
 import Testing
 @testable import KyPost
 
-/// Stands in for the Secure Enclave key. Sealing is reversible but never
-/// leaves the plaintext readable; opening "prompts" whenever it is handed a
-/// context that has not authenticated yet, as the system does.
-nonisolated final class FakeKeySealing: VaultKeySealing, @unchecked Sendable {
+/// Stands in for the Secure Enclave key, new or legacy. Sealing is reversible
+/// but never leaves the plaintext readable; opening "prompts" whenever it is
+/// handed a context that has not authenticated yet, as the system does.
+nonisolated final class FakeKeySealing: VaultKeySealing, LegacyVaultKey, @unchecked Sendable {
     private let lock = NSLock()
     /// Held strongly: an `ObjectIdentifier` of a freed context can be reused
     /// by the next one allocated.
@@ -26,6 +26,13 @@ nonisolated final class FakeKeySealing: VaultKeySealing, @unchecked Sendable {
     /// What the next prompt does.
     var cancelPrompts = false
     var failOpens = false
+    /// As a legacy key: whether it still exists.
+    private(set) var exists = true
+
+    func delete() throws {
+        lock.lock(); defer { lock.unlock() }
+        exists = false
+    }
 
     /// Simulates the app unlock having evaluated `context`.
     func markAuthenticated(_ context: LAContext) {
@@ -60,6 +67,7 @@ nonisolated final class FakeKeySealing: VaultKeySealing, @unchecked Sendable {
 
     private func openLocked(_ sealed: Data, context: LAContext) throws -> Data {
         lock.lock(); defer { lock.unlock() }
+        if !exists { throw EnrollmentVaultError.notEnrolled }
         if failOpens || stale.contains(where: { $0 === context }) {
             throw EnrollmentVaultError.keychain(errSecAuthFailed)
         }
@@ -78,12 +86,15 @@ nonisolated final class FakeKeySealing: VaultKeySealing, @unchecked Sendable {
 func testVault(
     _ store: MemoryItemStore = MemoryItemStore(),
     sealing: FakeKeySealing = FakeKeySealing(),
+    legacyKey: FakeKeySealing = FakeKeySealing(),
     presence: PresenceContext = PresenceContext()
 ) -> EnrollmentVault {
     EnrollmentVault(
         keychain: store,
         keyTag: "org.kysecurity.mail.tests.\(UUID().uuidString)",
         sealing: sealing,
+        legacyKey: legacyKey,
+        keyMinting: SoftwareKeyMinting(),
         presence: presence
     )
 }

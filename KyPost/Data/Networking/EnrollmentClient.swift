@@ -12,7 +12,7 @@ import os
 private struct PublishEnrollmentKeyRequest: Encodable {
     var publicKey: String
     /// Omitting the list resets the server's claim to `[2]`, and the browser
-    /// then refuses to seal v3.
+    /// then refuses to seal anything newer.
     var envelopeVersions: [Int]
 }
 
@@ -31,9 +31,9 @@ private struct EnrollmentStateRequest: Encodable {
             encryptionEnrolled = false
         case .legacy:
             encryptionEnrolled = true
-        case let .keyring(generation, fingerprint):
+        case let .keyring(generation, fingerprint, version):
             encryptionEnrolled = true
-            envelopeVersion = envelopeVersionKeyring
+            envelopeVersion = version
             materialGeneration = generation
             self.fingerprint = fingerprint
         }
