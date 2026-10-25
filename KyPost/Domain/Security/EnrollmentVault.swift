@@ -285,8 +285,10 @@ nonisolated func loadDeviceKey(tag: Data, context: LAContext?) throws -> SecKey?
 /// different remedy.
 nonisolated func vaultError(from error: CFError?) -> EnrollmentVaultError {
     guard let error else { return .unavailable }
-    let code = CFErrorGetCode(error)
-    let domain = CFErrorGetDomain(error) as String
+    return vaultError(domain: CFErrorGetDomain(error) as String, code: CFErrorGetCode(error))
+}
+
+nonisolated func vaultError(domain: String, code: Int) -> EnrollmentVaultError {
     if domain == LAErrorDomain {
         let cancelled: Set<Int> = [
             LAError.userCancel.rawValue, LAError.systemCancel.rawValue, LAError.appCancel.rawValue,

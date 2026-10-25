@@ -176,5 +176,5 @@ nonisolated func deviceKeyError(_ error: any Error) -> EnrollmentVaultError {
     if nsError.domain == TKErrorDomain, nsError.code == TKError.Code.canceledByUser.rawValue {
         return .cancelled
     }
-    return vaultError(from: nsError as CFError)
+    return vaultError(domain: nsError.domain, code: nsError.code)
 }
