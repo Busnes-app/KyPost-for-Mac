@@ -33,9 +33,9 @@ nonisolated enum EnrollmentReport: Equatable, Sendable {
     /// The bare boolean, meaning "opens a v2 envelope". A converted account
     /// refuses it.
     case legacy
-    /// Confirms the v3 delivery the server recorded for this device, and
-    /// nothing else.
-    case keyring(materialGeneration: UInt64, fingerprint: String)
+    /// Confirms the keyring delivery (v3 or v5) the server recorded for this
+    /// device, and nothing else.
+    case keyring(materialGeneration: UInt64, fingerprint: String, envelopeVersion: Int)
 }
 
 nonisolated enum VaultImportDecision: Equatable, Sendable {
@@ -54,14 +54,15 @@ nonisolated enum VaultImportDecision: Equatable, Sendable {
     case mergeFailed
 }
 
-/// The keyring values a v3 delivery must carry, or nil when the server's
-/// record cannot be validated against — in which case the envelope is not
-/// opened at all.
+/// The keyring values a v3/v5 delivery of `version` must carry, or false
+/// when the server's record cannot be validated against — in which case the
+/// envelope is not opened at all.
 nonisolated func keyringDeliveryIsUsable(
     _ delivery: DeliveryMetadata?,
+    version: Int,
     identityFingerprint: String
 ) -> Bool {
-    guard let delivery, delivery.version == envelopeVersionKeyring,
+    guard let delivery, envelopeCarriesKeyring(version), delivery.version == version,
           let generation = delivery.materialGeneration, generation > 0,
           delivery.primaryFingerprints != nil, delivery.keyFingerprints != nil
     else { return false }
@@ -94,7 +95,7 @@ nonisolated func decideVaultImport(
 ) -> VaultImportDecision {
     let fingerprint = normalisedFingerprint(identityFingerprint)
 
-    guard version == envelopeVersionKeyring else {
+    guard envelopeCarriesKeyring(version) else {
         return decideLegacy(
             plaintext: plaintext,
             fingerprint: fingerprint,
@@ -103,7 +104,7 @@ nonisolated func decideVaultImport(
         )
     }
 
-    guard keyringDeliveryIsUsable(delivery, identityFingerprint: fingerprint),
+    guard keyringDeliveryIsUsable(delivery, version: version, identityFingerprint: fingerprint),
           let delivery,
           let ring = parsePgpKeyring(
               plaintext,
@@ -117,13 +118,15 @@ nonisolated func decideVaultImport(
 
     let report = EnrollmentReport.keyring(
         materialGeneration: ring.materialGeneration,
-        fingerprint: ring.activeFingerprint
+        fingerprint: ring.activeFingerprint,
+        envelopeVersion: version
     )
     let record = VaultRecord(
         kind: .keyring,
         material: ring.original,
         identityFingerprint: ring.activeFingerprint,
-        materialGeneration: ring.materialGeneration
+        materialGeneration: ring.materialGeneration,
+        envelopeVersion: version
     )
 
     switch previous?.kind {
@@ -133,7 +136,10 @@ nonisolated func decideVaultImport(
     case .keyring?:
         guard let previous else { return .refusedIncomparable }
         // Durable already: nothing to write, and completion is idempotent.
-        if previous.material == ring.original {
+        // A redelivery under the other version rewrites, so a restated
+        // acknowledgement names the version the server now holds.
+        if previous.material == ring.original,
+           (previous.envelopeVersion ?? envelopeVersionKeyring) == version {
             return .replay(install: .keyring(ring), report: report)
         }
         guard let held = reopenPgpKeyring(previous.material, inspector: inspector),

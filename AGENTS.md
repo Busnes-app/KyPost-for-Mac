@@ -519,8 +519,15 @@ is not testing which keys are trusted.
 
 Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
 
-- **Publish `envelopeVersions: [2, 3]`** (`supportedEnvelopeVersions`). Omitting
-  it resets the server's claim to `[2]` and the browser refuses to seal v3.
+- **Publish `envelopeVersions: [2, 3, 4, 5]`** (`supportedEnvelopeVersions`).
+  Omitting it resets the server's claim to `[2]` and the browser refuses to
+  seal anything newer.
+- **v4/v5 are the v2/v3 plaintexts under RFC 9180 HPKE** (base mode,
+  DHKEM P-256/HKDF-SHA256/AES-256-GCM): `{v, alg, enc, ct}`, strict like v3
+  (v5 also 128 KiB). The AAD bytes are the HPKE `info`, built from this
+  device's id and the checked fingerprint; the HPKE AAD is empty. Opened only
+  as the `version` the delivery names. Vectors: `ServerPgpFixtures`
+  (`device-envelope-hpke.json`, the CFRG entry), `HPKEDeviceEnvelopeTests`.
 - **The version picks the HKDF info and AAD domain** (`envelopeDomain`); a v3
   envelope is never retried as v2. v3 framing is strict where v2 stays lenient:
   numeric `v`, exactly five fields, 128 KiB, canonical padded base64, an
@@ -548,12 +555,24 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
   over.
 - **The material is never stored in the clear** (format 2). `store` seals the
   whole plaintext record (format 1) to the device key's public half
-  (`DeviceKeySealing`: SecKey ECIES X9.63-SHA256 AES-GCM) — no prompt — and
+  (`HPKEKeySealing`, format 3: HPKE to its own device key) — no prompt — and
   keeps only the header in the clear for `storedHeader()` (reporter,
   acknowledgement, `isEnrolled`). `openRecord()` is the only way to the
   material: a Secure Enclave decrypt under `.userPresence`, then the sealed
   header must equal the clear one. The SE/LAContext boundary is
   `VaultKeySealing`; tests use `FakeKeySealing` (`testVault`).
+- **One device key** (`DeviceAgreementKey.swift`): a CryptoKit Secure Enclave
+  P-256 key under `.privateKeyUsage, .userPresence`, kept as its
+  `dataRepresentation` in the `enrollment.deviceKey` item. It is the
+  published enrollment key, opens v2/v3 (ECDH + library HKDF) and v4/v5
+  (HPKE), and seals the vault. `DeviceKeyMinting` is the test seam
+  (`SoftwareKeyMinting`: tests and the Simulator only).
+- **Migration off the Security-framework key** (`LegacyVaultKey`, format 2):
+  `openRecord` opens with the old key, re-seals to the new one, proves the
+  seal opens, compare-and-sets it over the old item, re-reads it, and only
+  then deletes the old key. Any failure but a cancel still returns the
+  record and leaves the old item and key for the next open; a stored item
+  that is not format 2 retires a leftover old key. The wipe deletes both keys.
 - **Migration:** a plaintext record (format 1, or the older two-item layout)
   is sealed on the first `openRecord()`; the seal is opened under presence
   (the check, and proof it opens) before it replaces the plaintext in the same
@@ -575,7 +594,9 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
 - **Order: validate → store durably → hold → acknowledge.** No session install
   and no acknowledgement for material not on disk.
 - **Acknowledge with metadata.** A keyring is confirmed as
-  `{encryptionEnrolled, envelopeVersion: 3, materialGeneration, fingerprint}`,
+  `{encryptionEnrolled, envelopeVersion, materialGeneration, fingerprint}`
+  with the delivered version (3 or 5; the server matches it exactly), kept in
+  the format 3 clear header so a restated acknowledgement names it too —
   never the bare boolean. A 409 is `acknowledgementRefused`, terminal, never
   retried — and it clears any pending marker an earlier failed delivery left.
   A transient failure sets a pending marker that `EnrollmentStateReporter`

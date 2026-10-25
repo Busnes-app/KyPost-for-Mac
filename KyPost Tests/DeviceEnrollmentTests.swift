@@ -332,12 +332,12 @@ private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
         let transport = FakeTransport()
         transport.envelopeResults = [.sealed("{}", delivery: delivery)]
         let sealer = FakeSealer()
-        sealer.report = .keyring(materialGeneration: 2, fingerprint: "ABCD1234")
+        sealer.report = .keyring(materialGeneration: 2, fingerprint: "ABCD1234", envelopeVersion: 3)
         let landed = Box(0)
         let outcome = await ceremony(transport: transport, sealer: sealer, landed: landed).run()
         #expect(outcome == .enrolled)
         #expect(sealer.stored?.delivery == delivery)
-        #expect(transport.reported == .keyring(materialGeneration: 2, fingerprint: "ABCD1234"))
+        #expect(transport.reported == .keyring(materialGeneration: 2, fingerprint: "ABCD1234", envelopeVersion: 3))
         #expect(landed.value == 1)
     }
 

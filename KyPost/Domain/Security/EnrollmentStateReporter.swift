@@ -48,7 +48,11 @@ nonisolated func enrollmentReportFor(
         return .legacy
     case .keyring:
         guard let ack = record.acknowledgement else { return nil }
-        return .keyring(materialGeneration: ack.materialGeneration, fingerprint: ack.fingerprint)
+        return .keyring(
+            materialGeneration: ack.materialGeneration,
+            fingerprint: ack.fingerprint,
+            envelopeVersion: ack.envelopeVersion
+        )
     }
 }
 
