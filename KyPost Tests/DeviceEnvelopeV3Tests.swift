@@ -101,6 +101,8 @@ private let crypto = GopenPGPCrypto()
         }
         #expect(sha256(ServerPgpFixtures.deviceEnvelopeV3) == ServerPgpFixtures.deviceEnvelopeV3SHA256)
         #expect(sha256(ServerPgpFixtures.keyringV1) == ServerPgpFixtures.keyringV1SHA256)
+        #expect(sha256(ServerPgpFixtures.deviceEnvelopeHPKE) == ServerPgpFixtures.deviceEnvelopeHPKESHA256)
+        #expect(sha256(ServerPgpFixtures.hpkeCfrgP256AES256) == ServerPgpFixtures.hpkeCfrgP256AES256SHA256)
     }
 }
 
@@ -245,7 +247,7 @@ private let crypto = GopenPGPCrypto()
             try deviceEnvelopeAAD(version: 3, deviceId: "", pgpFingerprint: V3Fixtures.active)
         }
         #expect(throws: DeviceEnvelopeError.unsupportedVersion) {
-            try deviceEnvelopeAAD(version: 4, deviceId: "d", pgpFingerprint: V3Fixtures.active)
+            try deviceEnvelopeAAD(version: 6, deviceId: "d", pgpFingerprint: V3Fixtures.active)
         }
         // v2 keeps accepting what it always did.
         _ = try deviceEnvelopeAAD(version: 2, deviceId: "d", pgpFingerprint: "ABCD")
@@ -523,7 +525,7 @@ private let crypto = GopenPGPCrypto()
     }
 
     private var keyringReport: EnrollmentReport {
-        .keyring(materialGeneration: 2, fingerprint: V3Fixtures.active)
+        .keyring(materialGeneration: 2, fingerprint: V3Fixtures.active, envelopeVersion: 3)
     }
 
     @Test func aMatchingKeyringDeliveryIsStoredAndAcknowledged() throws {
@@ -565,8 +567,8 @@ private let crypto = GopenPGPCrypto()
         var otherIdentity = V3Fixtures.delivery
         otherIdentity.fingerprint = V3Fixtures.historical
         #expect(decide(delivery: otherIdentity) == .invalidRing)
-        #expect(!keyringDeliveryIsUsable(nil, identityFingerprint: V3Fixtures.active))
-        #expect(keyringDeliveryIsUsable(V3Fixtures.delivery, identityFingerprint: V3Fixtures.active.lowercased()))
+        #expect(!keyringDeliveryIsUsable(nil, version: 3, identityFingerprint: V3Fixtures.active))
+        #expect(keyringDeliveryIsUsable(V3Fixtures.delivery, version: 3, identityFingerprint: V3Fixtures.active.lowercased()))
     }
 
     @Test func anInvalidRingIsRefused() {
@@ -825,7 +827,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
             identityFingerprint: V3Fixtures.active, materialGeneration: 2
         ))
         #expect(vault.keyringAcknowledgement() == KeyringAcknowledgement(
-            materialGeneration: 2, fingerprint: V3Fixtures.active
+            materialGeneration: 2, fingerprint: V3Fixtures.active, envelopeVersion: 3
         ))
     }
 
@@ -886,7 +888,7 @@ nonisolated final class MemoryItemStore: SecureItemStoring, @unchecked Sendable 
             version: 3, plaintext: V3Fixtures.ringBytes,
             identityFingerprint: V3Fixtures.active, delivery: V3Fixtures.delivery
         )
-        #expect(report == .keyring(materialGeneration: 2, fingerprint: V3Fixtures.active))
+        #expect(report == .keyring(materialGeneration: 2, fingerprint: V3Fixtures.active, envelopeVersion: 3))
         #expect(try vault.openRecord()?.kind == .keyring)
         #expect(session.materialGeneration == 2)
         #expect(session.holdsKeyring(identicalTo: V3Fixtures.ringBytes))
@@ -1003,13 +1005,13 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
 }
 
 @Suite struct EnrollmentReportTests {
-    private let ack = KeyringAcknowledgement(materialGeneration: 2, fingerprint: V3Fixtures.active)
+    private let ack = KeyringAcknowledgement(materialGeneration: 2, fingerprint: V3Fixtures.active, envelopeVersion: 3)
 
     @Test func whatEachRecordLetsTheDeviceClaim() {
         #expect(enrollmentReportFor(EnrollmentRecordSummary(kind: .legacyArmor), tornDown: false) == .legacy)
         #expect(enrollmentReportFor(
             EnrollmentRecordSummary(kind: .keyring, acknowledgement: ack), tornDown: false
-        ) == .keyring(materialGeneration: 2, fingerprint: V3Fixtures.active))
+        ) == .keyring(materialGeneration: 2, fingerprint: V3Fixtures.active, envelopeVersion: 3))
         // A keyring is never restated as the legacy boolean.
         #expect(enrollmentReportFor(EnrollmentRecordSummary(kind: .keyring), tornDown: false) == nil)
         // No record proves nothing — unless a deliberate teardown left its marker.
@@ -1048,7 +1050,7 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
         let result = Box<EnrollmentReportResult>(.failed("offline"))
         let reporter = EnrollmentStateReporter(store: store) { _ in result.value }
 
-        #expect(await reporter.runIfNeeded() == .keyring(materialGeneration: 2, fingerprint: V3Fixtures.active))
+        #expect(await reporter.runIfNeeded() == .keyring(materialGeneration: 2, fingerprint: V3Fixtures.active, envelopeVersion: 3))
         #expect(store.pendingReportAttempts == 1, "a transient failure stays pending")
         result.value = .ok
         _ = await reporter.runIfNeeded()
@@ -1138,10 +1140,10 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
     }
 
     /// Omitting the list resets the claim to [2] and the browser refuses v3.
-    @Test func publishAdvertisesBothEnvelopeVersions() async {
+    @Test func publishAdvertisesEveryEnvelopeVersion() async {
         let captured = Box<[URLRequest]>([])
         _ = await client(captured: captured).publish(publicKey: Data([4, 1, 2]))
-        #expect(body(captured.value.last)["envelopeVersions"] as? [Int] == [2, 3])
+        #expect(body(captured.value.last)["envelopeVersions"] as? [Int] == [2, 3, 4, 5])
     }
 
     @Test func theEnvelopeCarriesItsDeliveryMetadata() async {
@@ -1172,12 +1174,14 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
     @Test func reportsCarryExactlyTheFieldsTheServerExpects() async {
         let captured = Box<[URLRequest]>([])
         let client = client(captured: captured)
-        #expect(await client.report(.keyring(materialGeneration: 2, fingerprint: V3Fixtures.active)) == .ok)
+        #expect(await client.report(.keyring(materialGeneration: 2, fingerprint: V3Fixtures.active, envelopeVersion: 3)) == .ok)
         let keyring = body(captured.value.last)
         #expect(keyring["encryptionEnrolled"] as? Bool == true)
         #expect(keyring["envelopeVersion"] as? Int == 3)
         #expect(keyring["materialGeneration"] as? Int == 2)
         #expect(keyring["fingerprint"] as? String == V3Fixtures.active)
+        _ = await client.report(.keyring(materialGeneration: 2, fingerprint: V3Fixtures.active, envelopeVersion: 5))
+        #expect(body(captured.value.last)["envelopeVersion"] as? Int == 5, "the delivered version, never a constant")
 
         _ = await client.report(.legacy)
         #expect(Set(body(captured.value.last).keys) == ["encryptionEnrolled"])
@@ -1189,7 +1193,7 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
     @Test func aRefusedAcknowledgementIsAConflict() async {
         let captured = Box<[URLRequest]>([])
         let refused = client(status: 409, json: #"{"pgpStateChanged":true,"materialGeneration":3}"#, captured: captured)
-        #expect(await refused.report(.keyring(materialGeneration: 2, fingerprint: V3Fixtures.active)) == .conflict)
+        #expect(await refused.report(.keyring(materialGeneration: 2, fingerprint: V3Fixtures.active, envelopeVersion: 3)) == .conflict)
         let gone = client(status: 404, json: "{}", captured: captured)
         #expect(await gone.report(.legacy) == .notFound)
         let down = client(status: 500, json: "{}", captured: captured)
