@@ -1,5 +1,8 @@
 # KyPost
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15930/badge)](https://www.bestpractices.dev/projects/15930)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/KyPost-for-Mac/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/KyPost-for-Mac)
+
 A native SwiftUI mail client for macOS and iOS. It connects to a KyPost mail relay.
 
 The app talks only to the relay backend. There is no direct IMAP or SMTP. You pair a device one time with a QR code or a deep link. The relay then handles mail access, server-side keyword tabs, push notifications, and contact sync.
