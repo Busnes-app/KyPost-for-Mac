@@ -178,6 +178,11 @@ a crypto path acceptable.
   serialises and refuses to overwrite an existing release, but the habit is
   what protects you: `shasum -a 256` the download, or read GitHub's own
   `digest` field.
+- **`PgpKeyFloor` closes GopenPGP's 2047-bit RSA minimum.** Every key packet
+  must be RSA ≥ 2048 actual modulus bits or an allow-listed algorithm.
+  `GopenPGPCrypto` refuses a short recipient (the whole message, never a
+  silent skip), drops a short signer key, and refuses a short own key as
+  `unusableKey`. Decryption does not check, so old mail stays readable.
 - **Only `PgpCrypto.swift` and its conforming types may `import Gopenpgp`.**
   The v2→v3 API break is recent enough that a swap must touch one file. The
   reader, compose, and the signature binding must never learn which library is
@@ -968,7 +973,15 @@ old sentence edited out.
 - **A pin lookup that throws refuses the handshake** (`PinFailure.unreadable`
   → `NetworkError.pinUnreadable`); only "not found" means unpinned. Never
   `try?` a pin read on an enforcement path.
-- **Relay sessions are `relaySessionConfiguration()`**: ephemeral, no
+- **Every server-trust challenge goes through `acceptsServerTrust`,** pinned
+  host or not: `SecTrustEvaluateWithError`, then RSA ≥ 2048 actual bits or
+  prime EC ≥ 256 on every certificate of the evaluated chain, anchor
+  included, then `.useCredential`. Unmeasurable or other key types refuse
+  (`PinFailure.untrusted` → `NetworkError.certificateRefused`). Never answer
+  `.performDefaultHandling` for server trust: system trust alone accepts
+  RSA-2047. Every URLSession the app makes has this delegate; a new one must
+  too (`docs/STRONG-CRYPTO.md`).
+- **Relay sessions are `relaySessionConfiguration()`**: ephemeral, TLS ≥ 1.2, no
   `URLCache`, no cookies. `HTTPClient(session:)` has no default — never hand a
   relay client `URLSession.shared`. Redirects must keep scheme https, host and
   effective port.
@@ -1291,4 +1304,4 @@ App/launcher assets use the Busnes.app-site Systems stamp family. Regenerate pla
 
 ## README and topic guides
 
-Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/DEVELOPMENT.md`, `docs/FEATURES.md`, `docs/VERIFYING-RELEASES.md` (GopenPGP pin and release checks; every command there was run against a real release or is marked untested) and `docs/ASSURANCE-CASE.md` (threat model and security argument; a change that moves a trust boundary or a cited path updates it in the same PR). `CHANGELOG.md` records security and user-visible changes under `## Unreleased`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.
+Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/DEVELOPMENT.md`, `docs/FEATURES.md`, `docs/VERIFYING-RELEASES.md` (GopenPGP pin and release checks; every command there was run against a real release or is marked untested), `docs/STRONG-CRYPTO.md` (TLS and OpenPGP key floors and the key inventory; a change to a key, cipher or connection updates it) and `docs/ASSURANCE-CASE.md` (threat model and security argument; a change that moves a trust boundary or a cited path updates it in the same PR). `CHANGELOG.md` records security and user-visible changes under `## Unreleased`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.

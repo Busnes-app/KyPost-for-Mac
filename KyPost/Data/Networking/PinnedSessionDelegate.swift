@@ -13,7 +13,7 @@
 //  trusts the srv URL it carried on its first handshake (system trust, and
 //  the key that handshake presented becomes the pin). Pin checks apply only
 //  to the pinned host — scanned foreign key-exchange URLs (ScanPgpKeyView)
-//  get default TLS handling.
+//  get system trust and the key floor below, without a pin.
 //
 //  Once a host is pinned the check fails closed: anything this delegate
 //  cannot hash is refused rather than waved through, because the party
@@ -24,6 +24,12 @@
 //  from the Keychain only. A pairing attempt never arms a pin there; it
 //  gets its own session and delegate (`RelayPairingConnection`), so a pin a
 //  link or probe supplied never reaches background sync.
+//
+//  Every server-trust challenge, pinned host or not, also passes
+//  `acceptsServerTrust`: the system's own evaluation, then the key floor on
+//  every certificate of the evaluated chain, anchor included
+//  (docs/STRONG-CRYPTO.md). This delegate backs every URLSession the app
+//  makes, so that is every app-owned TLS connection.
 //
 //  The delegate also refuses every cross-origin redirect. Requests carry the
 //  device secret in X-Kypost-Device-Secret, and URLSession only strips
@@ -46,6 +52,9 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
         case mismatch
         /// The pin could not be read, so nothing could be checked.
         case unreadable
+        /// System trust refused the chain, or a certificate in it has a key
+        /// below the floor.
+        case untrusted
     }
 
     /// The pin to enforce for a host, or nil when that host has none. Throws
@@ -84,7 +93,8 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
         let observed = Self.spkiSHA256(of: trust)
         // Read outside the lock: `pinnedHash` goes to the Keychain, and
         // holding a lock across that buys nothing.
-        let failure = Self.failure(lookup: Result { try pinnedHash(host) }, observed: observed)
+        let failure: PinFailure? = Self.failure(lookup: Result { try pinnedHash(host) }, observed: observed)
+            ?? (Self.acceptsServerTrust(trust) ? nil : .untrusted)
 
         lock.lock()
         if let observed { lastSeenByHost[host] = observed }
@@ -95,10 +105,36 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
         lock.unlock()
 
         if failure == nil {
-            completionHandler(.performDefaultHandling, nil)
+            completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
             completionHandler(.cancelAuthenticationChallenge, nil)
         }
+    }
+
+    // MARK: - Certificate keys
+
+    /// The system's evaluation (host name, validity, anchors, Apple's TLS
+    /// rules), then every certificate of the evaluated chain must carry a key
+    /// at or above the floor. An empty chain refuses.
+    static func acceptsServerTrust(_ trust: SecTrust) -> Bool {
+        guard SecTrustEvaluateWithError(trust, nil),
+              let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
+              !chain.isEmpty
+        else { return false }
+        return chain.allSatisfy(hasStrongKey)
+    }
+
+    /// RSA of at least 2048 actual bits or prime-curve EC of at least 256.
+    /// A key this app cannot read or measure, or of any other type, refuses.
+    /// Actual bits, never the RSA block size: 2047 and 2048 bits share one.
+    static func hasStrongKey(_ certificate: SecCertificate) -> Bool {
+        guard let key = SecCertificateCopyKey(certificate),
+              let attributes = SecKeyCopyAttributes(key) as? [CFString: Any],
+              let kind = attributes[kSecAttrKeyType] as? String,
+              let bits = attributes[kSecAttrKeySizeInBits] as? Int
+        else { return false }
+        return (kind == kSecAttrKeyTypeRSA as String && bits >= 2048)
+            || (kind == kSecAttrKeyTypeECSECPrimeRandom as String && bits >= 256)
     }
 
     // MARK: - Redirects
@@ -154,7 +190,7 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
     }
 
     enum PinDecision: Equatable {
-        /// Hand off to the system's normal TLS evaluation.
+        /// The pin does not object; system trust and the key floor still decide.
         case proceed
         case refuse
     }
@@ -214,6 +250,7 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
     /// wipe.
     static func relaySessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.tlsMinimumSupportedProtocolVersion = .TLSv12
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieStorage = nil
@@ -245,6 +282,7 @@ nonisolated final class PinnedSessionDelegate: NSObject, URLSessionTaskDelegate,
         switch failure {
         case .mismatch: return NetworkError.certificateMismatch
         case .unreadable: return NetworkError.pinUnreadable
+        case .untrusted: return NetworkError.certificateRefused
         }
     }
 

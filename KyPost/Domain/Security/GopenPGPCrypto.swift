@@ -216,7 +216,7 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         privateKey: Data
     ) throws -> String {
         let signingKey = try Self.signingKey(fromArmored: privateKey)
-        let recipients = try keyRing(fromArmored: recipientKeys)
+        let recipients = try keyRing(fromArmored: recipientKeys, refusingWeakKeys: true)
         guard recipients.countEntities() > 0 else {
             throw PgpCryptoError.cannotEncrypt("no usable recipient key")
         }
@@ -559,10 +559,17 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
     /// be used here — gopenpgp refuses armor holding more than one key, which
     /// is exactly what a merged collection is.
     private static func signingKey(fromArmored blob: Data) throws -> CryptoKey {
-        guard let key = keys(inArmored: blob).first, key.isPrivate() else {
+        guard let key = keys(inArmored: blob).first, key.isPrivate(), meetsKeyFloor(key) else {
             throw PgpCryptoError.unusableKey
         }
         return key
+    }
+
+    /// Every key packet of `key` meets `PgpKeyFloor`. Decryption does not ask:
+    /// mail already sent to a short key stays readable.
+    private static func meetsKeyFloor(_ key: CryptoKey) -> Bool {
+        guard let binary = try? key.getPublicKey() else { return false }
+        return PgpKeyFloor.meets(keyPackets: binary)
     }
 
     /// Every key in one armored blob, which may be a legacy collection.
@@ -589,10 +596,18 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
 
     /// Collects armored public keys into one ring, skipping any that do not
     /// parse. A key that fails to parse only ever shrinks the candidate set.
-    private func keyRing(fromArmored keys: [String]) throws -> CryptoKeyRing {
+    /// A key below `PgpKeyFloor` is skipped too, or, for recipients, refused:
+    /// skipping one would send mail that recipient cannot open.
+    private func keyRing(fromArmored keys: [String], refusingWeakKeys: Bool = false) throws -> CryptoKeyRing {
         guard let ring = CryptoKeyRing(nil) else { throw PgpCryptoError.unusableKey }
         for armored in keys {
             guard let key = CryptoKey(fromArmored: armored) else { continue }
+            guard Self.meetsKeyFloor(key) else {
+                if refusingWeakKeys {
+                    throw PgpCryptoError.cannotEncrypt("a recipient key is shorter than KyPost accepts")
+                }
+                continue
+            }
             try? ring.add(key)
         }
         return ring

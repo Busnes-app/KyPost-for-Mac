@@ -160,6 +160,11 @@ every connection to that host must present that key
 - **It fails closed.** On a pinned host the app refuses a key it cannot hash, and a
   Keychain error while reading the pin refuses the connection rather than falling back to
   system trust.
+- **Every certificate in the chain needs a strong key.** On every connection, pinned or
+  not, the system's trust evaluation must pass, and every certificate of the evaluated
+  chain, root included, must carry RSA of at least 2048 bits or EC of at least P-256.
+  Anything else is refused before a request is sent. See
+  [docs/STRONG-CRYPTO.md](docs/STRONG-CRYPTO.md), which also covers the OpenPGP key floor.
 - **Redirects stay on the origin.** A redirect to another host, another port or plain
   http is refused, so the device-secret header never follows one.
 - **Relay responses are not cached.** Relay sessions are ephemeral, with no response

@@ -56,3 +56,4 @@ MIT, developed by Busnes.app — see [LICENSE.txt](LICENSE.txt).
 - [Features](docs/FEATURES.md) — Features, Known gaps. <a id="features"></a><a id="security-settings--security"></a><a id="known-gaps"></a>
 - [Verifying releases](docs/VERIFYING-RELEASES.md) — Check the GopenPGP binary against its pin and its build, and what can be checked of the app.
 - [Assurance case](docs/ASSURANCE-CASE.md) — Threat model, trust boundaries, and why the security requirements are met.
+- [Strong cryptography](docs/STRONG-CRYPTO.md) — Key-size floors for TLS and OpenPGP, the key inventory, and what is out of scope.
