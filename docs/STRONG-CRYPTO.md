@@ -105,6 +105,12 @@ These are not code this project produces:
   already sent to one still decrypts.
 - CI runs both on the iOS Simulator (`ios-tests`) and compiles for macOS (`macos-build`) on
   every pull request.
+- Measured on the iOS Simulator in CI run
+  [40587839679](https://github.com/Busnes-app/KyPost-for-Mac/actions/runs/40587839679)
+  (PR #76, commit `23c7e61`): system trust alone accepted the RSA-2047 leaf, the RSA-2047
+  intermediate and the RSA-2047 root (`KYPOST_TLS_FLOOR ... systemTrust=true`). The floor
+  refused all three. Without it, the platform would accept a short key at every position
+  in the chain.
 
 **Not proven:** the floor on a physical device, or against a live relay on another OS build.
 The simulator run is the evidence.
