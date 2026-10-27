@@ -2,7 +2,7 @@
 //  PgpKeyring.swift
 //  KyPost
 //
-//  The `kypost-pgp-keyring-v1` plaintext a device-envelope v3 carries: the
+//  The `kypost-pgp-keyring-v1` plaintext a device-envelope v5 carries: the
 //  account's complete ring, active key and every retired one. Swift port of
 //  kypost-android's pgp/PgpKeyring.kt; the format is the server's
 //  (docs/PGP_KEY_LIFECYCLE.md, testdata/pgp-keyring-v1.json).

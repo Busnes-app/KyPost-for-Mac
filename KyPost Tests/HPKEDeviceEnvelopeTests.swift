@@ -47,10 +47,9 @@ private enum HPKEFixtures {
     /// Nil at any stage is a refusal.
     static func open(_ json: String, deviceId: String, fingerprint: String, key: any DeviceAgreementKey) throws -> Data? {
         guard let fields = parseDeviceEnvelope(json),
-              let aad = try? deviceEnvelopeAAD(version: fields.version, deviceId: deviceId, pgpFingerprint: fingerprint),
-              let peer = try? P256.KeyAgreement.PublicKey(x963Representation: fields.epk)
+              let info = try? deviceEnvelopeAAD(version: fields.version, deviceId: deviceId, pgpFingerprint: fingerprint)
         else { return nil }
-        return try openDeviceEnvelope(with: key, peer: peer, fields: fields, aad: aad)
+        return try openDeviceEnvelope(with: key, fields: fields, info: info)
     }
 }
 
@@ -68,17 +67,22 @@ private func sealHPKE(
     ]), as: UTF8.self)
 }
 
-/// Seals a v2 envelope (ECDH, HKDF salted with the device key, AES-GCM).
-private func sealV2(plaintext: Data, to publicKey: P256.KeyAgreement.PublicKey, deviceId: String = "dev") throws -> String {
+/// Seals a retired v2/v3 envelope as the browser did (ECDH, HKDF salted with
+/// the device key, AES-GCM, length-prefixed AAD), so a refusal is of a real one.
+private func sealLegacy(version: Int, plaintext: Data, to publicKey: P256.KeyAgreement.PublicKey) throws -> String {
     let ephemeral = P256.KeyAgreement.PrivateKey()
+    let domain = Data(envelopeDomain(version: version).utf8)
     let key = try ephemeral.sharedSecretFromKeyAgreement(with: publicKey).hkdfDerivedSymmetricKey(
-        using: SHA256.self, salt: publicKey.x963Representation,
-        sharedInfo: Data(envelopeDomain(version: 2).utf8), outputByteCount: 32
+        using: SHA256.self, salt: publicKey.x963Representation, sharedInfo: domain, outputByteCount: 32
     )
-    let aad = try deviceEnvelopeAAD(version: 2, deviceId: deviceId, pgpFingerprint: V3Fixtures.active)
+    var aad = domain
+    for field in [Data("dev".utf8), Data(V3Fixtures.active.utf8)] {
+        aad.append(bigEndianUInt16(field.count))
+        aad.append(field)
+    }
     let box = try AES.GCM.seal(plaintext, using: key, authenticating: aad)
     return String(decoding: V3Fixtures.serialize([
-        "v": 2, "alg": "ECDH-P256+HKDF-SHA256+A256GCM",
+        "v": version, "alg": "ECDH-P256+HKDF-SHA256+A256GCM",
         "epk": ephemeral.publicKey.x963Representation.base64EncodedString(),
         "iv": Data(box.nonce).base64EncodedString(),
         "ct": (box.ciphertext + box.tag).base64EncodedString(),
@@ -189,7 +193,6 @@ private let ring = VaultRecord(
         }) == nil, "a ciphertext that is only a tag")
         let huge = String(repeating: "A", count: maxDeviceEnvelopeV3Bytes)
         #expect(parseDeviceEnvelope(v5 { $0["ct"] = huge }) == nil, "over the 128 KiB bound")
-        #expect(parseDeviceEnvelope(v5 { _ in }, allowedVersions: [2, 3]) == nil, "not advertised, not opened")
     }
 
     @Test func theHPKEAadIsStrict() {
@@ -198,6 +201,11 @@ private let ring = VaultRecord(
         }
         #expect(throws: DeviceEnvelopeError.malformedFingerprint) {
             try deviceEnvelopeAAD(version: 5, deviceId: "d", pgpFingerprint: "ABCD")
+        }
+        for retired in [2, 3, 6] {
+            #expect(throws: DeviceEnvelopeError.unsupportedVersion) {
+                try deviceEnvelopeAAD(version: retired, deviceId: "d", pgpFingerprint: V3Fixtures.active)
+            }
         }
     }
 }
@@ -246,31 +254,60 @@ private let ring = VaultRecord(
         #expect(report == .legacy)
     }
 
-    /// The same key still opens v2 through plain ECDH and the library HKDF.
-    @Test func theSameKeyOpensV2() async throws {
-        let (sealer, _, publicKey) = try sealer(MemoryItemStore())
-        let json = try sealV2(plaintext: Data(V3Fixtures.memberArmor(0).utf8), to: publicKey)
-        let report = try await sealer.openAndStore(
-            envelopeJSON: json, identityFingerprint: V3Fixtures.active, delivery: nil
-        )
-        #expect(report == .legacy)
+    /// v2/v3 are retired: a fresh delivery of either is refused before the
+    /// device key is used, and nothing is stored.
+    @Test func freshV2AndV3DeliveriesAreRefused() async throws {
+        let store = MemoryItemStore()
+        let (sealer, _, publicKey) = try sealer(store)
+        let v2 = try sealLegacy(version: 2, plaintext: Data(V3Fixtures.memberArmor(0).utf8), to: publicKey)
+        await #expect(throws: EnrollmentSealerError.unsupportedEnvelopeVersion) {
+            try await sealer.openAndStore(
+                envelopeJSON: v2, identityFingerprint: V3Fixtures.active,
+                delivery: DeliveryMetadata(version: 2, fingerprint: V3Fixtures.active)
+            )
+        }
+        let v3 = try sealLegacy(version: 3, plaintext: V3Fixtures.ringBytes, to: publicKey)
+        await #expect(throws: EnrollmentSealerError.unsupportedEnvelopeVersion) {
+            try await sealer.openAndStore(
+                envelopeJSON: v3, identityFingerprint: V3Fixtures.active, delivery: V3Fixtures.delivery
+            )
+        }
+        #expect(try store.data(forKey: "enrollment.vaultRecord") == nil)
+    }
+
+    /// No delivery metadata means a server older than v4/v5. Refused whatever
+    /// the envelope is; there is no old-server v2 path.
+    @Test func aDeliveryWithoutMetadataIsRefused() async throws {
+        let store = MemoryItemStore()
+        let (sealer, _, publicKey) = try sealer(store)
+        let armor = Data(V3Fixtures.memberArmor(0).utf8)
+        let v2 = try sealLegacy(version: 2, plaintext: armor, to: publicKey)
+        let v4 = try sealHPKE(version: 4, plaintext: armor, to: publicKey)
+        for json in [v2, v4] {
+            await #expect(throws: EnrollmentSealerError.unsupportedEnvelopeVersion) {
+                try await sealer.openAndStore(
+                    envelopeJSON: json, identityFingerprint: V3Fixtures.active, delivery: nil
+                )
+            }
+        }
+        #expect(try store.data(forKey: "enrollment.vaultRecord") == nil)
     }
 
     /// Opened only as the version the server recorded delivering.
     @Test func aVersionTheDeliveryDoesNotNameIsNotOpened() async throws {
         let store = MemoryItemStore()
         let (sealer, _, publicKey) = try sealer(store)
-        let json = try sealHPKE(version: 5, plaintext: V3Fixtures.ringBytes, to: publicKey)
+        let v5 = try sealHPKE(version: 5, plaintext: V3Fixtures.ringBytes, to: publicKey)
         await #expect(throws: EnrollmentSealerError.envelopeMalformed) {
             try await sealer.openAndStore(
-                envelopeJSON: json, identityFingerprint: V3Fixtures.active, delivery: V3Fixtures.delivery
+                envelopeJSON: v5, identityFingerprint: V3Fixtures.active,
+                delivery: DeliveryMetadata(version: 4, fingerprint: V3Fixtures.active)
             )
         }
         let v4 = try sealHPKE(version: 4, plaintext: Data(V3Fixtures.memberArmor(0).utf8), to: publicKey)
         await #expect(throws: EnrollmentSealerError.envelopeMalformed) {
             try await sealer.openAndStore(
-                envelopeJSON: v4, identityFingerprint: V3Fixtures.active,
-                delivery: DeliveryMetadata(version: 2, fingerprint: V3Fixtures.active)
+                envelopeJSON: v4, identityFingerprint: V3Fixtures.active, delivery: v5Delivery
             )
         }
         #expect(try store.data(forKey: "enrollment.vaultRecord") == nil)

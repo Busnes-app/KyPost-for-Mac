@@ -82,8 +82,8 @@ app.
   frameworks: CryptoKit, Security, WebKit, SwiftData.
 - **Separation of privilege.** Decrypting needs both the enrollment envelope from the
   server and the Secure Enclave key on this device, behind a presence check.
-- **Open design.** OpenPGP through GopenPGP, plus AES-GCM, P-256 ECDH and ECIES, HKDF-SHA-256,
-  and SHA-256 SPKI pins. All published.
+- **Open design.** OpenPGP through GopenPGP, RFC 9180 HPKE for enrollment envelopes, plus
+  AES-GCM, P-256 ECDH and ECIES, HKDF-SHA-256, and SHA-256 SPKI pins. All published.
 - **Psychological acceptability.** Each trade-off is written where the user reads it, for
   example trust-on-first-use pinning without `pin=`, and file removal that does not
   overwrite under Hostile Location Protection ([SECURITY.md](../SECURITY.md)).
@@ -98,7 +98,7 @@ app.
 | Tracking pixels and remote loads | Block-all WebKit rule list until the user loads remote content | `Presentation/Components/RemoteContentBlocker.swift` |
 | Script in mail (XSS) | `allowsContentJavaScript = false`; non-persistent website data | `Presentation/Screens/EmailDetailView.swift` (`makeConfiguration`) |
 | Private key at rest | Sealed with `eciesEncryptionCofactorVariableIVX963SHA256AESGCM` to a Secure Enclave P-256 key made with `.privateKeyUsage`, `.userPresence` and `WhenUnlockedThisDeviceOnly`; the sealed record is an `AfterFirstUnlockThisDeviceOnly` Keychain item | `Domain/Security/EnrollmentVault.swift`, `Data/Storage/KeychainStorage.swift` |
-| Envelope tampering | Envelope opened with Secure Enclave ECDH, HKDF-SHA-256 and AES-GCM with associated data | `Domain/Security/VaultSealer.swift` |
+| Envelope tampering or downgrade | Only RFC 9180 HPKE envelopes (v4/v5: mode_base, KEM 0x0010, KDF 0x0001, AEAD 0x0002) to the Secure Enclave key; the `info` binds version, device id and fingerprint. Opened only as the version the server's delivery record names; retired v2/v3 and responses with no delivery record are refused | `Domain/Security/VaultSealer.swift`, `Domain/Security/DeviceEnvelope.swift` |
 | PIN brute force | 8 to 12 digits, common PINs refused, a peppered verifier, delays of 30 s, 60 s, 5, 15 and 30 min from the third failure, wipe after 10 by default | `Domain/Security/PinPolicy.swift`, `LockoutPolicy.swift`, `PinPepper.swift` |
 | Forged signature trust | *Confirmed* only from a QR pin on this device; relay-offered keys reach at most *same key as last time*; the relay's `verified` flag is ignored and its `conflict` flag only lowers a verdict | `Domain/Models/PgpSignatureState.swift` |
 | Screen capture | `NSWindow.sharingType = .none` on macOS, a capture cover on iOS | `Presentation/Components/CaptureProtection.swift` |
@@ -132,7 +132,7 @@ Each item is in [SECURITY.md](../SECURITY.md) with what to do about it.
 - **Tests:** `KyPost Tests` covers pinning and redirects (`PinnedSessionTests`,
   `SpkiPinLinkTests`), the PIN and lockout (`AppLockPinTests`, `AppLockPinAttemptTests`), the
   wipe (`SecurityWipeTests`, `SecurityWipeStepsTests`), key custody (`VaultCustodyTests`,
-  `DeviceEnrollmentTests`), the reader's remote-content blocking (`RemoteContentBlockingTests`)
+  `DeviceEnrollmentTests`, `HPKEDeviceEnvelopeTests`), the reader's remote-content blocking (`RemoteContentBlockingTests`)
   and OpenPGP (`GopenPGPCryptoTests`, `PgpMimeReaderTests`). CI runs the unit target on the
   iOS Simulator and compiles for macOS on every pull request.
 - **Supply chain:** the GopenPGP pin was checked against the published asset

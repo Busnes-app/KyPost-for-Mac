@@ -388,7 +388,7 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
         return key
     }
 
-    /// The raw 65-byte SEC1 point, for the enrollment code and the HKDF salt.
+    /// The raw 65-byte SEC1 point: the published enrollment key and the code.
     func rawPublicKey() throws -> Data {
         try deviceKey().publicKey.x963Representation
     }
