@@ -502,10 +502,10 @@ is not testing which keys are trusted.
 - Adopt an existing device key only if it still matches the spec. Presence
   alone means a key from an earlier build with weaker parameters is reused
   forever with no signal, silently breaking the migration the design plans for.
-- The envelope AAD is **length-prefixed**, and the fingerprint is normalised
-  and validated where the AAD is built — not by doc comment. Space-grouped hex
-  reaching an AAD that strips whitespace produces an authentication failure the
-  design reports as a substituted-key alarm.
+- The envelope's HPKE `info` is **length-prefixed**, and the fingerprint is
+  normalised and validated where it is built — not by doc comment. Space-grouped
+  hex reaching an `info` that strips whitespace produces an authentication
+  failure the design reports as a substituted-key alarm.
 - A failed open is **hostile or stale, never a retry**. A 404 on the envelope
   covers both "never sealed" and "expired" — one case, so a caller cannot split
   them.
@@ -517,33 +517,42 @@ is not testing which keys are trusted.
   a plain unit test; if a port of it needs a host app to test, the port went
   wrong.
 
-Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
+Device envelopes (KyPost-Server #199/#201/#210):
 
-- **Publish `envelopeVersions: [2, 3, 4, 5]`** (`supportedEnvelopeVersions`).
-  Omitting it resets the server's claim to `[2]` and the browser refuses to
-  seal anything newer.
-- **v4/v5 are the v2/v3 plaintexts under RFC 9180 HPKE** (base mode,
-  DHKEM P-256/HKDF-SHA256/AES-256-GCM): `{v, alg, enc, ct}`, strict like v3
-  (v5 also 128 KiB). The AAD bytes are the HPKE `info`, built from this
-  device's id and the checked fingerprint; the HPKE AAD is empty. Opened only
-  as the `version` the delivery names. Vectors: `ServerPgpFixtures`
-  (`device-envelope-hpke.json`, the CFRG entry), `HPKEDeviceEnvelopeTests`.
-- **The version picks the HKDF info and AAD domain** (`envelopeDomain`); a v3
-  envelope is never retried as v2. v3 framing is strict where v2 stays lenient:
-  numeric `v`, exactly five fields, 128 KiB, canonical padded base64, an
-  on-curve point; its AAD needs a non-empty device id and a 40/64-hex
-  fingerprint.
-- **A v3 envelope is opened only with the delivery metadata** from
+- **HPKE only: publish `envelopeVersions: [4, 5]`** (`supportedEnvelopeVersions`).
+  v2/v3 (ECDH + HKDF salted with the device key + AES-GCM, not a published
+  construction) are retired for enrollment: not advertised, not parsed, no
+  decrypt code. Omitting the list resets the server's claim to `[2]`.
+- **v4/v5 are RFC 9180 HPKE**: mode_base, KEM 0x0010 DHKEM(P-256,
+  HKDF-SHA256), KDF 0x0001 HKDF-SHA256, AEAD 0x0002 AES-256-GCM (CryptoKit
+  `.P256_SHA256_AES_GCM_256`). v4 carries one armored key, v5 the complete
+  ring. Framing `{v, alg, enc, ct}`: numeric `v`, exactly four fields,
+  canonical padded base64, on-curve `enc`, v5 at most 128 KiB. The `info`
+  (`deviceEnvelopeAAD`) is `kypost-device-envelope/vN` || u16-len device id ||
+  u16-len fingerprint (uppercase, no whitespace, 40/64 hex), from this
+  device's id and the checked fingerprint; the HPKE AAD is empty. Vectors:
+  `ServerPgpFixtures` (`device-envelope-hpke.json`, the CFRG entry),
+  `HPKEDeviceEnvelopeTests`.
+- **Opened only with delivery metadata, as the version it names.**
+  `VaultSealer` refuses a v2/v3 delivery, or a response with no `version`,
+  before parsing (`unsupportedEnvelopeVersion`: "update your server"). A
+  server too old to record deliveries cannot enrol this device. A version
+  mismatch is `envelopeMalformed`.
+- **v3 lives on only as stored metadata.** The vault keeps opened material,
+  never an envelope, so nothing local needs v2/v3 decryption.
+  `envelopeVersionKeyring` (3) is the version of keyring records written
+  before it was kept; a stored v3 record is still restated and replayed.
+- **A v5 envelope is opened only with the full delivery metadata** from
   `GET /api/pgp/device/envelope` (`version`, `materialGeneration`, `keyring`).
   The opened `kypost-pgp-keyring-v1` ring (`PgpKeyring.swift`) must name the
-  AAD's fingerprint as active and match the delivery exactly — generation,
+  `info`'s fingerprint as active and match the delivery exactly — generation,
   primary set, full inventory — else `keyringRejected` and nothing is touched.
 - **Every member's fingerprints come from its own packets** via
   `PgpKeyInspecting`: one unprotected secret key per member (S2K usage octet
   zero after the library's own public body), no public-only or dummy packets,
   no subkey the library dropped. Subkey **binding signatures are not verified**
   — gomobile exposes no API for it (Android checks them; a known gap).
-- **History is never overwritten** (`KeyringImport.swift`). A v2 re-enrollment
+- **History is never overwritten** (`KeyringImport.swift`). A v4 re-enrollment
   merges with the sealed legacy collection, current key first. A keyring
   replaces a previous record only if it is the identical bytes (replay, nothing
   rewritten) or a newer generation whose inventory contains every key held —
@@ -564,9 +573,9 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
 - **One device key** (`DeviceAgreementKey.swift`): a CryptoKit Secure Enclave
   P-256 key under `.privateKeyUsage, .userPresence`, kept as its
   `dataRepresentation` in the `enrollment.deviceKey` item. It is the
-  published enrollment key, opens v2/v3 (ECDH + library HKDF) and v4/v5
-  (HPKE), and seals the vault. `DeviceKeyMinting` is the test seam
-  (`SoftwareKeyMinting`: tests and the Simulator only).
+  published enrollment key, opens v4/v5 (HPKE), and seals the vault.
+  `DeviceKeyMinting` is the test seam (`SoftwareKeyMinting`: tests and the
+  Simulator only).
 - **Migration off the Security-framework key** (`LegacyVaultKey`, format 2):
   `openRecord` opens with the old key, re-seals to the new one, proves the
   seal opens, compare-and-sets it over the old item, re-reads it, and only
@@ -583,19 +592,20 @@ Device-envelope v3 (KyPost-Server #199/#201/#210; Android `a20a533e` et al.):
   (`DeviceAuthenticating.authenticateForUnlock`); otherwise the first open
   prompts and its context is kept. `AppLockManager.lock()` /
   `lockAfterGrace()` and `EnrollmentVault.destroy*` invalidate it. **The lock
-  wins a race:** an open (or enrollment ECDH) whose lease predates an
+  wins a race:** an open (or enrollment open) whose lease predates an
   invalidation throws `cancelled` and returns no plaintext, and the reader and
   sender install material only through `EnrollmentSession.install(_:ifEpoch:)`
   with the epoch read before the open (every `clear()` advances it).
-  Enrollment's ECDH uses the same context, so reading the previous record does
-  not prompt twice.
+  Enrollment's HPKE open uses the same context, so reading the previous record
+  does not prompt twice.
 - **Secure Enclave required** outside the Simulator: key generation refuses a
   device without one (all supported hardware has one).
 - **Order: validate → store durably → hold → acknowledge.** No session install
   and no acknowledgement for material not on disk.
 - **Acknowledge with metadata.** A keyring is confirmed as
   `{encryptionEnrolled, envelopeVersion, materialGeneration, fingerprint}`
-  with the delivered version (3 or 5; the server matches it exactly), kept in
+  with the delivered version (5, or 3 from a record stored before v3 was
+  retired; the server matches it exactly), kept in
   the format 3 clear header so a restated acknowledgement names it too —
   never the bare boolean. A 409 is `acknowledgementRefused`, terminal, never
   retried — and it clears any pending marker an earlier failed delivery left.
@@ -1281,4 +1291,4 @@ App/launcher assets use the Busnes.app-site Systems stamp family. Regenerate pla
 
 ## README and topic guides
 
-Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/DEVELOPMENT.md`, `docs/FEATURES.md`, `docs/VERIFYING-RELEASES.md` (GopenPGP pin and release checks; every command there was run against a real release or is marked untested) and `docs/ASSURANCE-CASE.md` (threat model and security argument; a change that moves a trust boundary or a cited path updates it in the same PR). Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.
+Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/DEVELOPMENT.md`, `docs/FEATURES.md`, `docs/VERIFYING-RELEASES.md` (GopenPGP pin and release checks; every command there was run against a real release or is marked untested) and `docs/ASSURANCE-CASE.md` (threat model and security argument; a change that moves a trust boundary or a cited path updates it in the same PR). `CHANGELOG.md` records security and user-visible changes under `## Unreleased`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.

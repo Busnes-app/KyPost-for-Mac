@@ -232,6 +232,9 @@ is minted by the server at registration and returned exactly once.
   `WhenUnlockedThisDeviceOnly`. A device with no passcode cannot enrol at all — the
   envelope's protection *is* the lock screen — and a device without a Secure Enclave is
   refused rather than given a software key.
+- The envelope must be RFC 9180 HPKE (v4/v5: P-256, HKDF-SHA256, AES-256-GCM), opened
+  only as the version the server says it delivered. The older v2/v3 formats are refused,
+  so a server too old to offer v4/v5 cannot enrol this device: update the server.
 - **The private key is never stored in the clear.** Before it reaches the Keychain it is
   sealed to that same Secure Enclave key (ECIES: ephemeral P-256 agreement, X9.63
   SHA-256 KDF, AES-GCM), header included, so the Keychain item holds ciphertext. Opening

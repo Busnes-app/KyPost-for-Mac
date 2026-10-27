@@ -94,8 +94,8 @@ nonisolated enum EnrollmentPublishResult: Equatable, Sendable {
 }
 
 nonisolated enum EnrollmentEnvelopeResult: Equatable, Sendable {
-    /// `delivery` is nil only from a server too old to record deliveries; a
-    /// v3 envelope without it is refused rather than opened.
+    /// `delivery` is nil only from a server too old to record deliveries;
+    /// the sealer refuses such an envelope rather than opening it.
     case sealed(String, delivery: DeliveryMetadata? = nil)
     /// 404 covers both "never sealed" and "expired" — indistinguishable by
     /// design, and both mean keep waiting or re-run. One case so a caller
@@ -261,6 +261,8 @@ actor EnrollmentCeremony {
             return emit(.envelopeRejected)
         } catch EnrollmentSealerError.keyringRejected {
             return emit(.keyringRejected)
+        } catch EnrollmentSealerError.unsupportedEnvelopeVersion {
+            return emit(.failed(retiredEnvelopeMessage))
         } catch {
             return emit(.sealFailed("\(error)"))
         }
@@ -288,6 +290,9 @@ actor EnrollmentCeremony {
     }
 }
 
+nonisolated let retiredEnvelopeMessage =
+    "Your server sent this device's key in a retired format. Update your KyPost server, then start again from your browser."
+
 nonisolated enum EnrollmentSealerError: Error, Equatable {
     /// GCM authentication failed. **Hostile or stale, never a retry** — the AAD
     /// binds the sealing to this device and this identity, so a failure means
@@ -297,6 +302,9 @@ nonisolated enum EnrollmentSealerError: Error, Equatable {
     /// The envelope did not parse at all: wrong version, wrong algorithm, or
     /// wrong-sized fields. Same conclusion — re-run the ceremony.
     case envelopeMalformed
+    /// The server delivered a retired v2/v3 envelope, or no delivery record at
+    /// all (a server older than v4/v5). Not hostile: the server needs updating.
+    case unsupportedEnvelopeVersion
     /// The opened ring is not what the server delivered, or storing it would
     /// lose key material already held. Nothing was stored.
     case keyringRejected

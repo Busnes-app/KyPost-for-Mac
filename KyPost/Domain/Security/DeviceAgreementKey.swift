@@ -15,7 +15,7 @@ import LocalAuthentication
 import os
 import Security
 
-/// Opens HPKE (v4/v5, the vault) and plain ECDH (v2/v3) with the same key.
+/// Opens HPKE envelopes (v4/v5) and the vault with the same key.
 nonisolated protocol DeviceAgreementKey: HPKEDiffieHellmanPrivateKey
     where PublicKey == P256.KeyAgreement.PublicKey {}
 

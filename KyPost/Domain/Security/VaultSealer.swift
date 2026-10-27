@@ -41,9 +41,9 @@ struct VaultSealer: EnrollmentSealer {
 
     /// Unseals and stores, or throws.
     ///
-    /// The key agreement (HPKE decapsulation for v4/v5) is where user
-    /// presence is demanded: the private key is created with `.userPresence`,
-    /// so the Secure Enclave operation raises the system prompt. A cancelled prompt is surfaced as
+    /// The HPKE decapsulation is where user presence is demanded: the
+    /// private key is created with `.userPresence`, so the Secure Enclave
+    /// operation raises the system prompt. A cancelled prompt is surfaced as
     /// `EnrollmentVaultError.cancelled` and is **not** an error — the user
     /// dismissed something they raised.
     func openAndStore(
@@ -51,26 +51,27 @@ struct VaultSealer: EnrollmentSealer {
         identityFingerprint: String,
         delivery: DeliveryMetadata?
     ) async throws -> EnrollmentReport {
-        guard let fields = parseDeviceEnvelope(envelopeJSON) else {
+        // HPKE (v4/v5) only, opened only as the version the server recorded
+        // delivering. A v2/v3 delivery, or a server too old to record one, is
+        // refused before the envelope is parsed.
+        guard let delivery, envelopeIsHPKE(delivery.version) else {
+            throw EnrollmentSealerError.unsupportedEnvelopeVersion
+        }
+        guard let fields = parseDeviceEnvelope(envelopeJSON), fields.version == delivery.version else {
             throw EnrollmentSealerError.envelopeMalformed
         }
-        // A v3 envelope is validated against the delivery the server recorded.
-        // Without that record there is nothing to validate the ring against,
+        // A v5 ring is validated against the delivery the server recorded.
+        // Without the full record there is nothing to validate it against,
         // so it is not opened at all.
         if envelopeCarriesKeyring(fields.version),
            !keyringDeliveryIsUsable(delivery, version: fields.version, identityFingerprint: identityFingerprint) {
             throw EnrollmentSealerError.envelopeMalformed
         }
-        // Opened only as the version the server recorded delivering. An older
-        // server records none, and only ever delivers v2.
-        if let delivery, delivery.version != fields.version {
-            throw EnrollmentSealerError.envelopeMalformed
-        }
-        // The AAD comes from this device's id and the checked fingerprint —
+        // The info comes from this device's id and the checked fingerprint —
         // never from the envelope — under the domain the envelope declared.
-        let aad: Data
+        let info: Data
         do {
-            aad = try deviceEnvelopeAAD(
+            info = try deviceEnvelopeAAD(
                 version: fields.version,
                 deviceId: deviceId,
                 pgpFingerprint: identityFingerprint
@@ -79,9 +80,6 @@ struct VaultSealer: EnrollmentSealer {
             throw EnrollmentSealerError.envelopeMalformed
         }
 
-        guard let peer = try? P256.KeyAgreement.PublicKey(x963Representation: fields.epk) else {
-            throw EnrollmentSealerError.envelopeMalformed
-        }
         // Under the shared presence context: the prompt this raises also
         // covers reading the previous record in `importOpened`, and the
         // reader's next open until the app locks.
@@ -89,7 +87,7 @@ struct VaultSealer: EnrollmentSealer {
         let privateKey = try vault.deviceKey(context: lease.context)
         let opened: Data?
         do {
-            opened = try openDeviceEnvelope(with: privateKey, peer: peer, fields: fields, aad: aad)
+            opened = try openDeviceEnvelope(with: privateKey, fields: fields, info: info)
         } catch {
             if lease.wasHeld { vault.presence.discard(lease) }
             if deviceKeyError(error) == .cancelled {
@@ -104,7 +102,7 @@ struct VaultSealer: EnrollmentSealer {
         // The app locked during the key agreement: stop before anything is
         // stored or held.
         guard vault.presence.keep(lease) else { throw EnrollmentVaultError.cancelled }
-        // Hostile or stale, never a retry: the AAD binds the sealing to this
+        // Hostile or stale, never a retry: the info binds the sealing to this
         // device and this identity.
         guard var plaintext = opened else { throw EnrollmentSealerError.envelopeRejected }
         defer { plaintext.resetBytes(in: 0..<plaintext.count) }

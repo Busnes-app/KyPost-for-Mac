@@ -108,126 +108,16 @@ private let crypto = GopenPGPCrypto()
 
 // MARK: - Framing
 
-@Suite struct DeviceEnvelopeV3FramingTests {
-    private func envelopeJSON(_ vector: [String: Any]) -> String {
-        String(decoding: V3Fixtures.serialize(vector["envelope"] as! [String: Any]), as: UTF8.self)  // swiftlint:disable:this force_cast
-    }
-
-    /// Opens a shared vector end to end: the fixed device scalar, ECDH, the
-    /// HKDF salt and domain, the AAD bytes, and GCM.
-    private func open(_ index: Int) throws -> (opened: Data?, expected: Data, version: Int?) {
-        let vector = V3Fixtures.vector(index)
-        let file = V3Fixtures.envelopeFile
-        let deviceKey = try P256.KeyAgreement.PrivateKey(
-            rawRepresentation: V3Fixtures.data(file["devicePrivateKey"])
-        )
-        #expect(deviceKey.publicKey.x963Representation == V3Fixtures.data(file["devicePublicKey"]))
-
-        let fields = try #require(parseDeviceEnvelope(envelopeJSON(vector)))
-        let secret = try deviceKey.sharedSecretFromKeyAgreement(
-            with: P256.KeyAgreement.PublicKey(x963Representation: fields.epk)
-        )
-        #expect(secret.withUnsafeBytes { Data($0) } == V3Fixtures.data(vector["sharedSecret"]))
-
-        let aad = try deviceEnvelopeAAD(
-            version: fields.version,
-            deviceId: vector["deviceId"] as! String,  // swiftlint:disable:this force_cast
-            pgpFingerprint: vector["fingerprint"] as! String  // swiftlint:disable:this force_cast
-        )
-        #expect(aad == V3Fixtures.data(vector["aad"]))
-
-        let opened = openDeviceEnvelope(
-            sharedSecret: secret,
-            ownRawPublicKey: deviceKey.publicKey.x963Representation,
-            fields: fields,
-            aad: aad
-        )
-        return (opened, Data((vector["plaintext"] as! String).utf8), fields.version)  // swiftlint:disable:this force_cast
-    }
-
-    @Test func theV2VectorStillOpens() throws {
-        let result = try open(0)
-        #expect(result.version == 2)
-        #expect(result.opened == result.expected)
-    }
-
-    /// Includes the multibyte, pipe-carrying device id the AAD length-prefixes.
-    @Test func theV3VectorOpens() throws {
-        let result = try open(1)
-        #expect(result.version == 3)
-        #expect(result.opened == result.expected)
-    }
-
-    /// The domain comes from the parsed version: a v3 envelope is never
-    /// reopened as v2, so a downgrade cannot get it past a v2-only check.
-    @Test func aV3EnvelopeNeverOpensUnderTheV2Domain() throws {
-        let vector = V3Fixtures.vector(1)
-        let file = V3Fixtures.envelopeFile
-        let deviceKey = try P256.KeyAgreement.PrivateKey(
-            rawRepresentation: V3Fixtures.data(file["devicePrivateKey"])
-        )
-        var fields = try #require(parseDeviceEnvelope(envelopeJSON(vector)))
-        fields.version = 2
-        let secret = try deviceKey.sharedSecretFromKeyAgreement(
-            with: P256.KeyAgreement.PublicKey(x963Representation: fields.epk)
-        )
-        for version in [2, 3] {
-            let aad = try deviceEnvelopeAAD(
-                version: version,
-                deviceId: vector["deviceId"] as! String,  // swiftlint:disable:this force_cast
-                pgpFingerprint: V3Fixtures.active
-            )
-            #expect(openDeviceEnvelope(
-                sharedSecret: secret,
-                ownRawPublicKey: deviceKey.publicKey.x963Representation,
-                fields: fields,
-                aad: aad
-            ) == nil)
+@Suite struct RetiredEnvelopeFramingTests {
+    /// The server's v2 and v3 vectors are authentic and well-formed, and are
+    /// refused at framing: v2/v3 are retired for enrollment.
+    @Test func theV2AndV3VectorsAreNotParsed() {
+        for (index, version) in [(0, 2), (1, 3)] {
+            let envelope = V3Fixtures.vector(index)["envelope"] as? [String: Any]
+            #expect(envelope?["v"] as? Int == version, "control")
+            let json = String(decoding: V3Fixtures.serialize(envelope ?? [:]), as: UTF8.self)
+            #expect(parseDeviceEnvelope(json) == nil, "v\(version)")
         }
-    }
-
-    @Test func aV2OnlyCallerRefusesV3() {
-        let json = envelopeJSON(V3Fixtures.vector(1))
-        #expect(parseDeviceEnvelope(json, allowedVersions: [2]) == nil)
-        #expect(parseDeviceEnvelope(json, allowedVersions: [3]) != nil)
-    }
-
-    private func v3(_ edit: (inout [String: Any]) -> Void) -> String {
-        var envelope = V3Fixtures.vector(1)["envelope"] as! [String: Any]  // swiftlint:disable:this force_cast
-        edit(&envelope)
-        return String(decoding: V3Fixtures.serialize(envelope), as: UTF8.self)
-    }
-
-    /// Nil is "re-run the ceremony", and every malformed v3 shape lands here
-    /// before any ECDH work.
-    @Test func malformedV3IsRejected() {
-        #expect(parseDeviceEnvelope(v3 { _ in }) != nil, "control")
-        #expect(parseDeviceEnvelope(v3 { $0["v"] = "3" }) == nil, "a quoted 3 is not the v3 tag")
-        #expect(parseDeviceEnvelope(v3 { $0["v"] = 3.5 }) == nil)
-        #expect(parseDeviceEnvelope(v3 { $0["v"] = true }) == nil)
-        #expect(parseDeviceEnvelope(v3 { $0["v"] = 4 }) == nil)
-        #expect(parseDeviceEnvelope(v3 { $0["extra"] = "x" }) == nil, "exactly five fields")
-        #expect(parseDeviceEnvelope(v3 { $0["alg"] = "ECDH-P384+HKDF-SHA256+A256GCM" }) == nil)
-        #expect(parseDeviceEnvelope(v3 {
-            $0["epk"] = (($0["epk"] as? String) ?? "").replacingOccurrences(of: "=", with: "")
-        }) == nil, "unpadded base64")
-        #expect(parseDeviceEnvelope(v3 {
-            $0["iv"] = "AAECAwQFBgcICQoL\n"
-        }) == nil, "non-canonical base64")
-        #expect(parseDeviceEnvelope(v3 {
-            $0["iv"] = Data(repeating: 1, count: 11).base64EncodedString()
-        }) == nil)
-        #expect(parseDeviceEnvelope(v3 {
-            $0["ct"] = Data(repeating: 1, count: 16).base64EncodedString()
-        }) == nil, "a ciphertext that is only a tag")
-        #expect(parseDeviceEnvelope(v3 {
-            $0["epk"] = Data([0x04] + Array(repeating: UInt8(1), count: 64)).base64EncodedString()
-        }) == nil, "a point that is not on P-256")
-        #expect(parseDeviceEnvelope(v3 {
-            $0["epk"] = Data([0x02] + Array(repeating: UInt8(1), count: 32)).base64EncodedString()
-        }) == nil)
-        let huge = String(repeating: "A", count: maxDeviceEnvelopeV3Bytes)
-        #expect(parseDeviceEnvelope(v3 { $0["ct"] = huge }) == nil, "over the 128 KiB bound")
     }
 
     /// Canonical base64: a different string naming the same bytes is refused.
@@ -237,23 +127,6 @@ private let crypto = GopenPGPCrypto()
         #expect(strictBase64("AR==") == nil, "non-zero trailing bits")
         #expect(strictBase64("AQ") == nil, "unpadded")
         #expect(strictBase64("") == nil)
-    }
-
-    @Test func theV3AadNeedsAFullFingerprintAndADeviceId() throws {
-        #expect(throws: DeviceEnvelopeError.malformedFingerprint) {
-            try deviceEnvelopeAAD(version: 3, deviceId: "d", pgpFingerprint: "ABCD")
-        }
-        #expect(throws: DeviceEnvelopeError.emptyDeviceId) {
-            try deviceEnvelopeAAD(version: 3, deviceId: "", pgpFingerprint: V3Fixtures.active)
-        }
-        #expect(throws: DeviceEnvelopeError.unsupportedVersion) {
-            try deviceEnvelopeAAD(version: 6, deviceId: "d", pgpFingerprint: V3Fixtures.active)
-        }
-        // v2 keeps accepting what it always did.
-        _ = try deviceEnvelopeAAD(version: 2, deviceId: "d", pgpFingerprint: "ABCD")
-        let v2 = try deviceEnvelopeAAD(version: 2, deviceId: "d", pgpFingerprint: V3Fixtures.active)
-        let v3 = try deviceEnvelopeAAD(version: 3, deviceId: "d", pgpFingerprint: V3Fixtures.active)
-        #expect(v2 != v3, "the domain is part of the AAD")
     }
 }
 
@@ -1139,11 +1012,12 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
         return object
     }
 
-    /// Omitting the list resets the claim to [2] and the browser refuses v3.
-    @Test func publishAdvertisesEveryEnvelopeVersion() async {
+    /// HPKE only: a server offering v2/v3 has nothing it may seal. Omitting
+    /// the list would reset the claim to [2].
+    @Test func publishAdvertisesOnlyTheHPKEVersions() async {
         let captured = Box<[URLRequest]>([])
         _ = await client(captured: captured).publish(publicKey: Data([4, 1, 2]))
-        #expect(body(captured.value.last)["envelopeVersions"] as? [Int] == [2, 3, 4, 5])
+        #expect(body(captured.value.last)["envelopeVersions"] as? [Int] == [4, 5])
     }
 
     @Test func theEnvelopeCarriesItsDeliveryMetadata() async {

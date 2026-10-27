@@ -30,8 +30,8 @@ nonisolated enum EnrollmentReport: Equatable, Sendable {
     /// on a proven loss — a deliberate teardown — never on a probe that merely
     /// found nothing, which is also what a device awaiting delivery looks like.
     case notEnrolled
-    /// The bare boolean, meaning "opens a v2 envelope". A converted account
-    /// refuses it.
+    /// The bare boolean: this device holds a single-key record (a v4
+    /// delivery, or an earlier v2 one). A converted account refuses it.
     case legacy
     /// Confirms the keyring delivery (v3 or v5) the server recorded for this
     /// device, and nothing else.
@@ -178,7 +178,7 @@ private nonisolated func decideLegacy(
         material = merged
     case .keyring?:
         // A converted account's ring cannot be replaced by one armored key;
-        // the server sends v2 only to legacy accounts, so this is stale.
+        // the server sends v4 only to legacy accounts, so this is stale.
         return .refusedIncomparable
     }
     let record = VaultRecord(kind: .legacyArmor, material: material, identityFingerprint: fingerprint)

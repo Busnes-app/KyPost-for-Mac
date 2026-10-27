@@ -11,67 +11,39 @@ import Testing
 // MARK: - Envelope
 
 @Suite struct DeviceEnvelopeParsingTests {
-    /// `v` is emitted as a **raw JSON token**, so the default `2` reaches the
-    /// parser as a JSON *number* — which is what the browser serialises and
-    /// what the normative spec shows (`"v": 1`, unquoted). A quoted form is
-    /// passed as `"\"2\""` where a test needs it.
-    private func envelope(
-        v: String = "2",
-        alg: String = "ECDH-P256+HKDF-SHA256+A256GCM",
-        epk: Data = Data([0x04] + Array(repeating: UInt8(1), count: 64)),
-        iv: Data = Data(repeating: 2, count: 12),
-        ct: Data = Data(repeating: 3, count: 32)
-    ) -> String {
-        """
-        {"v":\(v),"alg":"\(alg)","epk":"\(epk.base64EncodedString())",
-         "iv":"\(iv.base64EncodedString())","ct":"\(ct.base64EncodedString())"}
+    /// A v2 envelope the retired parser accepted, the tag as a raw JSON token.
+    private func v2(_ tag: String) -> String {
+        let epk = Data([0x04] + Array(repeating: UInt8(1), count: 64)).base64EncodedString()
+        let iv = Data(repeating: 2, count: 12).base64EncodedString()
+        let ct = Data(repeating: 3, count: 32).base64EncodedString()
+        return """
+        {"v":\(tag),"alg":"ECDH-P256+HKDF-SHA256+A256GCM","epk":"\(epk)","iv":"\(iv)","ct":"\(ct)"}
         """
     }
 
-    @Test func parsesAWellFormedEnvelope() {
-        let fields = parseDeviceEnvelope(envelope())
-        #expect(fields?.epk.count == 65)
-        #expect(fields?.iv.count == 12)
+    @Test func onlyHPKEVersionsAreSupported() {
+        #expect(supportedEnvelopeVersions == [4, 5])
     }
 
-    /// The version tag arrives as a JSON number from the server, but a quoted
-    /// string must parse too — Android reads the primitive's textual content,
-    /// and a strict `as? String` check here rejected every real server
-    /// envelope as malformed. Both forms of "2" are accepted; "1" is not.
-    @Test func acceptsTheVersionTagAsNumberOrString() {
-        #expect(parseDeviceEnvelope(envelope(v: "2")) != nil, "number 2")
-        #expect(parseDeviceEnvelope(envelope(v: "\"2\"")) != nil, "string \"2\"")
-        #expect(parseDeviceEnvelope(envelope(v: "\"1\"")) == nil, "string \"1\"")
-    }
-
-    /// Nil means re-run the ceremony, never retry — so every malformed shape
-    /// must land here rather than reaching the ECDH layer.
-    @Test func rejectsAnythingUnsupportedOrWrongSized() {
-        #expect(parseDeviceEnvelope(envelope(v: "1")) == nil)
-        #expect(parseDeviceEnvelope(envelope(alg: "ECDH-P384+HKDF-SHA256+A256GCM")) == nil)
+    /// v2 is retired: neither spelling of its tag parses.
+    @Test func aV2EnvelopeIsNotParsed() {
+        #expect(parseDeviceEnvelope(v2("2")) == nil, "number 2")
+        #expect(parseDeviceEnvelope(v2("\"2\"")) == nil, "string \"2\"")
         #expect(parseDeviceEnvelope("not json") == nil)
         #expect(parseDeviceEnvelope("{}") == nil)
-        // The browser requires exactly 65 bytes with an 0x04 prefix before it
-        // will import the point; matching that here means the ECDH layer is
-        // not the only thing standing between a hostile blob and the key.
-        #expect(parseDeviceEnvelope(envelope(epk: Data(repeating: 4, count: 64))) == nil)
-        #expect(parseDeviceEnvelope(
-            envelope(epk: Data([0x02] + Array(repeating: UInt8(1), count: 64)))
-        ) == nil, "a compressed-point marker must be refused")
-        #expect(parseDeviceEnvelope(envelope(iv: Data(repeating: 2, count: 16))) == nil)
-        // Ciphertext must exceed the GCM tag, or there is no plaintext at all.
-        #expect(parseDeviceEnvelope(envelope(ct: Data(repeating: 3, count: 16))) == nil)
     }
 }
 
 @Suite struct DeviceEnvelopeAADTests {
-    /// The ambiguity length-prefixing removes: under pipe concatenation these
-    /// two produce byte-identical AAD, and each envelope opens under the
-    /// other's binding.
-    @Test func lengthPrefixingRemovesTheDelimiterAmbiguity() throws {
-        let a = try deviceEnvelopeAAD(deviceId: "dev|BADC0FFEE", pgpFingerprint: "0123")
-        let b = try deviceEnvelopeAAD(deviceId: "dev", pgpFingerprint: "BADC0FFEE0123")
-        #expect(a != b)
+    /// The exact layout, so no byte can shift between the fields.
+    @Test func isTheDomainThenLengthPrefixedFields() throws {
+        let aad = try deviceEnvelopeAAD(version: 4, deviceId: "dev|1", pgpFingerprint: V3Fixtures.active)
+        var expected = Data("kypost-device-envelope/v4".utf8)
+        expected.append(contentsOf: [0x00, 0x05])
+        expected.append(Data("dev|1".utf8))
+        expected.append(contentsOf: [0x00, 0x28])
+        expected.append(Data(V3Fixtures.active.utf8))
+        #expect(aad == expected)
     }
 
     /// The repo's fingerprint producer returns space-grouped hex while the
@@ -81,111 +53,29 @@ import Testing
     /// the one alarm this feature has.
     @Test func normalisesSpacedAndLowercaseFingerprints() throws {
         let spaced = try deviceEnvelopeAAD(
-            deviceId: "d1", pgpFingerprint: "abcd 1234 ABCD 1234"
+            version: 4, deviceId: "d1", pgpFingerprint: "5f11 7951 610c af01 500f a059 cde6 3f0e bec9 34a2"
         )
-        let bare = try deviceEnvelopeAAD(deviceId: "d1", pgpFingerprint: "ABCD1234ABCD1234")
+        let bare = try deviceEnvelopeAAD(version: 4, deviceId: "d1", pgpFingerprint: V3Fixtures.active)
         #expect(spaced == bare)
     }
 
     @Test func refusesAFingerprintThatIsNotHex() {
         #expect(throws: DeviceEnvelopeError.malformedFingerprint) {
-            try deviceEnvelopeAAD(deviceId: "d1", pgpFingerprint: "not-a-fingerprint")
+            try deviceEnvelopeAAD(version: 4, deviceId: "d1", pgpFingerprint: "not-a-fingerprint")
         }
         #expect(throws: DeviceEnvelopeError.malformedFingerprint) {
-            try deviceEnvelopeAAD(deviceId: "d1", pgpFingerprint: "   ")
+            try deviceEnvelopeAAD(version: 4, deviceId: "d1", pgpFingerprint: "   ")
         }
     }
 
-    @Test func bindsToBothTheDeviceAndTheIdentity() throws {
-        let base = try deviceEnvelopeAAD(deviceId: "d1", pgpFingerprint: "ABCD")
-        let otherDevice = try deviceEnvelopeAAD(deviceId: "d2", pgpFingerprint: "ABCD")
-        let otherIdentity = try deviceEnvelopeAAD(deviceId: "d1", pgpFingerprint: "BEEF")
+    @Test func bindsToTheVersionTheDeviceAndTheIdentity() throws {
+        let base = try deviceEnvelopeAAD(version: 4, deviceId: "d1", pgpFingerprint: V3Fixtures.active)
+        let otherVersion = try deviceEnvelopeAAD(version: 5, deviceId: "d1", pgpFingerprint: V3Fixtures.active)
+        let otherDevice = try deviceEnvelopeAAD(version: 4, deviceId: "d2", pgpFingerprint: V3Fixtures.active)
+        let otherIdentity = try deviceEnvelopeAAD(version: 4, deviceId: "d1", pgpFingerprint: V3Fixtures.historical)
+        #expect(base != otherVersion)
         #expect(base != otherDevice)
         #expect(base != otherIdentity)
-    }
-}
-
-@Suite struct DeviceEnvelopeOpenTests {
-    /// Seals exactly as the browser does, then opens it — the only way to know
-    /// the HKDF salt, info string, AAD layout and GCM parameters all agree.
-    private func seal(
-        deviceKey: P256.KeyAgreement.PrivateKey,
-        aad: Data,
-        plaintext: Data
-    ) throws -> (DeviceEnvelopeFields, SharedSecret) {
-        let ephemeral = P256.KeyAgreement.PrivateKey()
-        let ownRaw = deviceKey.publicKey.x963Representation
-        let browserSecret = try ephemeral.sharedSecretFromKeyAgreement(
-            with: deviceKey.publicKey
-        )
-        let key = browserSecret.hkdfDerivedSymmetricKey(
-            using: SHA256.self,
-            salt: ownRaw,
-            sharedInfo: Data(envelopeInfo.utf8),
-            outputByteCount: 32
-        )
-        let nonce = try AES.GCM.Nonce(data: Data(repeating: 7, count: 12))
-        let box = try AES.GCM.seal(plaintext, using: key, nonce: nonce, authenticating: aad)
-        let fields = DeviceEnvelopeFields(
-            epk: ephemeral.publicKey.x963Representation,
-            iv: Data(box.nonce),
-            ct: box.ciphertext + box.tag
-        )
-        let deviceSecret = try deviceKey.sharedSecretFromKeyAgreement(
-            with: P256.KeyAgreement.PublicKey(x963Representation: fields.epk)
-        )
-        return (fields, deviceSecret)
-    }
-
-    @Test func opensAnEnvelopeSealedTheWayTheBrowserSealsIt() throws {
-        let deviceKey = P256.KeyAgreement.PrivateKey()
-        let aad = try deviceEnvelopeAAD(deviceId: "d1", pgpFingerprint: "ABCD1234")
-        let plaintext = Data("-----BEGIN PGP PRIVATE KEY BLOCK-----".utf8)
-        let (fields, secret) = try seal(deviceKey: deviceKey, aad: aad, plaintext: plaintext)
-
-        let opened = openDeviceEnvelope(
-            sharedSecret: secret,
-            ownRawPublicKey: deviceKey.publicKey.x963Representation,
-            fields: fields,
-            aad: aad
-        )
-        #expect(opened == plaintext)
-    }
-
-    /// A failure is hostile or stale, never a retry: the AAD binds the sealing
-    /// to this device and this identity.
-    @Test func refusesAnEnvelopeBoundToAnotherIdentity() throws {
-        let deviceKey = P256.KeyAgreement.PrivateKey()
-        let sealedAAD = try deviceEnvelopeAAD(deviceId: "d1", pgpFingerprint: "ABCD1234")
-        let (fields, secret) = try seal(
-            deviceKey: deviceKey, aad: sealedAAD, plaintext: Data("secret".utf8)
-        )
-        let otherAAD = try deviceEnvelopeAAD(deviceId: "d1", pgpFingerprint: "BEEF5678")
-
-        #expect(openDeviceEnvelope(
-            sharedSecret: secret,
-            ownRawPublicKey: deviceKey.publicKey.x963Representation,
-            fields: fields,
-            aad: otherAAD
-        ) == nil)
-    }
-
-    /// The HKDF salt is this device's own public key, which is what makes a
-    /// cross-device replay fail even before the AAD is consulted.
-    @Test func refusesAnEnvelopeMintedForAnotherDevice() throws {
-        let deviceKey = P256.KeyAgreement.PrivateKey()
-        let aad = try deviceEnvelopeAAD(deviceId: "d1", pgpFingerprint: "ABCD1234")
-        let (fields, secret) = try seal(
-            deviceKey: deviceKey, aad: aad, plaintext: Data("secret".utf8)
-        )
-        let otherDevice = P256.KeyAgreement.PrivateKey()
-
-        #expect(openDeviceEnvelope(
-            sharedSecret: secret,
-            ownRawPublicKey: otherDevice.publicKey.x963Representation,
-            fields: fields,
-            aad: aad
-        ) == nil)
     }
 }
 
@@ -490,6 +380,17 @@ private final class FakeSealer: EnrollmentSealer, @unchecked Sendable {
         let outcome = await ceremony(transport: transport, sealer: sealer).run()
         #expect(outcome == .envelopeRejected)
         #expect(transport.reported == nil, "a failed open must not report enrolment")
+    }
+
+    /// A retired v2/v3 delivery is the server's to fix, and says so.
+    @Test func aRetiredEnvelopeFormatAsksForAServerUpdate() async {
+        let transport = FakeTransport()
+        transport.envelopeResults = [.sealed("{}")]
+        let sealer = FakeSealer()
+        sealer.storeError = EnrollmentSealerError.unsupportedEnvelopeVersion
+        let outcome = await ceremony(transport: transport, sealer: sealer).run()
+        #expect(outcome == .failed(retiredEnvelopeMessage))
+        #expect(transport.reported == nil)
     }
 
     /// Not an error: the user dismissed a prompt they raised, and the envelope
