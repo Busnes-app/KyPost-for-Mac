@@ -49,7 +49,8 @@ app.
 ## Trust boundaries
 
 1. **Device → relay.** HTTPS, a per-host SPKI SHA-256 pin on top of normal system trust,
-   and redirects allowed only to the same host and port over HTTPS
+   RSA ≥ 2048 or EC ≥ P-256 on every certificate of the evaluated chain, TLS ≥ 1.2, and
+   redirects allowed only to the same host and port over HTTPS
    (`Data/Networking/PinnedSessionDelegate.swift`). Pairing runs on its own pinned connection
    (`Data/Networking/RelayPairingConnection.swift`).
 2. **Relay → device data.** Signature verdicts are decided on this device. The relay supplies
@@ -93,6 +94,7 @@ app.
 | Weakness | Counter | Where |
 |---|---|---|
 | TLS interception with a mis-issued certificate | Per-host SPKI SHA-256 pin; mismatch, unhashable key or unreadable pin all refuse | `Data/Networking/PinnedSessionDelegate.swift` (`decision`, `failure`) |
+| Weak keys | TLS: system trust, then RSA ≥ 2048 / EC ≥ P-256 on the whole chain, anchor included. OpenPGP: RSA ≥ 2048 actual bits on every key packet, other algorithms by allow list ([STRONG-CRYPTO.md](STRONG-CRYPTO.md)) | `PinnedSessionDelegate.acceptsServerTrust`, `Domain/Security/PgpKeyFloor.swift` |
 | Credential leak through a redirect | Redirects only to the same host and effective port over HTTPS, judged from the original request | `PinnedSessionDelegate.allowsRedirect` |
 | Response caching and cookies | Ephemeral relay sessions, no URL cache, no cookie store | `PinnedSessionDelegate.relaySessionConfiguration` |
 | Tracking pixels and remote loads | Block-all WebKit rule list until the user loads remote content | `Presentation/Components/RemoteContentBlocker.swift` |
@@ -130,7 +132,7 @@ Each item is in [SECURITY.md](../SECURITY.md) with what to do about it.
 ## Evidence
 
 - **Tests:** `KyPost Tests` covers pinning and redirects (`PinnedSessionTests`,
-  `SpkiPinLinkTests`), the PIN and lockout (`AppLockPinTests`, `AppLockPinAttemptTests`), the
+  `SpkiPinLinkTests`), the key-size floors (`TransportKeyFloorTests`, `PgpKeyFloorTests`), the PIN and lockout (`AppLockPinTests`, `AppLockPinAttemptTests`), the
   wipe (`SecurityWipeTests`, `SecurityWipeStepsTests`), key custody (`VaultCustodyTests`,
   `DeviceEnrollmentTests`, `HPKEDeviceEnvelopeTests`), the reader's remote-content blocking (`RemoteContentBlockingTests`)
   and OpenPGP (`GopenPGPCryptoTests`, `PgpMimeReaderTests`). CI runs the unit target on the

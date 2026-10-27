@@ -403,6 +403,8 @@ enum MailOutcome: Equatable, Sendable {
             ?? "The server's security certificate changed — re-pair the device."
         case .pinUnreadable: error.errorDescription
             ?? "KyPost couldn't read this server's certificate pin — try again."
+        case .certificateRefused: error.errorDescription
+            ?? "This server's certificate was refused."
         case .server(statusCode: 502): "Couldn't reach the mail server — try again shortly."
         case .server(let statusCode): "The server returned an error (status \(statusCode))."
         case .transport(let description): description

@@ -34,6 +34,9 @@ enum NetworkError: Error, Equatable, LocalizedError {
     /// connection was refused rather than left to system trust. Not a
     /// mismatch: nothing was compared, and re-pairing is not the remedy.
     case pinUnreadable
+    /// System trust refused the server's certificate chain, or a certificate
+    /// in it has a key below RSA-2048 / P-256 (docs/STRONG-CRYPTO.md).
+    case certificateRefused
     /// 503 — backend config issue; persistent error, cannot retry (spec §3).
     case serviceUnavailable
     /// The response body exceeded the caller's cap. A hostile or broken relay
@@ -57,6 +60,8 @@ enum NetworkError: Error, Equatable, LocalizedError {
             String(localized: "The server's security certificate changed and no longer matches this pairing. If you rotated your server's certificate, remove the pairing in Settings → Connection and re-pair; otherwise the connection may be intercepted.")
         case .pinUnreadable:
             String(localized: "KyPost couldn't read this server's certificate pin from the Keychain, so it didn't connect. Unlock this device and try again.")
+        case .certificateRefused:
+            String(localized: "KyPost didn't connect: this server's certificate isn't trusted, or uses a key shorter than RSA 2048 or ECDSA P-256.")
         case .responseTooLarge:
             String(localized: "The server sent more data than KyPost will accept for this request.")
         case .rateLimited(let retryAfter):
