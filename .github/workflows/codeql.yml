@@ -10,59 +10,71 @@ on:
     branches: [main]
   schedule:
     - cron: "17 7 * * 2"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Each non-PR run gets its own group: a ref-keyed group drops queued main runs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  analyze:
-    name: Analyze (${{ matrix.language }})
-    runs-on: ${{ matrix.runner }}
+  actions:
+    name: Analyze (actions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: actions
+          queries: security-extended
+          build-mode: none
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:actions
+
+  swift:
+    name: Analyze (swift)
+    # About 42 macOS minutes, so not per pull request: main, weekly and by hand.
+    if: github.event_name != 'pull_request'
+    runs-on: macos-26
     timeout-minutes: 120
     permissions:
       contents: read
       security-events: write
       actions: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: swift
-            build-mode: manual
-            runner: macos-26
-          - language: actions
-            build-mode: none
-            runner: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: matrix.language == 'swift'
-        name: Select Xcode
+      - name: Select Xcode
         run: .github/scripts/select-xcode.sh
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
-          languages: ${{ matrix.language }}
+          languages: swift
           queries: security-extended
-          build-mode: ${{ matrix.build-mode }}
+          build-mode: manual
       # Both platforms: the app has iOS-only and macOS-only code. arm64 only and
       # unsigned: the source is arch-neutral and nothing here runs.
-      - if: matrix.language == 'swift'
-        name: Build for the iOS Simulator
+      - name: Build for the iOS Simulator
         run: >-
           .github/scripts/run-xcodebuild.sh build -scheme KyPost
           -destination 'generic/platform=iOS Simulator'
           ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO
-      - if: matrix.language == 'swift'
-        name: Build for macOS
+      - name: Build for macOS
         run: >-
           .github/scripts/run-xcodebuild.sh build -scheme KyPost
           -destination 'platform=macOS'
           ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO
       - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
-          category: /language:${{ matrix.language }}
+          category: /language:swift
