@@ -43,6 +43,8 @@ Until you pair, the inbox says how: on a Mac it gives the web steps above, and o
 
 MIT, developed by Busnes.app — see [LICENSE.txt](LICENSE.txt).
 
+[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/KyPost-for-Mac/branch/main)](https://octocounts.com/github/Busnes-app/KyPost-for-Mac/tree/main)
+
 ## What it can do
 
 - Read mail with folders, keyword tabs and an HTML reader.
