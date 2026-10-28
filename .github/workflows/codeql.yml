@@ -1,0 +1,68 @@
+name: CodeQL
+
+# Replaces code scanning's default setup, which can only scan Actions here:
+# Swift needs a build. Default setup must be off for these uploads to land.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 7 * * 2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: swift
+            build-mode: manual
+            runner: macos-26
+          - language: actions
+            build-mode: none
+            runner: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: matrix.language == 'swift'
+        name: Select Xcode
+        run: .github/scripts/select-xcode.sh
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+          build-mode: ${{ matrix.build-mode }}
+      # Both platforms: the app has iOS-only and macOS-only code. arm64 only and
+      # unsigned: the source is arch-neutral and nothing here runs.
+      - if: matrix.language == 'swift'
+        name: Build for the iOS Simulator
+        run: >-
+          .github/scripts/run-xcodebuild.sh build -scheme KyPost
+          -destination 'generic/platform=iOS Simulator'
+          ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO
+      - if: matrix.language == 'swift'
+        name: Build for macOS
+        run: >-
+          .github/scripts/run-xcodebuild.sh build -scheme KyPost
+          -destination 'platform=macOS'
+          ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
