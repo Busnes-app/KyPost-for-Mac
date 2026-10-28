@@ -2,7 +2,6 @@
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15930/badge)](https://www.bestpractices.dev/projects/15930)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/KyPost-for-Mac/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/KyPost-for-Mac)
-[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/KyPost-for-Mac/branch/main)](https://octocounts.com/github/Busnes-app/KyPost-for-Mac/tree/main)
 
 A native SwiftUI mail client for macOS and iOS. It connects to a KyPost mail relay.
 
@@ -43,6 +42,8 @@ Until you pair, the inbox says how: on a Mac it gives the web steps above, and o
 ## License
 
 MIT, developed by Busnes.app — see [LICENSE.txt](LICENSE.txt).
+
+[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/KyPost-for-Mac/branch/main)](https://octocounts.com/github/Busnes-app/KyPost-for-Mac/tree/main)
 
 ## What it can do
 
