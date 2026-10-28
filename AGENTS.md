@@ -80,6 +80,7 @@ Default section order:
 - Run: `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`.
 - Code scanning is `.github/workflows/codeql.yml`: Swift from unsigned arm64
   iOS Simulator and macOS builds (both, for the `#if os()` code), plus Actions.
+  Swift runs on push to `main`, weekly and by hand, not on pull requests.
   Repository default setup must stay off or its uploads are rejected.
 - iOS-only code (`#if os(iOS)`, e.g. `KyIdentitySignOnCoordinatorTests`) runs
   only under an iOS destination: `xcodebuild test -scheme "KyPost"
