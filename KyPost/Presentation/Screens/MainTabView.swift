@@ -123,16 +123,22 @@ struct MainTabView: View {
             }
         case .tabBar:
             TabView(selection: selection) {
-                Tab("Inbox", systemImage: "tray.fill", value: AppTab.inbox) {
+                Tab(value: AppTab.inbox) {
                     inboxTab
+                } label: {
+                    Label { Text("Inbox") } icon: { tabIcon("tray", .inbox) }
                 }
-                Tab("Contacts", systemImage: "person.2.fill", value: AppTab.contacts) {
+                Tab(value: AppTab.contacts) {
                     contactsTab
+                } label: {
+                    Label { Text("Contacts") } icon: { tabIcon("person.2", .contacts) }
                 }
-                Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
+                Tab(value: AppTab.settings) {
                     NavigationStack {
                         SettingsView()
                     }
+                } label: {
+                    Label { Text("Settings") } icon: { tabIcon("gearshape", .settings) }
                 }
             }
         }
@@ -191,6 +197,17 @@ struct MainTabView: View {
     }
 
     @ViewBuilder
+    /// Outline unless selected. The iOS 26 tab bar fills every SF Symbol it
+    /// is handed by name, so the icon goes in as a template image.
+    private func tabIcon(_ symbol: String, _ tab: AppTab) -> Image {
+        let name = router.selectedTab == tab ? symbol + ".fill" : symbol
+#if os(iOS)
+        return Image(uiImage: UIImage(systemName: name)!.withRenderingMode(.alwaysTemplate))
+#else
+        return Image(systemName: name)
+#endif
+    }
+
     private var inboxTab: some View {
         switch shell.layout {
         case .split:

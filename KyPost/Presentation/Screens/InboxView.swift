@@ -210,12 +210,12 @@ struct InboxView: View {
             if isSelecting {
                 // A plain row while editing, so the list's own tap handling
                 // toggles the selection instead of opening the message.
-                EmailListRow(email: email)
+                EmailListRow(email: email, highlighted: isOpen(email))
             } else {
                 Button {
                     state.open(email)
                 } label: {
-                    EmailListRow(email: email)
+                    EmailListRow(email: email, highlighted: isOpen(email))
                 }
                 .buttonStyle(.plain)
             }
@@ -246,13 +246,21 @@ struct InboxView: View {
                 emailActions(for: [email.serverId])
             }
         }
-        // The split's detail pane names the row it shows.
+        // The split's detail pane names the row it shows: accent-soft with
+        // an accent bar, the suite's selection.
         .listRowBackground(
-            state.layout == .split && state.openKey == email.id
-                ? theme.accent.opacity(0.18)
-                : theme.bg
+            (isOpen(email) ? theme.accentSoft : theme.bg)
+                .overlay(alignment: .leading) {
+                    if isOpen(email) {
+                        Rectangle().fill(theme.accent).frame(width: 3)
+                    }
+                }
         )
         .listRowSeparatorTint(theme.line)
+    }
+
+    private func isOpen(_ email: Email) -> Bool {
+        state.layout == .split && state.openKey == email.id
     }
 
     /// The selection, refusing to grow past the relay's per-request cap.
