@@ -610,7 +610,8 @@ struct MacRootView: View {
                     message: selectedEmails.count > 1
                         ? "\(selectedEmails.count) emails selected"
                         : "Select an email",
-                    systemImage: "envelope.open"
+                    systemImage: "envelope.open",
+                    framed: false
                 )
                 .frame(maxWidth: 340)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

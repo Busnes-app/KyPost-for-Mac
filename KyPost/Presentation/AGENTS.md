@@ -163,7 +163,9 @@ Domain.
   it builds, so that would ship an active payload under the user's address.
 - **Fonts carry meaning**: `AppFont.ui` for names and prose (message bodies included), `AppFont.mono`
   for email addresses and other machine text. A bare address rendered in mono
-  is the signal a recipient isn't in the address book.
+  is the signal a recipient isn't in the address book. The reader header's
+  sender address sits under the sender's name, so it is `AppFont.ui`, as are
+  avatar initials.
 - **Only four font weights ship.** Space Grotesk and IBM Plex Mono are bundled
   from `Resources/Fonts` in regular, medium, semibold, and bold only. Any other
   `AppFont` weight silently resolves to the nearest bundled face — add the TTF
@@ -320,9 +322,12 @@ Domain.
   an infinite-height content constraint on its macOS window. The reader navigation bar does not repeat
   the sender, and client-protected PGP/MIME transport parts are not presented
   as attachments. Message bodies (plain, decrypted and HTML) are set in the
-  body face, Space Grotesk 15 with open leading, as Gmail sets prose; `<pre>`
-  keeps its monospace. The subject wraps up to three lines, and keyword chips
-  are the list row's outlined ink chips. The HTML constrains text, tables, images, and preformatted
+  body face, Space Grotesk 15 with open leading, as Gmail sets prose, in
+  `inkStrong` like the subject (muted ink is for the encryption notice and
+  metadata); `<pre>` keeps its monospace. The subject wraps up to three lines, and keyword chips
+  are the list row's outlined ink chips. The mail action icons are ink
+  (`.tint(theme.ink)`), Delete included; with no message open the reader is
+  an unframed `EmptyStateView` (muted icon and text, no dashed box). The HTML constrains text, tables, images, and preformatted
   blocks to the reader width. Decrypt uses `PrimaryButtonStyle`, whose accent
   fill and `readableOnAccent` foreground are contrast-tested for every theme.
 - **The reader's To/Cc lines are flattened** (`displayHeaderText`): controls,

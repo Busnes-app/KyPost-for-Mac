@@ -160,7 +160,7 @@ struct EmailDetailView: View {
                     Text(shown.body)
                         .font(AppFont.ui(15))
                         .lineSpacing(3)
-                        .foregroundStyle(theme.ink)
+                        .foregroundStyle(theme.inkStrong)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
@@ -181,11 +181,11 @@ struct EmailDetailView: View {
             // In the split the bottom of the window belongs to the floating
             // tab bar on iPhone, so the actions join the reader's top bar.
             ToolbarItemGroup(placement: shellLayout == .split ? .primaryAction : .bottomBar) {
-                mailActionButtons
+                mailActionButtons.tint(theme.ink)
             }
 #else
             ToolbarItemGroup {
-                mailActionButtons
+                mailActionButtons.tint(theme.ink)
             }
 #endif
         }
@@ -647,7 +647,7 @@ struct EmailDetailView: View {
                 Text(decrypted.plain ?? "")
                     .font(AppFont.ui(15))
                     .lineSpacing(3)
-                    .foregroundStyle(theme.ink)
+                    .foregroundStyle(theme.inkStrong)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
                     .padding()
@@ -797,7 +797,7 @@ struct EmailDetailView: View {
                         .font(AppFont.ui(15, weight: .medium))
                         .foregroundStyle(theme.inkStrong)
                     Text(email.senderEmail)
-                        .font(AppFont.mono(12))
+                        .font(AppFont.ui(12))
                         .foregroundStyle(theme.secondaryInk)
                     recipientLines
                 }
