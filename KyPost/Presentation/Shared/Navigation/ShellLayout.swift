@@ -32,6 +32,22 @@ nonisolated enum ShellLayout: Hashable, Sendable {
     }
 }
 
+/// How the iOS shell moves between Inbox, Contacts and Settings.
+nonisolated enum ShellNavigation: Hashable, Sendable {
+    /// The system tab bar: iPhone, the folded iPhone Duo, and a compact
+    /// iPad window (Slide Over, a narrow Split View).
+    case tabBar
+    /// A navigation rail on the trailing edge: the unfolded iPhone Duo and
+    /// iPad. Always on the right, by the owner's rule; there is no setting.
+    case rail
+
+    /// A regular-width window gets the rail; the width alone never does, so
+    /// a wide but compact window keeps the tab bar.
+    static func resolve(isRegularWidth: Bool) -> ShellNavigation {
+        isRegularWidth ? .rail : .tabBar
+    }
+}
+
 /// Whether the inbox list is on screen, from the three things that hide it.
 nonisolated struct InboxListPresence: Equatable, Sendable {
     var onInboxTab: Bool

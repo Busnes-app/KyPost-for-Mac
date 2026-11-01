@@ -55,9 +55,7 @@ struct AppPinSetupView: View {
                 .textFieldStyle(.roundedBorder)
 
             if let message {
-                Text(message)
-                    .font(AppFont.ui(12))
-                    .foregroundStyle(SemanticColors.danger)
+                StatusText(message, kind: .danger, size: 12)
                     .frame(maxWidth: 380, alignment: .leading)
             }
 

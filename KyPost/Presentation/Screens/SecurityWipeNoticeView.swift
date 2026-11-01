@@ -31,7 +31,7 @@ struct ManualRecoveryView: View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 42))
-                .foregroundStyle(SemanticColors.danger)
+                .foregroundStyle(theme.danger)
             Text("Manual recovery required")
                 .font(AppFont.ui(17, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
@@ -94,7 +94,7 @@ struct SecurityWipeNoticeBanner: View {
     }
 
     private var tint: Color {
-        if case .complete = result { theme.accent } else { SemanticColors.danger }
+        if case .complete = result { theme.success } else { theme.danger }
     }
 
     private var title: String {

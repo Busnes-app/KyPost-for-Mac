@@ -18,17 +18,17 @@ struct StatusBadgeView: View {
     var body: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(isActive ? SemanticColors.successBorder : theme.line)
+                .fill(isActive ? theme.success : theme.line)
                 .frame(width: 7, height: 7)
             Text(label)
                 .font(AppFont.ui(12, weight: .medium))
-                .foregroundStyle(isActive ? SemanticColors.successText : theme.ink)
+                .foregroundStyle(isActive ? theme.success : theme.ink)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
         .background(
             Capsule().strokeBorder(
-                isActive ? SemanticColors.successBorder : theme.line,
+                isActive ? theme.success : theme.line,
                 lineWidth: 1
             )
         )

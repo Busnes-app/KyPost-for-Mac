@@ -54,15 +54,11 @@ struct MfaApprovalView: View {
                 case .sending:
                     ProgressView()
                 case .done(let message):
-                    Text(message)
-                        .font(AppFont.ui(15, weight: .medium))
-                        .foregroundStyle(SemanticColors.successText)
+                    StatusText(message, kind: .success, size: 15, weight: .medium)
                     Button("Close") { dismiss() }
                         .buttonStyle(PrimaryButtonStyle())
                 case .failed(let message):
-                    Text(message)
-                        .font(AppFont.ui(13))
-                        .foregroundStyle(SemanticColors.danger)
+                    StatusText(message, kind: .danger, size: 13)
                         .multilineTextAlignment(.center)
                     actionButtons
                 }
@@ -105,9 +101,7 @@ struct MfaApprovalView: View {
                     }
                 }
             } else {
-                Text("This request didn't include a verification number, so it can't be approved from this device. Deny it and start the sign-in again.")
-                    .font(AppFont.ui(13))
-                    .foregroundStyle(SemanticColors.warning)
+                StatusText("This request didn't include a verification number, so it can't be approved from this device. Deny it and start the sign-in again.", kind: .warning, size: 13)
                     .multilineTextAlignment(.center)
             }
 

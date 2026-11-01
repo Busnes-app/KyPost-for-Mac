@@ -61,8 +61,7 @@ struct KyPostApp: App {
                 .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
-                .environment(\.theme, themeManager.palette)
-                .preferredColorScheme(themeManager.palette.preferredColorScheme)
+                .themed(themeManager)
                 .lockCover(theme: themeManager.palette)
                 .protectedFromCapture()
                 .lockAwareRouting(router)
@@ -75,9 +74,8 @@ struct KyPostApp: App {
                 .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
-                .environment(\.theme, themeManager.palette)
+                .themed(themeManager)
                 .environment(\.deviceIsEnrolled, graph.enrollmentVault.isEnrolled)
-                .preferredColorScheme(themeManager.palette.preferredColorScheme)
                 .background(themeManager.palette.bg.ignoresSafeArea())
                 .lockCover(theme: themeManager.palette)
                 .protectedFromCapture()
@@ -91,8 +89,7 @@ struct KyPostApp: App {
                 .id(environment.generation)
                 .environment(themeManager)
                 .environment(router)
-                .environment(\.theme, themeManager.palette)
-                .preferredColorScheme(themeManager.palette.preferredColorScheme)
+                .themed(themeManager)
                 .background(themeManager.palette.bg.ignoresSafeArea())
                 .lockCover(theme: themeManager.palette)
                 .protectedFromCapture()
@@ -128,11 +125,10 @@ struct KyPostApp: App {
 #if os(iOS)
                 .environment(signOn)
 #endif
-                .environment(\.theme, themeManager.palette)
+                .themed(themeManager)
                 // Read here rather than in a row's body: it reads the Keychain,
                 // and SwiftUI re-evaluates a list row's body constantly.
                 .environment(\.deviceIsEnrolled, graph.enrollmentVault.isEnrolled)
-                .preferredColorScheme(themeManager.palette.preferredColorScheme)
                 .background(themeManager.palette.bg.ignoresSafeArea())
                 .onOpenURL { url in
 #if os(iOS)

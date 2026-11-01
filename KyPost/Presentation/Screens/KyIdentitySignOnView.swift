@@ -60,9 +60,7 @@ struct KyIdentitySignOnView: View {
                 }
 
                 if let status = coordinator.status {
-                    Text(status)
-                        .font(AppFont.ui(13))
-                        .foregroundStyle(SemanticColors.warning)
+                    StatusText(status, kind: .warning, size: 13)
                         .multilineTextAlignment(.center)
                 }
             }

@@ -63,8 +63,7 @@ struct MacPreferencesView: View {
         }
         .frame(width: 700, height: 460)
         .tint(themeManager.palette.accent)
-        .environment(\.theme, themeManager.palette)
-        .preferredColorScheme(themeManager.palette.preferredColorScheme)
+        .themed(themeManager)
     }
 }
 
@@ -168,20 +167,29 @@ private struct AppearancePane: View {
     var body: some View {
         Form {
             Section {
-                ForEach(AppTheme.themeNames, id: \.self) { name in
-                    let palette = AppTheme.palette(named: name)
+                Picker("Appearance", selection: Binding(
+                    get: { themeManager.mode },
+                    set: { themeManager.setMode($0) }
+                )) {
+                    ForEach(AppearanceMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+            } footer: {
+                Text("System follows the Mac's light or dark setting.")
+            }
+
+            Section {
+                ForEach(AppTheme.pairs) { pair in
                     Button {
-                        themeManager.setTheme(named: name)
+                        themeManager.setPair(pair)
                     } label: {
                         HStack(spacing: 10) {
-                            HStack(spacing: 3) {
-                                swatch(palette.bg)
-                                swatch(palette.panel)
-                                swatch(palette.accent)
-                            }
-                            Text(name)
+                            ThemePairPreview(pair: pair)
+                            Text(pair.name)
                             Spacer()
-                            if themeManager.themeName == name {
+                            if themeManager.pair.id == pair.id {
                                 Image(systemName: "checkmark")
                                     .fontWeight(.semibold)
                                     .foregroundStyle(themeManager.palette.accent)
@@ -190,24 +198,15 @@ private struct AppearancePane: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(themeManager.pair.id == pair.id ? .isSelected : [])
                 }
             } header: {
                 Text("Theme")
             } footer: {
-                Text("Themes are shared with the web and Android apps.")
+                Text("Each theme has a light and a dark half. Themes are shared with the web and Android apps.")
             }
         }
         .formStyle(.grouped)
-    }
-
-    private func swatch(_ color: Color) -> some View {
-        RoundedRectangle(cornerRadius: 3)
-            .fill(color)
-            .frame(width: 14, height: 14)
-            .overlay(
-                RoundedRectangle(cornerRadius: 3)
-                    .strokeBorder(.quaternary, lineWidth: 0.5)
-            )
     }
 }
 

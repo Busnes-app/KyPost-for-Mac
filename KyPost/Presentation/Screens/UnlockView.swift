@@ -81,7 +81,7 @@ struct UnlockView: View {
                         resetConfirmationShown = true
                     }
                     .buttonStyle(.bordered)
-                    .tint(SemanticColors.danger)
+                    .tint(theme.danger)
                     .disabled(resetting)
                 }
                 .padding(.top, 12)
@@ -90,9 +90,7 @@ struct UnlockView: View {
             // A reset that could not finish rebuilds the app still locked, so
             // this screen is where the user learns it and can press Reset again.
             if resetIsIncomplete, case .incomplete(let steps, _) = AppEnvironment.shared.wipeNotice {
-                Text("The reset could not remove everything (\(steps.joined(separator: ", "))), so KyPost is still locked. Reset again to retry.")
-                    .font(AppFont.ui(13))
-                    .foregroundStyle(SemanticColors.danger)
+                StatusText("The reset could not remove everything (\(steps.joined(separator: ", "))), so KyPost is still locked. Reset again to retry.", kind: .danger)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 360)
             }
@@ -159,9 +157,7 @@ struct UnlockView: View {
                     .foregroundStyle(theme.secondaryInk)
             }
             if let pinStatus {
-                Text(pinStatus)
-                    .font(AppFont.ui(12))
-                    .foregroundStyle(SemanticColors.danger)
+                StatusText(pinStatus, kind: .danger, size: 12)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 320)
             }

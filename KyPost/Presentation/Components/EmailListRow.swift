@@ -107,7 +107,7 @@ struct EmailListRow: View {
                         // KyPost is the more urgent thing to say about it.
                         Image(systemName: "exclamationmark.shield.fill")
                             .font(AppFont.ui(12))
-                            .foregroundStyle(SemanticColors.danger)
+                            .foregroundStyle(theme.danger)
                     }
                     if let symbol = pgpRowSymbol(rowPgpState) {
                         Image(systemName: symbol)

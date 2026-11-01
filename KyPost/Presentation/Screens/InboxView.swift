@@ -66,9 +66,7 @@ struct InboxView: View {
             }
 
             if let message = viewModel.errorMessage {
-                Text(message)
-                    .font(AppFont.ui(13))
-                    .foregroundStyle(SemanticColors.danger)
+                StatusText(message, kind: .danger, size: 13)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
                     .padding(.vertical, 6)
@@ -122,7 +120,10 @@ struct InboxView: View {
         )
         .undoBar(viewModel)
         .relabelsAtMidnight()
-        .toast(message: viewModel.notice ?? viewModel.connectionNotice)
+        .toast(
+            message: viewModel.notice ?? viewModel.connectionNotice,
+            kind: viewModel.notice == nil && viewModel.connectionNotice != nil ? .warning : nil
+        )
         .navigationTitle(navigationTitle)
         .toolbarTitleMenu {
             folderPicker

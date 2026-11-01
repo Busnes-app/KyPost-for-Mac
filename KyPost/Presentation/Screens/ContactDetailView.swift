@@ -293,9 +293,9 @@ struct ContactDetailView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "exclamationmark.shield.fill")
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(SemanticColors.warning)
+                        .foregroundStyle(theme.warning)
                         .frame(width: 32, height: 32)
-                        .background(SemanticColors.warning.opacity(0.15), in: Circle())
+                        .background(theme.warningSoft, in: Circle())
                     VStack(alignment: .leading, spacing: 2) {
                         Text("PGP KEY CHANGED")
                             .font(AppFont.ui(11, weight: .medium))

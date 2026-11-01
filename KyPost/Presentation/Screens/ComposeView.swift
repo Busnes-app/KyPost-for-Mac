@@ -341,7 +341,11 @@ struct ComposeView: View {
         }
 
         if let message = viewModel.errorMessage {
-            messageLine(message, color: SemanticColors.danger)
+            StatusText(message, kind: .danger)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.bottom, 8)
         }
 
         // The only way past an unconfirmed send: Send stays disabled, so a

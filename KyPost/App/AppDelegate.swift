@@ -459,11 +459,13 @@ private enum PrivacySnapshotCover {
         guard let window = covers[ObjectIdentifier(scene)],
               !(window.rootViewController is UIHostingController<LockedCoverContent>)
         else { return }
-        let palette = ThemeManager(defaults: SingletonGraph.launchUserDefaults).palette
+        let system: ColorScheme = scene.traitCollection.userInterfaceStyle == .dark ? .dark : .light
+        let palette = ThemeManager(defaults: SingletonGraph.launchUserDefaults, systemScheme: system).palette
         let controller = UIHostingController(rootView: LockedCoverContent(palette: palette) {
             uncoverReturnedScenes()
         })
         controller.view.backgroundColor = UIColor(palette.bg)
+        controller.overrideUserInterfaceStyle = palette.isLight ? .light : .dark
         window.rootViewController = controller
         window.accessibilityElementsHidden = false
         window.makeKeyAndVisible()
