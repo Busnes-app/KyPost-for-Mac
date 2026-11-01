@@ -322,8 +322,9 @@ Domain.
   an infinite-height content constraint on its macOS window. The reader navigation bar does not repeat
   the sender, and client-protected PGP/MIME transport parts are not presented
   as attachments. Message bodies (plain, decrypted and HTML) are set in the
-  body face, Space Grotesk 15 with open leading, as Gmail sets prose; `<pre>`
-  keeps its monospace. The subject wraps up to three lines, and keyword chips
+  body face, Space Grotesk 15 with open leading, as Gmail sets prose, in
+  `inkStrong` like the subject (muted ink is for the encryption notice and
+  metadata); `<pre>` keeps its monospace. The subject wraps up to three lines, and keyword chips
   are the list row's outlined ink chips. The mail action icons are ink
   (`.tint(theme.ink)`), Delete included; with no message open the reader is
   an unframed `EmptyStateView` (muted icon and text, no dashed box). The HTML constrains text, tables, images, and preformatted
