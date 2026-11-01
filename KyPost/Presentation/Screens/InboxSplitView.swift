@@ -84,7 +84,8 @@ struct InboxSplitView: View {
                 message: state.isSelecting && !state.selection.isEmpty
                     ? String(localized: "\(state.selection.count) selected")
                     : String(localized: "Select an email"),
-                systemImage: "envelope.open"
+                systemImage: "envelope.open",
+                framed: false
             )
             .frame(maxWidth: 340)
             .frame(maxWidth: .infinity, maxHeight: .infinity)

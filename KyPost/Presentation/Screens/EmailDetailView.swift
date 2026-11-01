@@ -181,11 +181,11 @@ struct EmailDetailView: View {
             // In the split the bottom of the window belongs to the floating
             // tab bar on iPhone, so the actions join the reader's top bar.
             ToolbarItemGroup(placement: shellLayout == .split ? .primaryAction : .bottomBar) {
-                mailActionButtons
+                mailActionButtons.tint(theme.ink)
             }
 #else
             ToolbarItemGroup {
-                mailActionButtons
+                mailActionButtons.tint(theme.ink)
             }
 #endif
         }
@@ -797,7 +797,7 @@ struct EmailDetailView: View {
                         .font(AppFont.ui(15, weight: .medium))
                         .foregroundStyle(theme.inkStrong)
                     Text(email.senderEmail)
-                        .font(AppFont.mono(12))
+                        .font(AppFont.ui(12))
                         .foregroundStyle(theme.secondaryInk)
                     recipientLines
                 }
