@@ -158,7 +158,8 @@ struct EmailDetailView: View {
             } else {
                 ScrollView {
                     Text(shown.body)
-                        .font(AppFont.mono(14))
+                        .font(AppFont.ui(15))
+                        .lineSpacing(3)
                         .foregroundStyle(theme.ink)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -644,7 +645,8 @@ struct EmailDetailView: View {
         } else {
             ScrollView {
                 Text(decrypted.plain ?? "")
-                    .font(AppFont.mono(13))
+                    .font(AppFont.ui(15))
+                    .lineSpacing(3)
                     .foregroundStyle(theme.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
@@ -785,6 +787,8 @@ struct EmailDetailView: View {
             Text(email.subject.isEmpty ? "(No subject)" : email.subject)
                 .font(AppFont.ui(20, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 10) {
                 AvatarView(name: email.senderName.isEmpty ? email.senderEmail : email.senderName)
@@ -808,12 +812,13 @@ struct EmailDetailView: View {
             if !email.keywords.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(email.keywords.sorted(), id: \.self) { keyword in
+                        // The list row's chip: outlined, in ink.
                         Text(keyword)
                             .font(AppFont.ui(11, weight: .medium))
-                            .foregroundStyle(theme.readableOnAccent)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(theme.accent))
+                            .foregroundStyle(theme.ink)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Capsule().strokeBorder(theme.line, lineWidth: 1))
                     }
                 }
             }
@@ -910,8 +915,8 @@ struct EmailDetailView: View {
             <meta name="viewport" content="width=device-width, initial-scale=1" />
             <style>
                 body {
-                    font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
-                    font-size: 14px;
+                    font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
+                    font-size: 15px;
                     line-height: 1.5;
                     color: \(cssHex(theme.inkStrong));
                     background-color: \(cssHex(theme.bg));

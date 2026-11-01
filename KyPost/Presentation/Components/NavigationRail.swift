@@ -17,9 +17,9 @@ struct NavigationRail: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            item(.inbox, title: "Inbox", systemImage: "tray.fill")
-            item(.contacts, title: "Contacts", systemImage: "person.2.fill")
-            item(.settings, title: "Settings", systemImage: "gearshape.fill")
+            item(.inbox, title: "Inbox", systemImage: "tray")
+            item(.contacts, title: "Contacts", systemImage: "person.2")
+            item(.settings, title: "Settings", systemImage: "gearshape")
             Spacer(minLength: 0)
         }
         .padding(.top, 16)
@@ -41,9 +41,10 @@ struct NavigationRail: View {
             selection = tab
         } label: {
             VStack(spacing: 4) {
-                Image(systemName: systemImage)
+                // Outline unless selected; never accent on accent-soft.
+                Image(systemName: selected ? systemImage + ".fill" : systemImage)
                     .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(selected ? theme.accent : theme.secondaryInk)
+                    .foregroundStyle(selected ? theme.inkStrong : theme.secondaryInk)
                     .frame(width: 56, height: 32)
                     .background(selected ? theme.accentSoft : .clear, in: Capsule())
                 Text(title)

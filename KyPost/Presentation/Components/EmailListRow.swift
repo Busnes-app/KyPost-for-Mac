@@ -50,6 +50,11 @@ struct EmailListRow: View {
     @Environment(\.inboxToday) private var today
 
     let email: Email
+    /// The split's open message, drawn on `accentSoft`: secondary text moves
+    /// to `ink`, because `secondaryInk` falls below 4.5:1 on that tint.
+    var highlighted = false
+
+    private var secondaryInk: Color { highlighted ? theme.ink : theme.secondaryInk }
 
     /// The PGP marker's spelled-out label when there is one, plus the
     /// paperclip's — VoiceOver announces neither glyph reliably on its own.
@@ -99,7 +104,7 @@ struct EmailListRow: View {
                     // relay sent none — in the device's zone.
                     Text(InboxRules.rowDate(email.receivedAt, now: today))
                         .font(AppFont.ui(12))
-                        .foregroundStyle(theme.secondaryInk)
+                        .foregroundStyle(secondaryInk)
                 }
                 HStack(spacing: 5) {
                     if isPhishing {
@@ -112,7 +117,7 @@ struct EmailListRow: View {
                     if let symbol = pgpRowSymbol(rowPgpState) {
                         Image(systemName: symbol)
                             .font(AppFont.ui(12))
-                            .foregroundStyle(theme.secondaryInk)
+                            .foregroundStyle(secondaryInk)
                     }
                     Text(email.subject)
                         .font(AppFont.ui(14, weight: email.read ? .regular : .medium))
@@ -121,7 +126,7 @@ struct EmailListRow: View {
                     if email.hasAttachments {
                         Image(systemName: "paperclip")
                             .font(AppFont.ui(11))
-                            .foregroundStyle(theme.secondaryInk)
+                            .foregroundStyle(secondaryInk)
                     }
                 }
                 .accessibilityElement(children: .combine)
