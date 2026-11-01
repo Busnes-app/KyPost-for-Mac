@@ -161,7 +161,7 @@ Domain.
   value stops it breaking out of the quotes and does nothing about
   `javascript:` or `data:text/html` — and this app is the *sender* of the mail
   it builds, so that would ship an active payload under the user's address.
-- **Fonts carry meaning**: `AppFont.ui` for names and prose, `AppFont.mono`
+- **Fonts carry meaning**: `AppFont.ui` for names and prose (message bodies included), `AppFont.mono`
   for email addresses and other machine text. A bare address rendered in mono
   is the signal a recipient isn't in the address book.
 - **Only four font weights ship.** Space Grotesk and IBM Plex Mono are bundled
@@ -235,7 +235,12 @@ Domain.
   (`ShellNavigation`, `NavigationRail`): the unfolded iPhone Duo, iPad, a
   large iPhone in landscape. Always the trailing edge, with no setting (the
   owner's rule, 2026-10-31). Compact windows (iPhones in portrait, the
-  folded Duo, Slide Over) keep the system tab bar. The rail shows the
+  folded Duo, Slide Over) keep the system tab bar. Rail and tab icons are
+  outline unless selected (the tab bar gets template `UIImage`s: iOS 26 fills
+  any SF Symbol named to it); the selected rail icon is `inkStrong` on its
+  `accentSoft` pill, never accent on accent-soft. The split's open row is
+  `accentSoft` with a 3 pt accent bar, its secondary text in `ink`
+  (`secondaryInk` falls below 4.5:1 on that tint). The rail shows the
   selected root beside it, so switching roots rebuilds the root (the
   Settings stack starts over); a rail ↔ tab bar switch re-arms the stacks
   like a layout switch.
@@ -314,8 +319,10 @@ Domain.
   layout priority so it owns the remaining scrollable space without imposing
   an infinite-height content constraint on its macOS window. The reader navigation bar does not repeat
   the sender, and client-protected PGP/MIME transport parts are not presented
-  as attachments. Its HTML uses the bundled IBM Plex Mono family, matching
-  plain message bodies, and constrains text, tables, images, and preformatted
+  as attachments. Message bodies (plain, decrypted and HTML) are set in the
+  body face, Space Grotesk 15 with open leading, as Gmail sets prose; `<pre>`
+  keeps its monospace. The subject wraps up to three lines, and keyword chips
+  are the list row's outlined ink chips. The HTML constrains text, tables, images, and preformatted
   blocks to the reader width. Decrypt uses `PrimaryButtonStyle`, whose accent
   fill and `readableOnAccent` foreground are contrast-tested for every theme.
 - **The reader's To/Cc lines are flattened** (`displayHeaderText`): controls,
