@@ -52,6 +52,13 @@ struct MainTabView: View {
                     guard shell.layout == .stack else { return }
                     rebuildStacks()
                 }
+                // The rail shows one root at a time, so coming back to Inbox
+                // or Contacts builds its stack again with the open message or
+                // contact on it.
+                .onChange(of: router.selectedTab) {
+                    guard navigation == .rail, shell.layout == .stack else { return }
+                    rebuildStacks()
+                }
 #if DEBUG && os(iOS)
                 // What the threshold was decided from, for checking it on a
                 // new device. Geometry only: no mail, no account.
