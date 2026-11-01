@@ -8,7 +8,8 @@
 //  KYPOST_SCREENSHOTS=1. KYPOST_THEME_ARGS holds extra launch arguments,
 //  separated by `|` (`-theme.pair|busnes-pair|-theme.mode|dark`): they land
 //  in the argument domain, which the demo's isolated defaults read through.
-//  KYPOST_CAPTURE_PREFIX names the files.
+//  KYPOST_CAPTURE_PREFIX names the files; KYPOST_ORIENTATION is `landscape`,
+//  `keep` (the iPhone Duo, whose pose is set by hand) or portrait.
 //
 
 #if os(iOS)
@@ -46,6 +47,14 @@ final class ThemeCaptureTests: XCTestCase {
     }
 
     private func launch() -> XCUIApplication {
+        // KYPOST_ORIENTATION=landscape for the wide captures; the iPhone
+        // Duo's pose is set by hand, so `keep` leaves it alone.
+        switch ProcessInfo.processInfo.environment["KYPOST_ORIENTATION"] {
+        case "landscape": XCUIDevice.shared.orientation = .landscapeLeft
+        case "keep": break
+        default: XCUIDevice.shared.orientation = .portrait
+        }
+        Thread.sleep(forTimeInterval: 1)
         let app = XCUIApplication()
         app.launchArguments = ["-KyPostDemo"] + extraArguments
         app.launch()
