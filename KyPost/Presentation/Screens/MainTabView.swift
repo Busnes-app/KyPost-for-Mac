@@ -196,7 +196,6 @@ struct MainTabView: View {
 #endif
     }
 
-    @ViewBuilder
     /// Outline unless selected. The iOS 26 tab bar fills every SF Symbol it
     /// is handed by name, so the icon goes in as a template image.
     private func tabIcon(_ symbol: String, _ tab: AppTab) -> Image {
@@ -208,6 +207,7 @@ struct MainTabView: View {
 #endif
     }
 
+    @ViewBuilder
     private var inboxTab: some View {
         switch shell.layout {
         case .split:
