@@ -19,37 +19,43 @@ Domain.
 
 ## Local Contracts
 
-- **`AppTheme.defaultThemeName` (`Busnes Light`) is the only fallback
-  name.** A fresh install, a saved name no longer offered, and a missing
-  palette all resolve through it; an explicit saved choice is always kept
-  (`ThemeManager` discards only unknown names). Palettes match web
-  `THEME_OPTIONS` and Android `AppTheme.kt` hex for hex, except the WCAG
-  deviations below, and are opaque — the Busnes `line` is Android's
-  composite of the web's translucent value.
-- **Every text color reads at least 4.5:1 (WCAG AA) on every theme**
+- **Themes are ky-ui's six light/dark pairs** (`AppTheme.pairs`, ky-ui
+  0.11.0 `THEME_PAIRS`): Busnes, Matter, Ocean, Forest, Ky, Nord, hex for hex
+  with ky-ui `themes.js` and `tokens.css`, opaque (the Busnes `line` and
+  Nord's `accentSoft` are composites over `panel`). `ThemeManager` saves the
+  pair ID (`theme.pair`) and the mode (`theme.mode`: System, the default, or
+  a forced Light or Dark). **`AppTheme.defaultPair` (Busnes, following the
+  system) is the only fallback**: a fresh install, an unknown saved pair and
+  a removed palette all resolve to it.
+- **Saved single-palette names migrate on read** (`AppTheme.migrate`): the
+  old `theme.selectedName` is read only when no pair is saved and is never
+  written or removed. Busnes Light/Dark keep Busnes with that half forced;
+  Light/Dark Matter, White Cliffs, Ocean, Forest, Polished Ky and Patina Ky
+  keep their pair with that half forced; everything else (Tropics, Tropic
+  Night, Coffee, Cyber Punk, Neon Purple, Space, Sky, Sun, unknown) resets
+  to Busnes following the system. `ThemeManagerTests` holds the table.
+- **Every scene root uses `.themed(themeManager)`**: it injects the half,
+  forces the mode (`.preferredColorScheme` on iOS; `NSApp.appearance` on
+  macOS, where `.preferredColorScheme(nil)` does not return a window to the
+  system's), and reports the system appearance back while the mode is
+  System. Never read `colorScheme` to pick a palette elsewhere.
+- **Status colours are per half and never the accent** (ky-ui 0.8.0):
+  `theme.danger` (a cool crimson), `warning`, `success` (teal on Forest;
+  Nord has its own), each with a `*Soft` tint at 12% over `panel`. A status
+  is never colour alone: use `StatusText` (icon + words), an icon beside
+  its words, or `StatusBadgeView`'s dot. Failure toasts pass `kind:`.
+- **Every text color reads at least 4.5:1 (WCAG AA) on every half**
   (`Contrast`, `ThemeContrastTests`: ink, inkStrong, `secondaryInk` and
-  `link` on bg and panel; `readableOnAccent` on accent; danger, success and
-  warning on bg and panel, danger and inkStrong on `dangerFill`). Secondary
-  text is `theme.secondaryInk`, never `ink.opacity(…)`. New text colors join
-  the test. **Deviations from web/Android, decided 2026-10-13 for those
-  apps to follow:**
-  - Patina Ky `ink` `#7C8BA1` (web/Android `#64748B`: 4.0:1 on bg, 3.7:1 on
-    panel).
-  - `SemanticColors` text has light/dark variants resolved by appearance
-    (every scene sets `preferredColorScheme` from `isLight`): danger
-    `#B71C1C` / `#FF8A8A` (web `#FF5F5F`: 2.7:1 on light, 4.2:1 on its own
-    fill on Busnes Dark panel), success `#1B5E20` / `#A5DCA5` (web `#A5DCA5`:
-    1.5:1 on light), warning `#8A5A00` / `#FFD64D` (web `#FFD64D`: 1.3:1 on
-    light). Fills and borders are unchanged.
-  - `secondaryInk` replaces `ink` at 60–90% opacity (3.0:1 on Busnes Light,
-    2.6:1 on Patina Ky): `ink` blended toward `bg` from 70% in 5% steps until
-    it reads on bg and panel.
-  - The HTML reader's `link` is the accent where it reads, else the accent
-    blended toward `inkStrong` until it does (Light Matter, Tropics, White
-    Cliffs, Sky, Sun, Polished Ky; Tropics' lime was 1.8:1), and underlined.
-  - `readableOnAccent` keeps the web's charcoal/white pick unless it fails,
-    then takes the other: Coffee and Polished Ky get charcoal (white was
-    3.4:1 and 3.7:1).
+  `link` on bg and panel; `readableOnAccent` on accent; inkStrong on the
+  danger and warning tints). `statusColoursPassTheKyUiGate` ports ky-ui
+  `scripts/check-status-colours.mjs`: each status on bg, panel and its tint
+  at 4.5:1, CIEDE2000 ΔE ≥ 20 accent–danger and ≥ 10 between any two of
+  accent, danger, warning and success. Secondary text is
+  `theme.secondaryInk`, never `ink.opacity(…)`. New text colors join the
+  test. Derived, as before: `secondaryInk` is `ink` blended toward `bg` from
+  70% in 5% steps until it reads; the HTML reader's `link` is the accent
+  where it reads, else blended toward `inkStrong`, and underlined;
+  `readableOnAccent` keeps the web's charcoal/white pick unless it fails.
 - **Sheets do not inherit `\.theme`.** Every `.sheet` re-injects
   `.environment(\.theme, theme)`. A sheet that skips it renders unthemed.
 - **Nothing presents while the app is locked — the router enforces it, not
@@ -225,6 +231,14 @@ Domain.
   (`takeComposeRequest(composeIsOpen:)`, latest wins) and opens when it
   closes — never by swapping the open sheet's content. The message body's link policy
   still never hands a `mailto:` link to `openURL`.
+- **Regular-width iOS windows get a navigation rail on the right**
+  (`ShellNavigation`, `NavigationRail`): the unfolded iPhone Duo, iPad, a
+  large iPhone in landscape. Always the trailing edge, with no setting (the
+  owner's rule, 2026-10-31). Compact windows (iPhones in portrait, the
+  folded Duo, Slide Over) keep the system tab bar. The rail shows the
+  selected root beside it, so switching roots rebuilds the root (the
+  Settings stack starts over); a rail ↔ tab bar switch re-arms the stacks
+  like a layout switch.
 - **Wide iOS windows split** (`ShellLayout`, `MainTabView`,
   `InboxSplitView`). A regular-width window of at least
   `ShellLayout.splitMinimumWidth` (800 pt, safe areas included — Android's
@@ -557,11 +571,12 @@ Recorded so they aren't re-litigated as bugs:
 
 - Unit: `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`
   (Swift Testing; `ContactSearchTests`, `ComposeRecipientTests`,
-  `ThemeTests`, `InboxParityTests.swift` for the inbox-list rules and the undo
+  `ThemeTests` (pairs, migration, the status-colour gate),
+  `InboxParityTests.swift` for the inbox-list rules and the undo
   window, `OlderMailTests.swift` for older mail, delta overflow and bodies on
   open, `MailIdentityTests.swift` for the (folder, id) key,
   `MailSearchTests.swift` for search, `WideLayoutTests.swift` for the iOS
-  stack/split decision, what a switch keeps, and its Undo rule,
+  stack/split and rail decisions, what a switch keeps, and its Undo rule,
   `ThemeContrastTests` for WCAG AA, `RemoteContentBlockingTests` for the
   reader's block against real WebKit, `ReaderWindowTests.swift` for pop-out
   rows, reader failures and the Message menu, `ComposeBlankSubjectTests` in
@@ -578,6 +593,11 @@ Recorded so they aren't re-litigated as bugs:
 - Focus, key routing, overlay z-order, and `FlowLayout` wrapping are not
   unit-testable — drive the app (XCUITest against the `New Email` window
   reaches them) and look at the result.
+- Themes and the rail on screen: `KyPost UITests/ThemeCaptureTests`, a
+  capture run like `ScreenshotTests` (skips unless `KYPOST_SCREENSHOTS=1`;
+  `KYPOST_THEME_ARGS` such as `-theme.pair|ocean-pair|-theme.mode|dark`,
+  `KYPOST_ORIENTATION`, `KYPOST_CAPTURE_DIR`). Writes the inbox, Settings →
+  Theme and a message.
 - The iOS layouts: launch the demo build (`-KyPostDemo`) on an iPad and an
   iPhone simulator, rotate (`xcrun simctl io <udid> screenshot` before and
   after), and look. A foldable's pose cannot be scripted.

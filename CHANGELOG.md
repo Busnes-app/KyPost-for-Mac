@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed
+
+- **Themes are the suite's six light/dark pairs**: Busnes (the default),
+  Matter, Ocean, Forest, Ky and Nord, matching the web apps (ky-ui 0.11.0).
+  Each pair follows the device's light or dark setting unless Settings →
+  Theme (macOS: Settings → Appearance) forces Light or Dark. A saved Busnes
+  Light or Dark keeps Busnes with that half forced, a palette that lives on
+  in a pair keeps it, and a removed palette (Tropics, Tropic Night, Coffee,
+  Cyber Punk, Neon Purple, Space, Sky, Sun) resets to Busnes following the
+  device.
+- **Errors, warnings and success have their own colours**, never the accent:
+  a cool crimson for errors, and a teal success on Forest. Every status
+  shows an icon beside its words, including the "Unable to connect" toast.
+- **iPad and the unfolded iPhone Duo use a navigation rail on the right**
+  instead of the tab bar.
+
 ### Security
 
 - **TLS certificates need strong keys on the whole chain.** Every app connection

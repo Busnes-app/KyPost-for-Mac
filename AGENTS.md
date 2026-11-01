@@ -1296,8 +1296,8 @@ When the user requests a durable behavior change, record it here or in the relev
   (`AppEnvironment` / `SingletonGraph.shared` aliasing), lifecycle/lock
   ordering at launch, the pull poll as push-mode heartbeat.
 - `KyPost/Presentation/AGENTS.md` — SwiftUI views, view models, and
-  components: theming, contrast and font contracts (and the recorded palette
-  deviations from web/Android), MainActor isolation rules, compose recipient
+  components: theming (ky-ui's six pairs, saved-name migration, status
+  colours), contrast and font contracts, MainActor isolation rules, compose recipient
   tokens and contact search, the macOS Message menu, and the macOS/iOS input
   deviations.
 
