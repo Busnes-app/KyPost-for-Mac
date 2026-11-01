@@ -46,20 +46,22 @@ struct SecondaryButtonStyle: ButtonStyle {
     }
 }
 
-/// Danger: 1pt stroke + 12% fill of the fixed danger red, never theme accent
+/// Danger: 1pt stroke + the theme's danger tint, never the accent
 /// (web .users-action-danger).
 struct DangerButtonStyle: ButtonStyle {
+    @Environment(\.theme) private var theme
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(AppFont.ui(15, weight: .medium))
-            .foregroundStyle(SemanticColors.danger)
+            .foregroundStyle(theme.danger)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: Shape.button)
-                    .fill(SemanticColors.dangerFill)
-                    .strokeBorder(SemanticColors.dangerBorder, lineWidth: 1)
+                    .fill(theme.dangerSoft)
+                    .strokeBorder(theme.danger.opacity(0.4), lineWidth: 1)
             )
             .opacity(configuration.isPressed ? 0.7 : 1)
             .animation(.easeInOut(duration: 0.12), value: configuration.isPressed)

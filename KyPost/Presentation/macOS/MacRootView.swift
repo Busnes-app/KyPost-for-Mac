@@ -503,7 +503,10 @@ struct MacRootView: View {
                 }
             }
         }
-        .toast(message: inboxViewModel.notice ?? inboxViewModel.connectionNotice)
+        .toast(
+            message: inboxViewModel.notice ?? inboxViewModel.connectionNotice,
+            kind: inboxViewModel.notice == nil && inboxViewModel.connectionNotice != nil ? .warning : nil
+        )
     }
 
     private func contactList(theme: ThemePalette) -> some View {

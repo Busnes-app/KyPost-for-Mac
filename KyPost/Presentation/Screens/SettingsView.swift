@@ -206,11 +206,11 @@ struct SettingsView: View {
     }
 }
 
-/// Small helper so the settings row shows the live theme name.
+/// Small helper so the settings row shows the live theme and mode.
 private struct ThemeNameLabel: View {
     @Environment(ThemeManager.self) private var themeManager
 
     var body: some View {
-        Text(themeManager.themeName)
+        Text("\(themeManager.pair.name), \(themeManager.mode.title)")
     }
 }

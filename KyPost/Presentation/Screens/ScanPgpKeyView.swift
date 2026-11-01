@@ -143,7 +143,7 @@ struct ScanPgpKeyView: View {
         VStack(spacing: 14) {
             Image(systemName: inPerson ? "person.badge.shield.checkmark" : "exclamationmark.shield")
                 .font(.system(size: 38))
-                .foregroundStyle(inPerson ? theme.accent : SemanticColors.warning)
+                .foregroundStyle(inPerson ? theme.accent : theme.warning)
             Text(key.name)
                 .font(AppFont.ui(19, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
@@ -209,7 +209,7 @@ struct ScanPgpKeyView: View {
         VStack(spacing: 12) {
             Image(systemName: "checkmark.seal.fill")
                 .font(.system(size: 44))
-                .foregroundStyle(SemanticColors.successBorder)
+                .foregroundStyle(theme.success)
             Text("Key saved to \(name)")
                 .font(AppFont.ui(19, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
@@ -233,7 +233,7 @@ struct ScanPgpKeyView: View {
         VStack(spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 38))
-                .foregroundStyle(SemanticColors.warning)
+                .foregroundStyle(theme.warning)
             Text(message)
                 .font(AppFont.ui(14))
                 .foregroundStyle(theme.ink)

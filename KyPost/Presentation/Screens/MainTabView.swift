@@ -5,8 +5,10 @@
 //  Root navigation (spec §10): Inbox / Contacts / Settings tabs, with the
 //  pairing and MFA flows presented as sheets driven by NavigationRouter.
 //
-//  A wide window (`ShellLayout.resolve`) shows Inbox and Contacts as splits;
-//  a narrow one keeps the stacks. What either shows lives in
+//  A regular-width window (the unfolded iPhone Duo, iPad) swaps the tab bar
+//  for a navigation rail on the right (`ShellNavigation`). A wide window
+//  (`ShellLayout.resolve`) shows Inbox and Contacts as splits; a narrow one
+//  keeps the stacks. What either shows lives in
 //  `MailShellState`, owned here above the switch, together with the one
 //  compose sheet, so a rotation, a multitasking resize or a fold changes the
 //  layout and nothing else.
@@ -42,17 +44,20 @@ struct MainTabView: View {
                 .onChange(of: resolved, initial: true) { old, new in
                     shell.layout = new
                     guard new == .stack, old != new else { return }
-                    mailStackReady = false
-                    contactStackReady = false
-                    // Re-armed from here, not from the new stacks' own
-                    // lifecycle: a stack that is rebuilt again, or never
-                    // appears (another tab), must not stay deaf for good.
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(300))
-                        guard shell.layout == .stack else { return }
-                        mailStackReady = true
-                        contactStackReady = true
-                    }
+                    rebuildStacks()
+                }
+                // Tab bar ↔ rail rebuilds the stacks too (folding the iPhone
+                // Duo keeps the stack but changes the size class).
+                .onChange(of: navigation) {
+                    guard shell.layout == .stack else { return }
+                    rebuildStacks()
+                }
+                // The rail shows one root at a time, so coming back to Inbox
+                // or Contacts builds its stack again with the open message or
+                // contact on it.
+                .onChange(of: router.selectedTab) {
+                    guard navigation == .rail, shell.layout == .stack else { return }
+                    rebuildStacks()
                 }
 #if DEBUG && os(iOS)
                 // What the threshold was decided from, for checking it on a
@@ -64,6 +69,22 @@ struct MainTabView: View {
         }
     }
 
+    /// Holds the new stacks' path writes until they exist, then pushes
+    /// what was open (`mailStackReady`).
+    private func rebuildStacks() {
+        mailStackReady = false
+        contactStackReady = false
+        // Re-armed from here, not from the new stacks' own lifecycle: a
+        // stack that is rebuilt again, or never appears (another tab), must
+        // not stay deaf for good.
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard shell.layout == .stack else { return }
+            mailStackReady = true
+            contactStackReady = true
+        }
+    }
+
     private func layout(forWindowWidth width: CGFloat) -> ShellLayout {
 #if os(iOS)
         ShellLayout.resolve(isRegularWidth: horizontalSizeClass == .regular, windowWidth: width)
@@ -72,24 +93,54 @@ struct MainTabView: View {
 #endif
     }
 
-    private var tabs: some View {
-        @Bindable var router = router
-        return TabView(selection: $router.selectedTab) {
-            Tab("Inbox", systemImage: "tray.fill", value: AppTab.inbox) {
-                inboxTab
+    private var navigation: ShellNavigation {
+#if os(iOS)
+        ShellNavigation.resolve(isRegularWidth: horizontalSizeClass == .regular)
+#else
+        .tabBar
+#endif
+    }
+
+    /// The rail, on the trailing edge, beside the selected root; or the
+    /// system tab bar. Not `.sidebarAdaptable`: in a landscape split it opens
+    /// a tab sidebar beside the folder sidebar and squeezes the reader, and
+    /// it sits on the left.
+    @ViewBuilder
+    private var roots: some View {
+        let selection = Binding(get: { router.selectedTab }, set: { router.selectedTab = $0 })
+        switch navigation {
+        case .rail:
+            HStack(spacing: 0) {
+                Group {
+                    switch router.selectedTab {
+                    case .inbox: inboxTab
+                    case .contacts: contactsTab
+                    case .settings: NavigationStack { SettingsView() }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                NavigationRail(selection: selection)
             }
-            Tab("Contacts", systemImage: "person.2.fill", value: AppTab.contacts) {
-                contactsTab
-            }
-            Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
-                NavigationStack {
-                    SettingsView()
+        case .tabBar:
+            TabView(selection: selection) {
+                Tab("Inbox", systemImage: "tray.fill", value: AppTab.inbox) {
+                    inboxTab
+                }
+                Tab("Contacts", systemImage: "person.2.fill", value: AppTab.contacts) {
+                    contactsTab
+                }
+                Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
+                    NavigationStack {
+                        SettingsView()
+                    }
                 }
             }
         }
-        // The default style: a tab bar on iPhone, the floating top tab bar on
-        // iPad. Not `.sidebarAdaptable`: in a landscape split it opens a tab
-        // sidebar beside the folder sidebar and squeezes the reader.
+    }
+
+    private var tabs: some View {
+        @Bindable var router = router
+        return roots
         .tint(themeManager.palette.accent)
         .environment(\.theme, themeManager.palette)
         .environment(\.shellLayout, shell.layout)

@@ -61,7 +61,7 @@ struct InviteCardView: View {
                 .foregroundStyle(theme.inkStrong)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(SemanticColors.dangerFill, in: RoundedRectangle(cornerRadius: Shape.field))
+                .background(theme.dangerSoft, in: RoundedRectangle(cornerRadius: Shape.field))
             }
 
             HStack(spacing: 8) {

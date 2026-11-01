@@ -48,9 +48,7 @@ struct SecuritySettingsContent: View {
             }
             .disabled(!lockManager.isLockEnabled)
             if let lockToggleMessage {
-                Text(lockToggleMessage)
-                    .font(AppFont.ui(13))
-                    .foregroundStyle(SemanticColors.danger)
+                StatusText(lockToggleMessage, kind: .danger, size: 13)
             }
         } footer: {
             Text("Unlocks with Face ID, Touch ID, or this device's passcode. KyPost locks when it goes to the background (iOS) or the screen locks (Mac), after the delay chosen above. Choosing a longer delay asks you to authenticate.")
@@ -70,9 +68,7 @@ struct SecuritySettingsContent: View {
                     .disabled(!lockManager.isLockEnabled)
             }
             if let pinMessage {
-                Text(pinMessage)
-                    .font(AppFont.ui(13))
-                    .foregroundStyle(SemanticColors.danger)
+                StatusText(pinMessage, kind: .danger, size: 13)
             }
         } header: {
             Text("App PIN")
@@ -91,9 +87,7 @@ struct SecuritySettingsContent: View {
             Toggle("Hostile Location Protection", isOn: hostileProtectionBinding)
                 .disabled(!lockManager.isLockEnabled)
             if let hostileProtectionMessage {
-                Text(hostileProtectionMessage)
-                    .font(AppFont.ui(13))
-                    .foregroundStyle(SemanticColors.danger)
+                StatusText(hostileProtectionMessage, kind: .danger, size: 13)
             }
         } footer: {
             // The limitation leads. This feature's stated use case is border
@@ -142,9 +136,7 @@ struct SecuritySettingsContent: View {
             Toggle("Require unlock for notifications & MFA", isOn: credentialGateBinding)
                 .disabled(!lockManager.isLockEnabled)
             if let credentialGateMessage {
-                Text(credentialGateMessage)
-                    .font(AppFont.ui(13))
-                    .foregroundStyle(SemanticColors.danger)
+                StatusText(credentialGateMessage, kind: .danger, size: 13)
             }
             pushMetadataWarning
         } footer: {
@@ -169,8 +161,11 @@ struct SecuritySettingsContent: View {
 
         Section {
             LabeledContent("Certificate pin") {
-                Text(isRelayPinned ? "Pinned" : "Not pinned")
-                    .foregroundStyle(isRelayPinned ? SemanticColors.successText : SemanticColors.warning)
+                StatusText(
+                    isRelayPinned ? "Pinned" : "Not pinned",
+                    kind: isRelayPinned ? .success : .warning,
+                    size: nil
+                )
             }
         } footer: {
             // Arming the pin can fail silently — an unusual server key shape
@@ -235,7 +230,7 @@ struct SecuritySettingsContent: View {
     private var pushMetadataWarning: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(SemanticColors.warning)
+                .foregroundStyle(theme.warning)
             Text("Push always sends the sender and subject through Apple's push service and your KyPost relay — even with this on. For zero metadata leakage, switch this device to Pull mode on your server's Notifications page.")
                 .font(AppFont.ui(12))
                 .foregroundStyle(theme.inkStrong)
@@ -245,7 +240,7 @@ struct SecuritySettingsContent: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: Shape.field)
-                .fill(SemanticColors.warning.opacity(0.12))
+                .fill(theme.warningSoft)
         )
         .accessibilityElement(children: .combine)
     }

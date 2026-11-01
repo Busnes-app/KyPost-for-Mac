@@ -46,7 +46,7 @@ struct PushPairingView: View {
                     VStack(spacing: 12) {
                         Image(systemName: "checkmark.seal.fill")
                             .font(.system(size: 44))
-                            .foregroundStyle(SemanticColors.successBorder)
+                            .foregroundStyle(theme.success)
                         Text("Device paired")
                             .font(AppFont.ui(19, weight: .semibold))
                             .foregroundStyle(theme.inkStrong)
@@ -64,7 +64,7 @@ struct PushPairingView: View {
                     VStack(spacing: 12) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 38))
-                            .foregroundStyle(SemanticColors.warning)
+                            .foregroundStyle(theme.warning)
                         Text(message)
                             .font(AppFont.ui(14))
                             .foregroundStyle(theme.ink)
@@ -133,9 +133,7 @@ struct PushPairingView: View {
                 .frame(maxWidth: .infinity)
                 .background(theme.panel, in: RoundedRectangle(cornerRadius: Shape.field))
             if let existingHost = confirmation.existingHost {
-                Text("This replaces your current pairing with \(existingHost).")
-                    .font(AppFont.ui(13))
-                    .foregroundStyle(SemanticColors.warning)
+                StatusText("This replaces your current pairing with \(existingHost).", kind: .warning, size: 13)
                     .multilineTextAlignment(.center)
             }
             HStack(spacing: 12) {

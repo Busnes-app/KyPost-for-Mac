@@ -243,7 +243,7 @@ struct EmailDetailView: View {
                 showReaderNotice(String(localized: "Couldn't save the attachment. \(error.localizedDescription)"))
             }
         }
-        .toast(message: readerNotice)
+        .toast(message: readerNotice, kind: .danger)
         .alert(
             "Can't quote this message yet",
             isPresented: Binding(
@@ -702,17 +702,19 @@ struct EmailDetailView: View {
                 // A sender verdict is shown with the pinned address or what
                 // the signing key names — never the server's resolved sender
                 // as an identity it did not earn on this device.
-                Text(line)
-                    .font(AppFont.ui(12))
-                    .foregroundStyle(
-                        signatureIsAlarming(model.signature) ? SemanticColors.danger : theme.ink
-                    )
-                    .fixedSize(horizontal: false, vertical: true)
+                Group {
+                    if signatureIsAlarming(model.signature) {
+                        StatusText(line, kind: .danger, size: 12)
+                    } else {
+                        Text(line)
+                            .font(AppFont.ui(12))
+                            .foregroundStyle(theme.ink)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
             }
             if let warning = model.signatureIdentityWarning {
-                Text(warning)
-                    .font(AppFont.ui(12))
-                    .foregroundStyle(SemanticColors.danger)
+                StatusText(warning, kind: .danger, size: 12)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let omitted = model.attachmentsOmittedMessage {
@@ -856,7 +858,7 @@ struct EmailDetailView: View {
     private var phishingBanner: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.shield.fill")
-                .foregroundStyle(SemanticColors.danger)
+                .foregroundStyle(theme.danger)
             Text(phishingWarningText)
                 .font(AppFont.ui(12))
                 .foregroundStyle(theme.inkStrong)
@@ -864,10 +866,10 @@ struct EmailDetailView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(SemanticColors.dangerFill, in: RoundedRectangle(cornerRadius: Shape.field))
+        .background(theme.dangerSoft, in: RoundedRectangle(cornerRadius: Shape.field))
         .overlay(
             RoundedRectangle(cornerRadius: Shape.field)
-                .strokeBorder(SemanticColors.dangerBorder, lineWidth: 1)
+                .strokeBorder(theme.danger.opacity(0.4), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)
     }

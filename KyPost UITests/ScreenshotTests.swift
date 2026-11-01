@@ -246,7 +246,7 @@ final class ScreenshotTests: XCTestCase {
             capture(app, "06-contacts")
         }
 
-        // 8. Make KyPost yours with 17 themes
+        // 8. Make KyPost yours with six theme pairs
         if tapIfPresent(tab(app, "Settings")) {
             capture(app, "07-settings")
             if tapIfPresent(row(in: app, containing: "Theme")) {
@@ -314,7 +314,7 @@ final class ScreenshotTests: XCTestCase {
             capture(app, "06-contacts")
         }
 
-        // 8. Make KyPost yours with 17 themes — Preferences ⌘, → Appearance
+        // 8. Make KyPost yours with six theme pairs — Preferences ⌘, → Appearance
         app.typeKey(",", modifierFlags: .command)
         settle(2)
         let preferences = app.windows.element(boundBy: 1)

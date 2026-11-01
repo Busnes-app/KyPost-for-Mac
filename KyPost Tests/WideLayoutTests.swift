@@ -2,9 +2,10 @@
 //  WideLayoutTests.swift
 //  KyPost Tests
 //
-//  The iOS widescreen layout: when a window splits (`ShellLayout`), what a
-//  layout switch keeps (`MailShellState`), and which disappearances of the
-//  inbox list commit held Undo actions (`InboxListPresence`,
+//  The iOS widescreen layout: when a window splits (`ShellLayout`) and gets
+//  the rail (`ShellNavigation`), what a layout switch keeps
+//  (`MailShellState`), and which disappearances of the inbox list commit
+//  held Undo actions (`InboxListPresence`,
 //  `InboxViewModel.leaveInbox(commitsHeldActions:)`).
 //
 
@@ -56,6 +57,15 @@ private func key(_ id: String, in folder: String = "INBOX") -> MailRowKey {
         #expect(ShellLayout.splitMinimumWidth == 800)
         #expect(ShellLayout.resolve(isRegularWidth: true, windowWidth: 800) == .split)
         #expect(ShellLayout.resolve(isRegularWidth: true, windowWidth: 799.5) == .stack)
+    }
+
+    /// The rail (always on the right) comes with the regular size class:
+    /// the unfolded iPhone Duo in either orientation, iPad, a large iPhone
+    /// in landscape. The folded Duo, iPhones in portrait and compact iPad
+    /// windows keep the tab bar, however wide.
+    @Test func theRailFollowsTheSizeClassAlone() {
+        #expect(ShellNavigation.resolve(isRegularWidth: true) == .rail)
+        #expect(ShellNavigation.resolve(isRegularWidth: false) == .tabBar)
     }
 
     @Test func aCompactWindowNeverSplitsHoweverWide() {

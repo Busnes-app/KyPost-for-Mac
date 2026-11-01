@@ -21,7 +21,7 @@ struct ContactSyncBanner: View {
             }
             let withheld = viewModel.withheldCardDeletes
             if withheld > 0 {
-                banner(icon: "person.crop.circle.badge.exclamationmark", tint: SemanticColors.warning) {
+                banner(icon: "person.crop.circle.badge.exclamationmark", tint: theme.warning) {
                     Text("""
                     Kept ^[\(withheld) card](inflect: true) in Contacts: removing them would delete more \
                     than half of the cards KyPost manages at once. If you meant to, delete them in Contacts.
@@ -46,7 +46,7 @@ struct ContactSyncBanner: View {
                     .foregroundStyle(theme.inkStrong)
             }
         case .stuck(let pending, let reason):
-            banner(icon: "exclamationmark.triangle.fill", tint: SemanticColors.warning) {
+            banner(icon: "exclamationmark.triangle.fill", tint: theme.warning) {
                 VStack(alignment: .leading, spacing: 2) {
                     Group {
                         if pending > 0 {
