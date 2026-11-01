@@ -238,11 +238,13 @@ private enum ColorDifference {
             return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
         }
         let (r, g, b) = (linear(16), linear(8), linear(0))
-        let xyz = [
-            (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047,
-            0.2126729 * r + 0.7151522 * g + 0.072175 * b,
-            (0.0193339 * r + 0.119192 * g + 0.9503041 * b) / 1.08883,
-        ].map { t in t > 216.0 / 24389 ? cbrt(t) : (24389.0 / 27 * t + 16) / 116 }
+        let x: Double = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047
+        let y: Double = 0.2126729 * r + 0.7151522 * g + 0.072175 * b
+        let z: Double = (0.0193339 * r + 0.119192 * g + 0.9503041 * b) / 1.08883
+        func f(_ t: Double) -> Double {
+            t > 216.0 / 24389 ? cbrt(t) : (24389.0 / 27 * t + 16) / 116
+        }
+        let xyz: [Double] = [f(x), f(y), f(z)]
         return (116 * xyz[1] - 16, 500 * (xyz[0] - xyz[1]), 200 * (xyz[1] - xyz[2]))
     }
 
@@ -251,7 +253,8 @@ private enum ColorDifference {
         let (L2, a2, b2) = second
         let rad = Double.pi / 180
         let C = (hypot(a1, b1) + hypot(a2, b2)) / 2
-        let G = 0.5 * (1 - sqrt(pow(C, 7) / (pow(C, 7) + pow(25, 7))))
+        let C7: Double = pow(C, 7)
+        let G: Double = 0.5 * (1 - sqrt(C7 / (C7 + pow(25, 7))))
         let (ap1, ap2) = (a1 * (1 + G), a2 * (1 + G))
         let (Cp1, Cp2) = (hypot(ap1, b1), hypot(ap2, b2))
         func hue(_ b: Double, _ a: Double) -> Double {
@@ -259,21 +262,29 @@ private enum ColorDifference {
         }
         let (hp1, hp2) = (hue(b1, ap1), hue(b2, ap2))
         let dL = L2 - L1, dC = Cp2 - Cp1
-        var dh = Cp1 * Cp2 == 0 ? 0 : hp2 - hp1
+        var dh: Double = Cp1 * Cp2 == 0 ? 0 : hp2 - hp1
         if dh > 180 { dh -= 360 } else if dh < -180 { dh += 360 }
         let dH = 2 * sqrt(Cp1 * Cp2) * sin(dh * rad / 2)
         let Lm = (L1 + L2) / 2, Cm = (Cp1 + Cp2) / 2
-        var hm = hp1 + hp2
+        var hm: Double = hp1 + hp2
         if Cp1 * Cp2 != 0 {
-            hm = abs(hp1 - hp2) > 180 ? (hm + (hm < 360 ? 360 : -360)) / 2 : hm / 2
+            if abs(hp1 - hp2) > 180 { hm += hm < 360 ? 360 : -360 }
+            hm /= 2
         }
-        let T = 1 - 0.17 * cos((hm - 30) * rad) + 0.24 * cos(2 * hm * rad)
-            + 0.32 * cos((3 * hm + 6) * rad) - 0.2 * cos((4 * hm - 63) * rad)
-        let SL = 1 + 0.015 * pow(Lm - 50, 2) / sqrt(20 + pow(Lm - 50, 2))
-        let SC = 1 + 0.045 * Cm, SH = 1 + 0.015 * Cm * T
-        let RT = -2 * sqrt(pow(Cm, 7) / (pow(Cm, 7) + pow(25, 7)))
-            * sin(60 * exp(-pow((hm - 275) / 25, 2)) * rad)
-        return sqrt(pow(dL / SL, 2) + pow(dC / SC, 2) + pow(dH / SH, 2) + RT * (dC / SC) * (dH / SH))
+        let t1: Double = 0.17 * cos((hm - 30) * rad)
+        let t2: Double = 0.24 * cos(2 * hm * rad)
+        let t3: Double = 0.32 * cos((3 * hm + 6) * rad)
+        let t4: Double = 0.2 * cos((4 * hm - 63) * rad)
+        let T: Double = 1 - t1 + t2 + t3 - t4
+        let lOffset: Double = pow(Lm - 50, 2)
+        let SL: Double = 1 + 0.015 * lOffset / sqrt(20 + lOffset)
+        let SC: Double = 1 + 0.045 * Cm
+        let SH: Double = 1 + 0.015 * Cm * T
+        let c7: Double = pow(Cm, 7)
+        let rotation: Double = 60 * exp(-pow((hm - 275) / 25, 2)) * rad
+        let RT: Double = -2 * sqrt(c7 / (c7 + pow(25, 7))) * sin(rotation)
+        let (l, c, h) = (dL / SL, dC / SC, dH / SH)
+        return sqrt(l * l + c * c + h * h + RT * c * h)
     }
 }
 
