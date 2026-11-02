@@ -1171,7 +1171,7 @@ an event only when asked and syncs no calendar.
 - **RSVP (REPLY)** copies UID verbatim and SEQUENCE, restates RECURRENCE-ID
   without TZID (a zoned one becomes UTC; unrestatable means no RSVP), adds
   DTSTAMP, folds at 75 octets without splitting UTF-8. ATTENDEE is the
-  `suggestedUserIDs` address the invite lists, else the primary, fetched fresh
+  `sendingAddresses` address the invite lists, else the primary, fetched fresh
   per RSVP; an alias is also sent as `from`. Buttons need the relay's
   `calendarMethod`.
 - **Always unencrypted and unsigned** (`RelaySendRequest(calendarReply:)` has

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Reply All leaves out your account address even when your IMAP login is
+  not one.** The app now reads your own addresses from the relay's bootstrap
+  `accountAddresses` (KyPost-Server 0.4.3 and later), falling back to
+  `suggestedUserIDs` on older relays. Before, an account whose login was not
+  an email address put its own address back in Cc.
+
 ### Changed
 
 - **Themes are the suite's six light/dark pairs**: Busnes (the default),
