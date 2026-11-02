@@ -87,8 +87,25 @@ actor ContactDAO {
         guard try fetchEntity(uid: uid) == nil,
               let entity = try fetchEntity(localId: localId) else { return }
         entity.uid = uid
+        // The server has it: an import is an ordinary contact from here on.
+        entity.importConsent = nil
         if pushedUpdatedAt.map({ entity.updatedAt <= $0 }) ?? true {
             entity.needsSync = false
+        }
+        try modelContext.save()
+    }
+
+    /// Stamps the uid-less rows among `localIds` whose origin is unknown
+    /// (no `importConsent`, or `Contact.quarantined`) with `stamp`.
+    func stampImports(localIds: Set<UUID>, stamp: String) throws {
+        let quarantined = Contact.quarantined
+        let entities = try modelContext.fetch(FetchDescriptor<ContactEntity>(
+            predicate: #Predicate {
+                $0.uid == nil && ($0.importConsent == nil || $0.importConsent == quarantined)
+            }
+        ))
+        for entity in entities where localIds.contains(entity.localId) {
+            entity.importConsent = stamp
         }
         try modelContext.save()
     }

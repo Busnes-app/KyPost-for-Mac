@@ -365,6 +365,41 @@ Same protocol as KyPost for Android and Linux; change it in all three.
     linked card or more than half of them (cards already gone do not count),
     aborts on a failed Contacts read, and reports withheld deletes through
     `ContactSyncHealth.withheldCardDeletes` to `ContactSyncBanner`.
+- **Consent before contacts leave Apple Contacts** (`ContactSyncDisclosure`,
+  Android #282). "Sync with Apple Contacts" is on only with the toggle **and**
+  consent for the paired server (`ContactsSettingsStore.isSystemSyncOn`); an
+  install that had the toggle on before consent existed reads as off. The
+  toggle only asks: on shows the disclosure, and only Agree records consent
+  (one relay at a time), resets the import baseline, then asks iOS for
+  access; off asks to confirm, then forgets consent and keeps the cards.
+  Consent is keyed on `ContactSyncRelay.consentKey`, the canonical base URL
+  (scheme, host, port, path), stored hashed; the host (`name`) is display
+  only and never compared as consent. Each Agree gets a new token, and
+  forgetting clears it; `ContactsSettingsStore.importConsentStamp` is the
+  relay's hashed key plus that token. `SystemContactsExporter` checks
+  consent on every pass, and the import re-checks the stamp after each
+  suspension and before each card. An import carries its stamp on the
+  contact row (`Contact.importConsent`, AppSchemaV10), never on the Apple
+  Contacts link, so no link cleanup can drop it; only `assignUid` clears it.
+  One rule, `SystemContactsExporter.mayUpload`: a contact without a uid
+  uploads only if it is marked made in KyPost (`Contact.createdInKyPost`,
+  set by `ContactSyncRepository.saveContact`, the one path for every create
+  and edit in KyPost) or is an import while sync is on for the same relay
+  under the same stamp. Provenance is positive: nil, `Contact.quarantined`
+  and `Contact.legacyImport` never upload. `ContactSyncRepository` reads it
+  for the pending set and again before each push page, so imports queued
+  before Turn Off, another relay, or a newer Agree stay unsent, edited or
+  not (`ContactEntity.applyFields` never lets the KyPost mark replace an
+  import stamp). The V9→V10 stage quarantines every row without a uid,
+  since no pre-V10 field proves origin; an edit in KyPost releases a
+  quarantined row, and launch (`stampLegacyImports`) turns those still
+  linked as imports into `legacyImport`, which no edit releases. Any new
+  path that creates contacts must go through `saveContact` or set the
+  stamp itself. The Contacts screen's Sync shows the same disclosure once
+  per server; agreeing there never turns the toggle on.
+  Contacts typed into KyPost sync with the server without this gate, as on
+  Android. The disclosure's "How they are used" and "How long" come from
+  KyPost-Server's code; change them when the server's use of contacts changes.
 - **vCard** (`Utilities/VCard.swift`, Android #184): 4.0 or 3.0; every value
   escaped and stripped of control characters by **unicode scalar** (C0, DEL,
   C1, U+2028/2029 — wider than Android), so no field can start a property or a
@@ -990,6 +1025,23 @@ old sentence edited out.
   relay client `URLSession.shared`. Redirects must keep scheme https, host and
   effective port.
 - A pairing (not a re-registration) posts `.kyPostPaired` once stored.
+- **A web-minted token registers pending** (KyPost-Server
+  `docs/device-approval.md`, #516). `native/register` answers 202 with a
+  `deviceId`, `deviceSecret` and six-digit `approvalCode`; the HTTP status
+  decides, never the body (`HTTPClient.postWithStatus`). The service holds
+  the pending credentials **in memory only** (`PendingPairing`) and keeps
+  the pairing's pinned connection open for the polls of
+  `native/pairing-status`; nothing reaches the Keychain until 200. 200
+  stores the pairing as a 200 from register would, with the status answer's
+  `deviceId`; 410 (also 401/403), the deadline (`expiresAt`, at most 5
+  minutes on this clock), Cancel, the screen closing or a session reset drop
+  them and close the connection. Polls go every `pollIntervalSeconds`
+  (clamped 1–30 s), backing off on transient errors to 30 s and never
+  sooner than `Retry-After`; one shared loop serves every waiting window. A
+  `statusEndpoint` that is not same-origin with `srv` is ignored. A
+  re-registration answered 202 stores nothing and fails. Tokens with the
+  signed `direct` claim (sign-on, review pairing) still get 200 at once;
+  there is no client or server switch that skips approval.
 - **A reset ends registrations in flight.** `.kyPostSessionReset` and
   `SingletonGraph.shutdown()` call `DeviceRegistrationService.cancelAll()`,
   which closes open pairing connections (graph shutdown's
@@ -1171,7 +1223,7 @@ an event only when asked and syncs no calendar.
 - **RSVP (REPLY)** copies UID verbatim and SEQUENCE, restates RECURRENCE-ID
   without TZID (a zoned one becomes UTC; unrestatable means no RSVP), adds
   DTSTAMP, folds at 75 octets without splitting UTF-8. ATTENDEE is the
-  `suggestedUserIDs` address the invite lists, else the primary, fetched fresh
+  `sendingAddresses` address the invite lists, else the primary, fetched fresh
   per RSVP; an alias is also sent as `from`. Buttons need the relay's
   `calendarMethod`.
 - **Always unencrypted and unsigned** (`RelaySendRequest(calendarReply:)` has

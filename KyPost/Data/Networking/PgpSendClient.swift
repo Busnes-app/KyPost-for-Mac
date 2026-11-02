@@ -19,7 +19,7 @@ import Foundation
 
 /// GET /api/pgp/bootstrap. The full response also carries the browser's key
 /// material (`wrappedPrivateKey`, `unlockRequired`, `signerPublicKeys`,
-/// `payloadEndpoint`, …); this client needs only these two fields and ignores
+/// `payloadEndpoint`, …); this client needs only the fields below and ignores
 /// the rest by not declaring them.
 nonisolated struct PgpBootstrapResponse: Decodable, Equatable, Sendable {
     var hasIdentity: Bool?
@@ -40,11 +40,26 @@ nonisolated struct PgpBootstrapResponse: Decodable, Equatable, Sendable {
     var publicKey: String?
 
     /// The account's mail addresses, as the server suggests them for key User
-    /// IDs. **`suggestedUserIDs[0]` and nothing else** is the account address
-    /// the client-encrypted send path puts in every delivery's `From` — the
-    /// server derives it from the same expression and answers 403 on a
-    /// mismatch. Not the public key's own User ID, and not the self-contact.
+    /// IDs: the IMAP login (often not an address) plus domain-proven aliases.
+    /// Read only through `sendingAddresses`, as the fallback for a relay too
+    /// old to send `accountAddresses`.
     var suggestedUserIDs: [String]?
+
+    /// The addresses this account sends as: the relay's default `From` first
+    /// (the native address, or an IMAP login that is an address), then every
+    /// verified send-as alias (KyPost-Server#452). Absent from older relays.
+    var accountAddresses: [String]?
+
+    /// `accountAddresses`, or `suggestedUserIDs` when the relay predates it.
+    /// A present but empty `accountAddresses` is the answer, not a gap: the
+    /// account has no sending address, and a non-address login is not one.
+    /// Its first entry is the account address the client-encrypted send path
+    /// puts in every delivery's `From`; the relay authorizes that `From`
+    /// (`resolveMailFrom`) and answers 403 on a mismatch. Not the public key's
+    /// own User ID, and not the self-contact.
+    var sendingAddresses: [String] {
+        accountAddresses ?? suggestedUserIDs ?? []
+    }
 }
 
 nonisolated struct PgpRecipientCheckRequest: Encodable, Equatable, Sendable {

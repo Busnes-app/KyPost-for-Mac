@@ -179,6 +179,84 @@ import Testing
         #expect(calls.value == 0)
     }
 
+    /// KyPost-Server#452: `suggestedUserIDs` starts with the IMAP login, which
+    /// need not be an address; `accountAddresses` is what the account sends
+    /// as, and wins when present.
+    @Test func ownAddressesComeFromAccountAddressesWhenPresent() async throws {
+        let service = try makeService(json: """
+        {"hasIdentity":true,"protection":"server","suggestedUserIDs":["demo"],
+         "accountAddresses":["demo@kypost-demo.local","alias@y.com"]}
+        """)
+        await service.loadIfNeeded()
+
+        #expect(service.accountAddress == "demo@kypost-demo.local")
+        #expect(service.accountAddresses == ["demo@kypost-demo.local", "alias@y.com"])
+        #expect(service.ownAddresses == ["u1", "demo@kypost-demo.local", "alias@y.com"])
+        #expect(await service.fetchAccountAddresses() == ["demo@kypost-demo.local", "alias@y.com"])
+    }
+
+    /// An older relay sends no `accountAddresses`.
+    @Test func ownAddressesFallBackToSuggestedUserIDs() async throws {
+        let service = try makeService(json: """
+        {"hasIdentity":true,"protection":"server","suggestedUserIDs":["me@x.com","alias@y.com"]}
+        """)
+        await service.loadIfNeeded()
+
+        #expect(service.accountAddress == "me@x.com")
+        #expect(service.ownAddresses == ["u1", "me@x.com", "alias@y.com"])
+        #expect(await service.fetchAccountAddresses() == ["me@x.com", "alias@y.com"])
+    }
+
+    /// Present but empty is the relay saying the account has no sending
+    /// address. A non-address login must not become the delivery `From`.
+    @Test func anEmptyAccountAddressesIsNotAGapToFill() async throws {
+        let service = try makeService(json: """
+        {"hasIdentity":true,"protection":"server","suggestedUserIDs":["demo"],"accountAddresses":[]}
+        """)
+        await service.loadIfNeeded()
+
+        #expect(service.accountAddress.isEmpty)
+        #expect(service.ownAddresses == ["u1"])
+    }
+
+    @Test func replyAllAndReplyToOurOwnMessageLeaveOutEveryAccountAddress() async throws {
+        let service = try makeService(json: """
+        {"hasIdentity":true,"protection":"server","suggestedUserIDs":["demo"],
+         "accountAddresses":["demo@kypost-demo.local","alias@y.com"]}
+        """)
+        await service.loadIfNeeded()
+
+        let received = message(
+            from: "sender@x.com",
+            to: "Demo <DEMO@kypost-demo.local>, other@x.com",
+            cc: "Alias@Y.com"
+        )
+        let replyAll = ComposeDraft.replyAll(to: received, ownAddresses: service.ownAddresses)
+        #expect(replyAll.to == "sender@x.com")
+        #expect(replyAll.cc == "other@x.com")
+
+        let sent = message(from: "Demo@kypost-demo.local", to: "bob@x.com, alias@y.com")
+        #expect(ComposeDraft.reply(to: sent, ownAddresses: service.ownAddresses).to == "bob@x.com")
+    }
+
+    private func message(from sender: String, to: String, cc: String = "") -> Email {
+        var email = Email(
+            serverId: "1",
+            folder: "INBOX",
+            senderName: "",
+            senderEmail: sender,
+            subject: "Hi",
+            body: "Body",
+            keywords: [],
+            receivedAt: Date(),
+            read: false,
+            starred: false
+        )
+        email.sentTo = to
+        email.cc = cc
+        return email
+    }
+
     @Test func preflightReturnsTheAddressesWithNoUsableKey() async throws {
         let json = """
         {"results": [

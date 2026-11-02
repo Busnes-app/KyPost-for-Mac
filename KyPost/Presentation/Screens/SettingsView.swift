@@ -126,7 +126,14 @@ struct SettingsView: View {
             .listRowBackground(theme.panel)
 
             Section {
-                Toggle("Sync with Apple Contacts", isOn: $viewModel.exportContactsToSystem)
+                Toggle(isOn: $viewModel.exportContactsToSystem) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Sync with Apple Contacts")
+                        Text(viewModel.contactSyncStatus)
+                            .font(AppFont.ui(13))
+                            .foregroundStyle(theme.secondaryInk)
+                    }
+                }
                 if viewModel.contactsExportDenied {
                     Text("Contacts access is denied for KyPost.")
                         .font(AppFont.ui(13))
@@ -149,7 +156,7 @@ struct SettingsView: View {
             } header: {
                 Text("Contacts")
             } footer: {
-                Text("Contacts sync both ways: new cards you add in Apple Contacts are imported, matching contacts (same email) are linked instead of duplicated, and only cards created or imported by KyPost are ever updated or removed.")
+                Text("Contacts sync both ways: cards you add in Apple Contacts after you agree are sent to your KyPost server, matching contacts (same email) are linked instead of duplicated, and only cards created or imported by KyPost are ever updated or removed.")
             }
             .listRowBackground(theme.panel)
 
@@ -191,6 +198,7 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: .kyPostPaired)) { _ in
             viewModel.pairingDidChange()
         }
+        .contactSyncPrompts(viewModel)
         .confirmationDialog(
             "Unpair this device?",
             isPresented: $showUnpairConfirmation,

@@ -32,11 +32,11 @@ final class PgpSendService {
     private(set) var hasIdentity: Bool?
     private(set) var protection: String?
 
-    /// `suggestedUserIDs[0]`, or empty when the account has no mail address
-    /// configured — in which case no delivery `From` can be built.
+    /// Bootstrap's `sendingAddresses[0]`, or empty when the account has no
+    /// mail address configured — in which case no delivery `From` can be built.
     private(set) var accountAddress = ""
 
-    /// All of bootstrap's `suggestedUserIDs`: the account address and its
+    /// All of bootstrap's `sendingAddresses`: the account address and its
     /// send-as aliases. Empty until a successful load.
     private(set) var accountAddresses: [String] = []
 
@@ -92,8 +92,8 @@ final class PgpSendService {
             guard generation == accountGeneration else { return }
             hasIdentity = response.hasIdentity
             protection = response.protection
-            accountAddress = response.suggestedUserIDs?.first ?? ""
-            accountAddresses = response.suggestedUserIDs ?? []
+            accountAddress = response.sendingAddresses.first ?? ""
+            accountAddresses = response.sendingAddresses
             custody = pgpKeyCustody(
                 hasIdentity: response.hasIdentity,
                 protection: response.protection
@@ -148,7 +148,7 @@ final class PgpSendService {
             serverUrl: credentials.serverUrl,
             auth: credentials.auth
         ) else { return nil }
-        return response.suggestedUserIDs ?? []
+        return response.sendingAddresses
     }
 
     /// Addresses among `addresses` with no usable key **in the user's

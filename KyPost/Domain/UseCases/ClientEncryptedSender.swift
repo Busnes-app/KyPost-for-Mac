@@ -151,7 +151,7 @@ nonisolated struct ClientEncryptedSender: Sendable {
     private let pins: @MainActor @Sendable () -> RecipientPinSnapshot
     private let session: EnrollmentSession
     /// The address every delivery's `From` must carry, from bootstrap's
-    /// `suggestedUserIDs[0]`. The relay compares each delivery's own header
+    /// `sendingAddresses[0]`. The relay compares each delivery's own header
     /// against it and answers 403 on a mismatch.
     private let accountAddress: String
     private let now: @Sendable () -> Date

@@ -86,6 +86,12 @@ final class ContactSyncRepository {
 
     /// Saves a local create/edit and marks it for the next sync.
     ///
+    /// Every create and edit in KyPost comes through here, and only those:
+    /// the contact is marked `Contact.createdInKyPost`, so it uploads without
+    /// Apple Contacts consent. An edit is a deliberate act in KyPost, so it
+    /// releases a contact of unknown origin (`Contact.quarantined`), but an
+    /// Apple Contacts import keeps its stamp (`ContactEntity.applyFields`).
+    ///
     /// `verifiedInPerson` is the QR flow's save: the contact's key becomes the
     /// pin for each of its addresses, replacing whatever was pinned there.
     /// Every other save only records revocations against existing pins.
@@ -93,6 +99,7 @@ final class ContactSyncRepository {
         var dirty = contact
         dirty.needsSync = true
         dirty.updatedAt = Date()
+        dirty.importConsent = Contact.createdInKyPost
         try await contactDAO.upsert(contacts: [dirty])
         // The user is the authority on their own key: an edit (including a
         // freshly scanned QR key) resets what we remember as verified, and
@@ -235,12 +242,34 @@ final class ContactSyncRepository {
     }
 
     func pendingSummary() async -> ContactPendingSummary {
-        let pending = ((try? await contactDAO.listPendingSync()) ?? []).filter {
+        let pending = ((try? await pendingUploads()) ?? []).filter {
             !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         let tombstones = pendingDeletesStore.all().count
         let oldest = (pending.map(\.updatedAt) + [pendingDeletesStore.oldestQueuedAt].compactMap { $0 }).min()
         return ContactPendingSummary(count: pending.count + tombstones, oldestQueuedAt: oldest)
+    }
+
+    /// The paired relay, as the contact-sync disclosure names it and
+    /// consent is recorded against; nil when unpaired.
+    var pairedRelay: ContactSyncRelay? {
+        (try? securePairingStore.loadPairing()).map { ContactSyncRelay(srv: $0.srv) }
+    }
+
+    /// Contacts flagged `needsSync` that may go to `relay`, the paired one
+    /// by default: Apple Contacts imports whose consent no longer stands
+    /// never leave the device (`SystemContactsExporter.mayUpload`).
+    private func pendingUploads(to relay: ContactSyncRelay? = nil) async throws -> [Contact] {
+        try await contactDAO.listPendingSync().filter(mayUpload(to: relay ?? pairedRelay))
+    }
+
+    /// `SystemContactsExporter.mayUpload`, read now. With no exporter or no
+    /// relay, no import's consent can stand.
+    private func mayUpload(to relay: ContactSyncRelay?) -> (Contact) -> Bool {
+        if let systemContactsExporter, let relay {
+            return systemContactsExporter.mayUpload(to: relay)
+        }
+        return { $0.uid != nil || $0.importConsent == Contact.createdInKyPost }
     }
 
     /// - Parameter afterTooOld: this pass is the re-pull a `tooOld` answer
@@ -250,6 +279,9 @@ final class ContactSyncRepository {
             throw ContactSyncError.notPaired
         }
         let auth = RelayAuth(pairing: pairing)
+        // Every request below goes to this relay, so imports are checked
+        // against it, not whatever is paired by the time one is sent.
+        let relay = ContactSyncRelay(srv: pairing.srv)
         // A cursor describes rows this device holds (MailRepository's
         // `hasRows` rule). With the table empty — the store deleted, a new
         // in-memory session — a delta would leave the address book empty
@@ -264,10 +296,10 @@ final class ContactSyncRepository {
         let syncStart = Date()
 
         if cursorStore.createsInFlight {
-            try await reconcileUnansweredCreates(serverUrl: pairing.srv, auth: auth, since: cursor)
+            try await reconcileUnansweredCreates(relay: relay, serverUrl: pairing.srv, auth: auth, since: cursor)
         }
 
-        let pending = try await contactDAO.listPendingSync()
+        let pending = try await pendingUploads(to: relay)
         // The server silently drops any non-delete change with an empty fn
         // (llama-labels contacts_handlers.go), so a nameless contact is never
         // echoed back and can never reconcile — pushing it just strands it.
@@ -276,8 +308,7 @@ final class ContactSyncRepository {
             !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         let tombstones = pendingDeletesStore.all()
-        let changes = pushable.map(Self.toWireDTO)
-            + tombstones.map { ContactDTO(uid: $0, rev: 0, deleted: true) }
+        let changes: [PendingChange] = pushable.map { .contact($0) } + tombstones.map { .delete($0) }
 
         // Pull when nothing is queued, push otherwise (Android sync()).
         let response: ContactSyncPullResponse
@@ -285,6 +316,7 @@ final class ContactSyncRepository {
             response = try await client.pull(serverUrl: pairing.srv, auth: auth, since: cursor)
         } else {
             response = try await push(
+                relay: relay,
                 serverUrl: pairing.srv,
                 auth: auth,
                 baseCursor: cursor,
@@ -365,6 +397,19 @@ final class ContactSyncRepository {
     /// says a client with more than this to push pages it.
     private static let maxChangesPerPush = 500
 
+    /// One entry of a push: a contact to upsert, or a delete tombstone.
+    private enum PendingChange {
+        case contact(Contact)
+        case delete(String)
+
+        var dto: ContactDTO {
+            switch self {
+            case .contact(let contact): ContactSyncRepository.toWireDTO(contact)
+            case .delete(let uid): ContactDTO(uid: uid, rev: 0, deleted: true)
+            }
+        }
+    }
+
     /// Pushes `changes` in pages the relay will accept, and returns the last
     /// response — which is a superset of the earlier ones, because the server
     /// computes every delta from the `baseCursor` the request carries and
@@ -376,11 +421,16 @@ final class ContactSyncRepository {
     /// committed. Reconciling only at the end would leave those creates with
     /// no local uid, and the next sync would push them again as new contacts
     /// — turning one interrupted sync into a duplicated address book.
+    ///
+    /// Consent is checked again before each page: an Apple Contacts import
+    /// whose consent went while earlier pages were in flight is dropped from
+    /// this page and every later one, and stays pending, unsent.
     private func push(
+        relay: ContactSyncRelay,
         serverUrl: String,
         auth: RelayAuth,
         baseCursor: Int,
-        changes: [ContactDTO],
+        changes: [PendingChange],
         pendingCreates: [Contact]
     ) async throws -> ContactSyncPullResponse {
         var unreconciled = pendingCreates
@@ -389,9 +439,19 @@ final class ContactSyncRepository {
         // a timeout or a dropped connection after the relay committed a page
         // leaves its creates on the server with no uid here.
         cursorStore.createsInFlight = !pendingCreates.isEmpty
+        var withheld = Set<UUID>()
 
         for start in stride(from: 0, to: changes.count, by: Self.maxChangesPerPush) {
-            let page = Array(changes[start..<min(start + Self.maxChangesPerPush, changes.count)])
+            let allowed = mayUpload(to: relay)
+            for case .contact(let contact) in changes[start...] where !allowed(contact) {
+                withheld.insert(contact.localId)
+            }
+            let page = changes[start..<min(start + Self.maxChangesPerPush, changes.count)]
+                .compactMap { change -> ContactDTO? in
+                    if case .contact(let contact) = change, withheld.contains(contact.localId) { return nil }
+                    return change.dto
+                }
+            guard !page.isEmpty else { continue }
             let response = try await client.push(
                 serverUrl: serverUrl,
                 auth: auth,
@@ -413,9 +473,10 @@ final class ContactSyncRepository {
         }
 
         cursorStore.createsInFlight = false
-        // `changes` is non-empty at the only call site, so the loop always
-        // runs at least once.
-        guard let last else { throw ContactSyncError.notPaired }
+        // Every change withheld: nothing went out, so pull instead.
+        guard let last else {
+            return try await client.pull(serverUrl: serverUrl, auth: auth, since: baseCursor)
+        }
         return last
     }
 
@@ -448,8 +509,13 @@ final class ContactSyncRepository {
     /// has its uid, so the push that follows does not create it a second
     /// time. A `tooOld` answer is left to the sync's own `tooOld` handling,
     /// whose re-pull from 0 comes back here.
-    private func reconcileUnansweredCreates(serverUrl: String, auth: RelayAuth, since cursor: Int) async throws {
-        var creates = try await contactDAO.listPendingSync().filter {
+    private func reconcileUnansweredCreates(
+        relay: ContactSyncRelay,
+        serverUrl: String,
+        auth: RelayAuth,
+        since cursor: Int
+    ) async throws {
+        var creates = try await pendingUploads(to: relay).filter {
             $0.uid == nil && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         guard !creates.isEmpty else {

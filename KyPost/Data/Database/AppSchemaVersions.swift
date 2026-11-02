@@ -10,8 +10,9 @@
 //  V5 adds GroupEntity; V6 adds isSelf to ContactEntity; V7 keys EmailEntity
 //  on (folder, serverId) instead of serverId alone; V8 adds inWindow to
 //  EmailEntity; V9 adds wokenAt/sortDate to EmailEntity (sortDate backfilled
-//  by EmailDAO.backfillSortDates).
-//  The stages are lightweight: V2 renames email/phone
+//  by EmailDAO.backfillSortDates); V10 adds importConsent to ContactEntity
+//  and quarantines every unsent row (`AppMigrationPlan.quarantineUnsentContacts`).
+//  The stages are lightweight, except V9→V10's: V2 renames email/phone
 //  to legacyEmail/legacyPhone via originalName and adds every new field with a
 //  default. The legacy→array data copy happens in app code
 //  (ContactDAO.migrateLegacyFields), not in the migration machinery.
@@ -363,7 +364,7 @@ enum AppSchemaV6: VersionedSchema {
     static var models: [any PersistentModel.Type] {
         // ContactEntity gains isSelf.
         [
-            AppSchemaV6.EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
+            AppSchemaV6.EmailEntity.self, AppSchemaV9.ContactEntity.self, PushNotificationEntity.self,
             KeywordEntity.self, GroupEntity.self,
         ]
     }
@@ -433,7 +434,7 @@ enum AppSchemaV7: VersionedSchema {
         // AppEnvironment discards it — mail lives on the server, and the cache
         // refills from an empty folder (MailRepository.refreshFolder).
         [
-            AppSchemaV7.EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
+            AppSchemaV7.EmailEntity.self, AppSchemaV9.ContactEntity.self, PushNotificationEntity.self,
             KeywordEntity.self, GroupEntity.self,
         ]
     }
@@ -500,7 +501,7 @@ enum AppSchemaV8: VersionedSchema {
         // EmailEntity gains inWindow, defaulting to true: every row cached
         // before it came from the window.
         [
-            AppSchemaV8.EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
+            AppSchemaV8.EmailEntity.self, AppSchemaV9.ContactEntity.self, PushNotificationEntity.self,
             KeywordEntity.self, GroupEntity.self,
         ]
     }
@@ -569,6 +570,81 @@ enum AppSchemaV9: VersionedSchema {
         // EmailEntity gains wokenAt and sortDate. Rows from before V9 get
         // sortDate's default and are backfilled by EmailDAO.backfillSortDates.
         [
+            EmailEntity.self, AppSchemaV9.ContactEntity.self, PushNotificationEntity.self,
+            KeywordEntity.self, GroupEntity.self,
+        ]
+    }
+
+    /// Snapshot of ContactEntity from V6 to V9: with `isSelf`, before V10's
+    /// `importConsent`. Nested so the entity name stays "ContactEntity" and
+    /// migration identity matches stores written at V6–V9.
+    @Model
+    final class ContactEntity {
+        @Attribute(.unique) var localId: UUID
+        var uid: String?
+        var rev: Int = 0
+        var name: String
+        @Attribute(originalName: "email") var legacyEmail: String = ""
+        @Attribute(originalName: "phone") var legacyPhone: String = ""
+        var givenName: String = ""
+        var familyName: String = ""
+        var middleName: String = ""
+        var prefix: String = ""
+        var suffix: String = ""
+        var nickname: String = ""
+        var org: String = ""
+        var title: String = ""
+        var emails: [ContactLabeledValue] = []
+        var phones: [ContactLabeledValue] = []
+        var addresses: [ContactPostalAddress] = []
+        var notes: String = ""
+        var birthday: String = ""
+        var photoRef: String?
+        var groupIDs: [String] = []
+        var pgpKey: String?
+        var pendingPgpKey: String?
+        var ims: [ContactIM] = []
+        var websites: [ContactLabeledValue] = []
+        var relations: [ContactRelation] = []
+        var events: [ContactEvent] = []
+        var phoneticGivenName: String = ""
+        var phoneticFamilyName: String = ""
+        var department: String = ""
+        var customFields: [ContactCustomField] = []
+        var pronouns: String = ""
+        var isSelf: Bool = false
+        var avatarUrl: String?
+        var createdAt: Date
+        var updatedAt: Date
+        var needsSync: Bool
+
+        init(
+            localId: UUID,
+            uid: String?,
+            rev: Int = 0,
+            name: String,
+            createdAt: Date,
+            updatedAt: Date,
+            needsSync: Bool = false
+        ) {
+            self.localId = localId
+            self.uid = uid
+            self.rev = rev
+            self.name = name
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.needsSync = needsSync
+        }
+    }
+}
+
+enum AppSchemaV10: VersionedSchema {
+    static let versionIdentifier = Schema.Version(10, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        // ContactEntity gains importConsent; the stage into V10 sets it on
+        // every row the server does not have yet.
+        [
             EmailEntity.self, ContactEntity.self, PushNotificationEntity.self,
             KeywordEntity.self, GroupEntity.self,
         ]
@@ -581,6 +657,7 @@ enum AppMigrationPlan: SchemaMigrationPlan {
             AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self,
             AppSchemaV4.self, AppSchemaV5.self, AppSchemaV6.self,
             AppSchemaV7.self, AppSchemaV8.self, AppSchemaV9.self,
+            AppSchemaV10.self,
         ]
     }
 
@@ -594,6 +671,32 @@ enum AppMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: AppSchemaV6.self, toVersion: AppSchemaV7.self),
             .lightweight(fromVersion: AppSchemaV7.self, toVersion: AppSchemaV8.self),
             .lightweight(fromVersion: AppSchemaV8.self, toVersion: AppSchemaV9.self),
+            .custom(
+                fromVersion: AppSchemaV9.self,
+                toVersion: AppSchemaV10.self,
+                willMigrate: nil,
+                didMigrate: quarantineUnsentContacts
+            ),
         ]
+    }
+
+    /// Nothing written before V10 proves where an unsent contact came from:
+    /// a card imported from Apple Contacts and one typed into KyPost are
+    /// both a random localId, no uid and needsSync, with no field the import
+    /// alone sets. The Apple Contacts link said so, but "Remove Exported
+    /// Contacts" and the duplicate repair drop links and keep the rows. So
+    /// every row without a uid is quarantined: it stays unsent until the
+    /// user edits it in KyPost (`ContactSyncRepository.saveContact`). Imports
+    /// whose link survives become `Contact.legacyImport` at launch
+    /// (`SystemContactsExporter.stampLegacyImports`).
+    nonisolated static func quarantineUnsentContacts(_ context: ModelContext) throws {
+        let entities = try context.fetch(FetchDescriptor<ContactEntity>(
+            predicate: #Predicate { $0.uid == nil && $0.importConsent == nil }
+        ))
+        guard !entities.isEmpty else { return }
+        for entity in entities {
+            entity.importConsent = Contact.quarantined
+        }
+        try context.save()
     }
 }

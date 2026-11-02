@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.6.0 — 2026-11-01
+## 0.6.0 — 2026-11-02
+
+### Fixed
+
+- **Reply All leaves out your account address even when your IMAP login is
+  not one.** The app now reads your own addresses from the relay's bootstrap
+  `accountAddresses` (KyPost-Server 0.4.3 and later), falling back to
+  `suggestedUserIDs` on older relays. Before, an account whose login was not
+  an email address put its own address back in Cc.
 
 ### Changed
 
@@ -19,6 +27,35 @@
   instead of the tab bar.
 
 ### Security
+
+- **Contacts leave Apple Contacts only after you agree.** Turning on Sync with
+  Apple Contacts now first shows what is sent, to which server (named by its
+  address), how that server uses contacts and how long it keeps them, with
+  **Agree** and **Not now**. Only Agree leads to the Contacts permission
+  prompt. Consent belongs to one server, by its full address: pairing
+  another, even on the same host with another port or path, needs it again.
+  Turning it off also stops cards already imported from Apple Contacts but
+  not yet sent from going out, including during a sync already under way
+  and after "Remove Exported Contacts". The
+  Contacts row says "On. Contacts are sent to <server>." or "Off.", and
+  turning it off asks first, then stops sync and keeps the cards. The
+  Contacts screen's Sync shows the same text. Before, the toggle started
+  two-way sync after only the iOS prompt, and cards added in Apple Contacts
+  were uploaded with no warning.
+- **Installs that had Sync with Apple Contacts on read as off after updating**
+  until you agree. Nothing is read from or written to Apple Contacts until
+  then; cards already there stay.
+- **Unsent contacts from before this update are held back** until you edit
+  them in KyPost: the app cannot tell whether each came from Apple Contacts.
+  Cards known to be Apple Contacts imports stay unsent, edited or not.
+  Contacts you create in KyPost after updating sync as before.
+- **New devices wait for approval on the web** (KyPost-Server 0.6.0, #516).
+  A pairing code from Settings → Security → Devices now registers the device
+  pending: the app shows a six-digit code and waits until you approve it on
+  the web page that showed the same code. Denied or timed out, it says
+  "Not approved: denied or timed out. Scan a new code." and keeps nothing.
+  KyIdentity sign-on still pairs at once. Before, the app treated the
+  server's pending answer as a finished pairing.
 
 - **TLS certificates need strong keys on the whole chain.** Every app connection
   now runs the system's trust evaluation itself, then requires RSA of at least

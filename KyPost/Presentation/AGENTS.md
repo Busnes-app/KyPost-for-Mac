@@ -90,6 +90,15 @@ Domain.
   offers only "Paste Pairing Link…" (the native `PushPairingView`, for the
   link the web page shows when the browser could not open it). There is no
   desktop pairing screen.
+- **A pending pairing shows its approval code until the web answers**
+  (`PushPairingView.awaitingApprovalContent`): the six digits large, the
+  server it waits on, "Approve this device on the KyPost web page that
+  showed the code. Check the code matches." and Cancel. Polling runs only
+  while that screen is up: Cancel and `onDisappear` both call
+  `cancelPairing`, which also ends a registration still in flight, so a
+  late 200 or 202 stores, keeps and polls nothing. Not approved (410 or expiry) returns to the scan/paste
+  screen with "Not approved: denied or timed out. Scan a new code."
+  (`PushPairingViewModel.notice`).
 - **A new pairing reloads the Mac window at once.** `MacRootView` observes
   `.kyPostPaired` and loads the inbox, its subfolders and a contact sync,
   rather than leaving "not paired" up until the 90 s refresh.
@@ -426,8 +435,9 @@ Domain.
   it failed, they explain instead.
 - **Replies leave out every address of ours** (`ComposeDraft.reply` /
   `replyAll`, fed `PgpSendService.ownAddresses`): the pairing's sub plus all
-  of bootstrap's `suggestedUserIDs` (send-as aliases), compared as bare
-  addresses, case-insensitively. Before bootstrap loads (the reader starts
+  of bootstrap's `sendingAddresses` (`accountAddresses`, or
+  `suggestedUserIDs` from a relay without it; send-as aliases included),
+  compared as bare addresses, case-insensitively. Before bootstrap loads (the reader starts
   it) only the sub is left out. A reply to a message we sent goes to its
   original To minus us; a note to self opens with To empty, never to us.
 - **A notification-tap target is consumed once**, at the start of the hunt:

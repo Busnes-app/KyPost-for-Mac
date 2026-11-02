@@ -133,6 +133,13 @@ final class StubPairingConnection: PairingConnection {
         return await client.register(deviceToken: deviceToken, params: params, deviceId: deviceId)
     }
 
+    private(set) var polls = 0
+
+    func pairingStatus(_ pending: PendingRegistration) async -> PairingStatusOutcome {
+        polls += 1
+        return await client.pairingStatus(pending)
+    }
+
     func close() {
         isClosed = true
     }

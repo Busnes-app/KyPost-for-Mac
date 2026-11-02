@@ -42,6 +42,8 @@ struct PushPairingView: View {
                 case .working:
                     ProgressView("Pairing…")
                         .frame(maxHeight: .infinity)
+                case .awaitingApproval(let approval):
+                    awaitingApprovalContent(approval)
                 case .paired(let deviceId):
                     VStack(spacing: 12) {
                         Image(systemName: "checkmark.seal.fill")
@@ -95,10 +97,22 @@ struct PushPairingView: View {
         }
         .tint(theme.accent)
         .task {
+#if DEBUG
+            // Screenshot runs only: the waiting and not-approved screens
+            // with invented values, no server and no network.
+            if let demo = DemoContent.pairingApprovalScreen {
+                viewModel.showDemo(demo)
+                return
+            }
+#endif
             if let initialParams {
                 viewModel.present(params: initialParams)
             }
         }
+        // Pairing runs only while this screen is up (device-approval
+        // contract); closing it ends a registration still in flight and
+        // drops the pending credentials.
+        .onDisappear { viewModel.cancelPairing() }
 #if os(iOS)
         .modifier(SignOnHandoffReceiver(signOn: signOn, showSignOn: $showSignOn) { params in
             viewModel.present(params: params)
@@ -148,8 +162,54 @@ struct PushPairingView: View {
         .frame(maxHeight: .infinity)
     }
 
+    /// The server created this device pending (202). The same code is on
+    /// the web page; matching them is how the user knows the request there
+    /// is this device and not another app that redeemed the same link.
+    private func awaitingApprovalContent(_ approval: PendingApproval) -> some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.shield")
+                .font(.system(size: 38))
+                .foregroundStyle(theme.accent)
+            Text("Waiting for approval")
+                .font(AppFont.ui(19, weight: .semibold))
+                .foregroundStyle(theme.inkStrong)
+            Text(approval.groupedCode)
+                .font(AppFont.mono(44, weight: .semibold))
+                .foregroundStyle(theme.inkStrong)
+                .textSelection(.enabled)
+                .accessibilityLabel(Text("Approval code \(approval.approvalCode.map(String.init).joined(separator: " "))"))
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity)
+                .background(theme.panel, in: RoundedRectangle(cornerRadius: Shape.field))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Shape.field)
+                        .strokeBorder(theme.line, lineWidth: 1)
+                )
+            Text("Approve this device on the KyPost web page that showed the code. Check the code matches.")
+                .font(AppFont.ui(14))
+                .foregroundStyle(theme.ink)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Waiting on \(approval.server)")
+                    .font(AppFont.ui(13))
+                    .foregroundStyle(theme.secondaryInk)
+            }
+            .accessibilityElement(children: .combine)
+            Button("Cancel") { viewModel.cancelPairing() }
+                .buttonStyle(SecondaryButtonStyle())
+        }
+        .frame(maxHeight: .infinity)
+    }
+
     private var idleContent: some View {
         VStack(spacing: 16) {
+            if let notice = viewModel.notice {
+                StatusText(notice, kind: .warning, size: 13)
+                    .multilineTextAlignment(.center)
+            }
 #if os(iOS)
             scannerContent
 #else

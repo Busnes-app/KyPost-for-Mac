@@ -59,6 +59,11 @@ import Testing
                 localId: id, uid: "u1", name: "Ada", createdAt: Self.created, updatedAt: Self.created
             ))
         }
+        let v6to9: (ModelContext) -> Void = {
+            $0.insert(AppSchemaV9.ContactEntity(
+                localId: id, uid: "u1", name: "Ada", createdAt: Self.created, updatedAt: Self.created
+            ))
+        }
         let live: (ModelContext) -> Void = {
             $0.insert(ContactEntity(
                 localId: id, uid: "u1", name: "Ada", createdAt: Self.created, updatedAt: Self.created
@@ -66,8 +71,9 @@ import Testing
         }
         return [
             (AppSchemaV1.self, v1), (AppSchemaV2.self, v2), (AppSchemaV3.self, v3to5),
-            (AppSchemaV4.self, v3to5), (AppSchemaV5.self, v3to5), (AppSchemaV6.self, live),
-            (AppSchemaV7.self, live), (AppSchemaV8.self, live), (AppSchemaV9.self, live),
+            (AppSchemaV4.self, v3to5), (AppSchemaV5.self, v3to5), (AppSchemaV6.self, v6to9),
+            (AppSchemaV7.self, v6to9), (AppSchemaV8.self, v6to9), (AppSchemaV9.self, v6to9),
+            (AppSchemaV10.self, live),
         ]
     }
 
@@ -83,7 +89,7 @@ import Testing
     /// "unknown model version", and was deleted at launch — taking every
     /// unsynced contact and, at the next reconcile, the Apple Contacts cards
     /// linked to the rest.
-    @Test(arguments: 0..<9)
+    @Test(arguments: 0..<10)
     func aStoreFromEachVersionOpensWithItsContact(index: Int) throws {
         let (version, insert) = versions[index]
         let (directory, url) = try scratchStore()

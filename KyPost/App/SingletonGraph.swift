@@ -264,6 +264,9 @@ final class SingletonGraph {
             linkStore: systemContactsLinkStore,
             baselineStore: systemContactsBaselineStore,
             settings: contactsSettingsStore,
+            currentRelay: { [securePairingStore] in
+                (try? securePairingStore.loadPairing()).map { ContactSyncRelay(srv: $0.srv) }
+            },
             contactDAO: contactDAO,
             photoCache: contactPhotoCache,
             groupLinker: SystemContactGroupLinker(
@@ -438,6 +441,7 @@ final class SingletonGraph {
     private static let legacyContactFieldsMigratedKey = "contacts.legacyFieldsMigrated"
     private static let reconciliationRepairKey = "contacts.reconciliationRepair.v1"
     private static let systemImportDupeRepairKey = "contacts.systemImportDupeRepair.v1"
+    private static let legacyImportStampKey = "contacts.legacyImportStamp.v1"
     /// Exposed so the security wipe can sweep the same domain the
     /// UserDefaults-backed stores were built against — the app's in production,
     /// a scratch suite in tests.
@@ -456,6 +460,16 @@ final class SingletonGraph {
 #if DEBUG
         if isDemo {
             await DemoContent.seedContacts(into: contactDAO)
+            // Settings → Contacts reading "On", for its screenshot: the
+            // demo's Contacts store refuses access, so Agree cannot get
+            // there. The demo graph holds no pairing, so the exporter never
+            // finds consent for it and nothing syncs.
+            if DemoContent.requestedScreen == "contacts-sync-on" {
+                contactsSettingsStore.exportToSystemContactsEnabled = true
+                contactsSettingsStore.recordSyncConsent(
+                    for: ContactSyncRelay(srv: "https://\(DemoContent.pairingDisplay.serverHost)")
+                )
+            }
             // Compose asks the relay who holds the account's key before it
             // offers Encrypt/Sign. The demo account is server-custody.
             pgpSendService.preload(
@@ -487,6 +501,16 @@ final class SingletonGraph {
                 userDefaults.set(true, forKey: Self.reconciliationRepairKey)
             } catch {
                 Log.sync.error("Contact reconciliation repair failed: \(error.localizedDescription)")
+            }
+        }
+        // Before the repair below, which forgets every link: they are the
+        // only record of which unsent contacts were imports.
+        if !userDefaults.bool(forKey: Self.legacyImportStampKey) {
+            do {
+                try await systemContactsExporter.stampLegacyImports()
+                userDefaults.set(true, forKey: Self.legacyImportStampKey)
+            } catch {
+                Log.sync.error("Legacy import stamp failed: \(error.localizedDescription)")
             }
         }
         if !userDefaults.bool(forKey: Self.systemImportDupeRepairKey) {
