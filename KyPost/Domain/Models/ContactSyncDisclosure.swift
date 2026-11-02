@@ -15,21 +15,56 @@ import Foundation
 import UIKit
 #endif
 
+/// The relay contacts are sent to. `name` is what people read; consent is
+/// recorded against `consentKey`, the whole base URL, so another deployment
+/// on the same host (another port or base path) needs its own Agree.
+struct ContactSyncRelay: Equatable {
+    /// The host, as Settings → Connection and the disclosure show it.
+    /// Display only: never compare it as consent.
+    let name: String
+    /// `canonicalBaseURL(fromSrv:)` of the pairing's `srv`.
+    let consentKey: String
+
+    init(srv: String) {
+        name = ContactSyncDisclosure.serverName(fromSrv: srv)
+        consentKey = Self.canonicalBaseURL(fromSrv: srv)
+    }
+
+    /// Scheme and host lowercased, the effective port always written out
+    /// (443 for https, 80 for http), the path kept as is but for trailing
+    /// slashes. Query, fragment and user info are dropped: they don't pick
+    /// a deployment.
+    static func canonicalBaseURL(fromSrv srv: String) -> String {
+        let trimmed = srv.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host?.lowercased(), !host.isEmpty
+        else { return trimmed }
+        let port = components.port ?? ["https": 443, "http": 80][scheme]
+        var path = components.percentEncodedPath
+        while path.hasSuffix("/") { path.removeLast() }
+        return "\(scheme)://\(host)\(port.map { ":\($0)" } ?? "")\(path)"
+    }
+}
+
 struct ContactSyncDisclosure: Equatable, Identifiable {
     struct Part: Equatable, Hashable {
         let title: String
         let body: String
     }
 
-    /// The paired server, as `serverName(fromSrv:)` names it.
-    let server: String
+    /// The paired relay. Agree records consent for it.
+    let relay: ContactSyncRelay
     /// "iPhone", "iPad" or "Mac".
     let device: String
 
-    var id: String { server }
+    /// The relay's name, as the text shows it.
+    var server: String { relay.name }
 
-    init(server: String, device: String = ContactSyncDisclosure.thisDevice) {
-        self.server = server
+    var id: String { relay.consentKey }
+
+    init(relay: ContactSyncRelay, device: String = ContactSyncDisclosure.thisDevice) {
+        self.relay = relay
         self.device = device
     }
 
@@ -70,7 +105,8 @@ struct ContactSyncDisclosure: Equatable, Identifiable {
     }
 
     /// The paired server's name, as Settings → Connection shows it: the host
-    /// of the pairing's `srv`, lowercased. Consent is recorded against it.
+    /// of the pairing's `srv`, lowercased. Display only: consent is recorded
+    /// against `ContactSyncRelay.consentKey`.
     static func serverName(fromSrv srv: String) -> String {
         (URL(string: srv)?.host() ?? srv).lowercased()
     }

@@ -32,7 +32,10 @@
   Apple Contacts now first shows what is sent, to which server (named by its
   address), how that server uses contacts and how long it keeps them, with
   **Agree** and **Not now**. Only Agree leads to the Contacts permission
-  prompt. Consent belongs to one server: pairing another needs it again. The
+  prompt. Consent belongs to one server, by its full address: pairing
+  another, even on the same host with another port or path, needs it again.
+  Turning it off also stops cards already imported from Apple Contacts but
+  not yet sent from going out. The
   Contacts row says "On. Contacts are sent to <server>." or "Off.", and
   turning it off asks first, then stops sync and keeps the cards. The
   Contacts screen's Sync shows the same text. Before, the toggle started

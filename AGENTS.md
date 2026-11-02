@@ -370,10 +370,17 @@ Same protocol as KyPost for Android and Linux; change it in all three.
   consent for the paired server (`ContactsSettingsStore.isSystemSyncOn`); an
   install that had the toggle on before consent existed reads as off. The
   toggle only asks: on shows the disclosure, and only Agree records consent
-  (hashed server name, one server at a time), resets the import baseline,
-  then asks iOS for access; off asks to confirm, then forgets consent and
-  keeps the cards. `SystemContactsExporter` checks consent on every pass and
-  again before importing. The Contacts screen's Sync shows the same
+  (one relay at a time), resets the import baseline, then asks iOS for
+  access; off asks to confirm, then forgets consent and keeps the cards.
+  Consent is keyed on `ContactSyncRelay.consentKey`, the canonical base URL
+  (scheme, host, port, path), stored hashed; the host (`name`) is display
+  only and never compared as consent. Each Agree gets a new
+  `syncConsentToken`, and forgetting clears it. `SystemContactsExporter`
+  checks consent on every pass, and the import re-checks the token after
+  each suspension and before each card. An import is stamped with its token
+  (`SystemContactLink.importConsent`), and until it reaches the server
+  `ContactSyncRepository` sends it only while that consent stands: imports
+  queued before Turn Off, another relay, or a newer Agree stay unsent. The Contacts screen's Sync shows the same
   disclosure once per server; agreeing there never turns the toggle on.
   Contacts typed into KyPost sync with the server without this gate, as on
   Android. The disclosure's "How they are used" and "How long" come from

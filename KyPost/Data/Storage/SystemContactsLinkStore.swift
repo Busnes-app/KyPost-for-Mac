@@ -26,6 +26,10 @@ struct SystemContactLink: Codable, Equatable, Sendable {
     /// is never rewritten from relay data and never deleted — adoption is a
     /// de-duplication device, not a claim of ownership.
     var userOwned: Bool
+    /// For an import: the consent token (`ContactsSettingsStore.syncConsentToken`)
+    /// it was imported under. Until it reaches the server it is uploaded only
+    /// while that same consent stands; nil never uploads.
+    var importConsent: String?
 
     init(
         localId: UUID,
@@ -33,7 +37,8 @@ struct SystemContactLink: Codable, Equatable, Sendable {
         cnIdentifier: String,
         exportedUpdatedAt: Date,
         imported: Bool = false,
-        userOwned: Bool = false
+        userOwned: Bool = false,
+        importConsent: String? = nil
     ) {
         self.localId = localId
         self.uid = uid
@@ -41,6 +46,7 @@ struct SystemContactLink: Codable, Equatable, Sendable {
         self.exportedUpdatedAt = exportedUpdatedAt
         self.imported = imported
         self.userOwned = userOwned
+        self.importConsent = importConsent
     }
 
     init(from decoder: Decoder) throws {
@@ -57,6 +63,7 @@ struct SystemContactLink: Codable, Equatable, Sendable {
         // the entire address book. Pre-upgrade links default to false, which
         // preserves today's behaviour for cards the app really did create.
         userOwned = try container.decodeIfPresent(Bool.self, forKey: .userOwned) ?? false
+        importConsent = try container.decodeIfPresent(String.self, forKey: .importConsent)
     }
 }
 

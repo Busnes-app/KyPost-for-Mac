@@ -122,9 +122,9 @@ final class SystemContactsExporter {
     private let linkStore: SystemContactsLinkStore
     private let baselineStore: SystemContactsBaselineStore
     private let settings: ContactsSettingsStore
-    /// The paired server (`ContactSyncDisclosure.serverName`), or nil when
-    /// unpaired. Read on every pass: sync runs only with consent for it.
-    private let currentServer: () -> String?
+    /// The paired relay, or nil when unpaired. Read on every pass: sync runs
+    /// only with consent for it.
+    private let currentRelay: () -> ContactSyncRelay?
     private let contactDAO: ContactDAO
     /// Cached server photo bytes written onto cards; nil in tests that don't
     /// exercise photos.
@@ -135,7 +135,7 @@ final class SystemContactsExporter {
         linkStore: SystemContactsLinkStore,
         baselineStore: SystemContactsBaselineStore,
         settings: ContactsSettingsStore,
-        currentServer: @escaping () -> String?,
+        currentRelay: @escaping () -> ContactSyncRelay?,
         contactDAO: ContactDAO,
         photoCache: ContactPhotoCache? = nil,
         groupLinker: SystemContactGroupLinker? = nil,
@@ -145,7 +145,7 @@ final class SystemContactsExporter {
         self.linkStore = linkStore
         self.baselineStore = baselineStore
         self.settings = settings
-        self.currentServer = currentServer
+        self.currentRelay = currentRelay
         self.contactDAO = contactDAO
         self.photoCache = photoCache
         self.groupLinker = groupLinker
@@ -197,9 +197,23 @@ final class SystemContactsExporter {
         }
     }
 
-    /// Sync on, with consent for the server paired now.
+    /// Sync on, with consent for the relay paired now.
     var isSyncOn: Bool {
-        settings.isSystemSyncOn(forServer: currentServer())
+        settings.isSystemSyncOn(for: currentRelay())
+    }
+
+    /// `pending` without the Apple Contacts imports that have not reached the
+    /// server and whose consent no longer stands: sync turned off, another
+    /// relay paired, or a newer Agree since the import (which promised that
+    /// cards already in Apple Contacts are not sent). They stay in the app,
+    /// unsent.
+    func withholdingUnconsentedImports(_ pending: [Contact]) -> [Contact] {
+        let consent = isSyncOn ? settings.syncConsentToken : nil
+        let withheld = Set(linkStore.all().filter {
+            $0.imported && (consent == nil || $0.importConsent != consent)
+        }.map(\.localId))
+        guard !withheld.isEmpty else { return pending }
+        return pending.filter { $0.uid != nil || !withheld.contains($0.localId) }
     }
 
     /// Forgets which cards were already in Apple Contacts, so the next pass
@@ -248,6 +262,9 @@ final class SystemContactsExporter {
     private func performReconcile() async -> Summary {
         var summary = Summary()
         guard isSyncOn, isAuthorized else { return summary }
+        // The consent this pass imports under: Turn Off while the pass is
+        // suspended changes it, and the import stops.
+        let consent = settings.syncConsentToken
         // A failed read is not an empty Contacts database either: every
         // linked card would read as already gone, and its link be dropped.
         let cards: [CNContact]
@@ -258,7 +275,7 @@ final class SystemContactsExporter {
             return summary
         }
         await adoptMatchingCards(cards, summary: &summary)
-        await importNewCards(cards, summary: &summary)
+        await importNewCards(cards, consent: consent, summary: &summary)
 
         // A failed read is not an empty address book. Swallowing the throw here
         // made a locked store, a migration failure, or a container torn down
@@ -335,7 +352,8 @@ final class SystemContactsExporter {
                     cnIdentifier: relink.link.cnIdentifier,
                     exportedUpdatedAt: relink.contact.updatedAt,
                     imported: relink.link.imported,
-                    userOwned: true
+                    userOwned: true,
+                    importConsent: relink.link.importConsent
                 ))
                 continue
             }
@@ -514,7 +532,8 @@ final class SystemContactsExporter {
                 // refresh: we are deliberately not refreshing them.
                 exportedUpdatedAt: stale?.exportedUpdatedAt ?? contact.updatedAt,
                 imported: stale?.imported ?? false,
-                userOwned: stale?.userOwned ?? !isReadoption
+                userOwned: stale?.userOwned ?? !isReadoption,
+                importConsent: stale?.importConsent
             ))
             summary.adopted += 1
         }
@@ -537,10 +556,14 @@ final class SystemContactsExporter {
     /// queued (needsSync) for the next relay push. The very first pass only
     /// captures the baseline, so enabling sync doesn't import the user's
     /// whole pre-existing address book.
-    private func importNewCards(_ cards: [CNContact], summary: inout Summary) async {
+    ///
+    /// `consent` is the token the pass started under. It is checked again
+    /// after every suspension and before each card: Turn Off, or another
+    /// relay paired, while the pass waits stops it there.
+    private func importNewCards(_ cards: [CNContact], consent: String?, summary: inout Summary) async {
         // Checked again here, after the reads above: the pairing may have
         // changed since the pass began, and an import queues an upload.
-        guard isSyncOn else { return }
+        guard mayImport(under: consent) else { return }
         guard baselineStore.isCaptured else {
             baselineStore.capture(identifiers: cards.map(\.identifier))
             return
@@ -552,10 +575,12 @@ final class SystemContactsExporter {
         // otherwise re-import the whole address book as duplicates. Matched
         // cards are baselined so they stay ignored even if their app contact
         // is deleted later.
+        await beforeImportRead?()
         let contacts = (try? await contactDAO.listAll()) ?? []
         var knownKeys = Set(contacts.flatMap { SystemContactMapper.matchKeys(for: $0) })
         for card in cards
         where !linked.contains(card.identifier) && !baseline.contains(card.identifier) {
+            guard mayImport(under: consent) else { return }
             let keys = SystemContactMapper.matchKeys(for: card)
             if keys.contains(where: knownKeys.contains) {
                 baselineStore.add(card.identifier)
@@ -565,13 +590,18 @@ final class SystemContactsExporter {
             do {
                 try await contactDAO.upsert(contacts: [contact])
                 knownKeys.formUnion(keys)
+                // Linked even if consent went during the write, so the card
+                // is not imported again; the link's `importConsent` then
+                // keeps it from the upload.
                 linkStore.upsert(SystemContactLink(
                     localId: contact.localId,
                     uid: nil,
                     cnIdentifier: card.identifier,
                     exportedUpdatedAt: contact.updatedAt,
-                    imported: true
+                    imported: true,
+                    importConsent: consent
                 ))
+                guard mayImport(under: consent) else { return }
                 summary.imported += 1
             } catch {
                 summary.failed += 1
@@ -579,6 +609,15 @@ final class SystemContactsExporter {
             }
         }
     }
+
+    /// Sync still on, for the same relay, under the consent `consent` names.
+    private func mayImport(under consent: String?) -> Bool {
+        consent != nil && isSyncOn && settings.syncConsentToken == consent
+    }
+
+    /// Tests suspend the import here, between its consent check and its
+    /// contact read.
+    var beforeImportRead: (() async -> Void)?
 
     private func photoData(for contact: Contact) -> Data? {
         guard let photoRef = contact.photoRef, !photoRef.isEmpty else { return nil }
@@ -630,7 +669,8 @@ final class SystemContactsExporter {
                     cnIdentifier: cnIdentifier,
                     exportedUpdatedAt: contact.updatedAt,
                     imported: imported,
-                    userOwned: userOwned
+                    userOwned: userOwned,
+                    importConsent: existingLink?.importConsent
                 ))
                 await syncGroups(for: contact, cardIdentifier: cnIdentifier)
                 summary.updated += 1

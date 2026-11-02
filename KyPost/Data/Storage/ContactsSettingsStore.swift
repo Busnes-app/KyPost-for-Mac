@@ -14,6 +14,7 @@ final class ContactsSettingsStore {
     private enum Key {
         static let exportToSystemEnabled = "contacts.exportToSystemEnabled"
         static let syncConsentServer = "contacts.syncConsentServer"
+        static let syncConsentToken = "contacts.syncConsentToken"
     }
 
     private let defaults: UserDefaults
@@ -22,7 +23,7 @@ final class ContactsSettingsStore {
         self.defaults = defaults
     }
 
-    /// The stored toggle. Read `isSystemSyncOn(forServer:)` instead: the
+    /// The stored toggle. Read `isSystemSyncOn(for:)` instead: the
     /// toggle alone, without consent for the paired server, is not "on".
     var exportToSystemContactsEnabled: Bool {
         get { defaults.object(forKey: Key.exportToSystemEnabled) as? Bool ?? false }
@@ -30,31 +31,43 @@ final class ContactsSettingsStore {
     }
 
     /// Whether the user agreed, on the disclosure, to send contacts to
-    /// `server` (`ContactSyncDisclosure.serverName`). One server at a time:
-    /// pairing another needs fresh consent. Stored hashed, so these defaults
-    /// never name the server.
-    func hasSyncConsent(forServer server: String?) -> Bool {
-        guard let server, let stored = defaults.string(forKey: Key.syncConsentServer) else { return false }
-        return stored == Self.digest(server)
+    /// `relay` (its `consentKey`: scheme, host, port and path). One relay at
+    /// a time: pairing another needs fresh consent. Stored hashed, so these
+    /// defaults never name the server.
+    func hasSyncConsent(for relay: ContactSyncRelay?) -> Bool {
+        guard let relay, let stored = defaults.string(forKey: Key.syncConsentServer) else { return false }
+        return stored == Self.digest(relay.consentKey)
     }
 
-    func recordSyncConsent(forServer server: String) {
-        defaults.set(Self.digest(server), forKey: Key.syncConsentServer)
+    func recordSyncConsent(for relay: ContactSyncRelay) {
+        defaults.set(Self.digest(relay.consentKey), forKey: Key.syncConsentServer)
+        defaults.set(UUID().uuidString, forKey: Key.syncConsentToken)
     }
 
     func forgetSyncConsent() {
         defaults.removeObject(forKey: Key.syncConsentServer)
+        defaults.removeObject(forKey: Key.syncConsentToken)
+    }
+
+    /// Names one Agree: new each time consent is recorded, nil once it is
+    /// forgotten. An import holds the token it started under and stops when
+    /// it changes; a card imported under an earlier token is never uploaded
+    /// (`SystemContactsExporter.withholdingUnconsentedImports`).
+    var syncConsentToken: String? {
+        defaults.string(forKey: Key.syncConsentToken)
     }
 
     /// What "Sync with Apple Contacts" reads as: on only with consent for the
-    /// paired server. An install that turned it on before the disclosure
+    /// paired relay. An install that turned it on before the disclosure
     /// existed reads as off until the user agrees.
-    func isSystemSyncOn(forServer server: String?) -> Bool {
-        exportToSystemContactsEnabled && hasSyncConsent(forServer: server)
+    func isSystemSyncOn(for relay: ContactSyncRelay?) -> Bool {
+        exportToSystemContactsEnabled && hasSyncConsent(for: relay)
     }
 
-    private static func digest(_ server: String) -> String {
-        SHA256.hash(data: Data(server.lowercased().utf8))
+    private static func digest(_ key: String) -> String {
+        // Not lowercased: the key's path is case-sensitive, and its scheme
+        // and host are lowercased already.
+        SHA256.hash(data: Data(key.utf8))
             .map { String(format: "%02x", $0) }.joined()
     }
 }

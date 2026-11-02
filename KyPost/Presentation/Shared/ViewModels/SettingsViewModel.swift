@@ -138,7 +138,7 @@ final class SettingsViewModel {
         self.pairingDisplayOverride = pairingDisplayOverride
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.isSystemSyncOn(
-            forServer: Self.contactSyncServer(securePairingStore, override: pairingDisplayOverride)
+            for: Self.contactSyncRelay(securePairingStore, override: pairingDisplayOverride)
         )
     }
 
@@ -306,18 +306,21 @@ final class SettingsViewModel {
 
     // MARK: - Apple Contacts export
 
-    /// The server contact sync sends to, as named on the disclosure and in
-    /// the Contacts row; nil when unpaired. The screenshot build names its
-    /// display-only server, which no sync path ever reads.
-    var contactSyncServer: String? {
+    /// The relay contact sync sends to, which consent is recorded against;
+    /// nil when unpaired. The screenshot build names its display-only
+    /// server, which no sync path ever reads.
+    var contactSyncRelay: ContactSyncRelay? {
         _ = pairingRevision
-        return Self.contactSyncServer(securePairingStore, override: pairingDisplayOverride)
+        return Self.contactSyncRelay(securePairingStore, override: pairingDisplayOverride)
     }
 
-    private static func contactSyncServer(_ store: SecurePairingStore, override: PairingDisplay?) -> String? {
-        if let override { return override.serverHost }
+    /// The relay's name, as the disclosure and the Contacts row show it.
+    var contactSyncServer: String? { contactSyncRelay?.name }
+
+    private static func contactSyncRelay(_ store: SecurePairingStore, override: PairingDisplay?) -> ContactSyncRelay? {
+        if let override { return ContactSyncRelay(srv: "https://\(override.serverHost)") }
         guard let pairing = try? store.loadPairing() else { return nil }
-        return ContactSyncDisclosure.serverName(fromSrv: pairing.srv)
+        return ContactSyncRelay(srv: pairing.srv)
     }
 
     /// The Contacts row's state line, as on Android.
@@ -331,7 +334,7 @@ final class SettingsViewModel {
     func refreshContactsExportState() {
         // Consent belongs to one server: a pairing changed elsewhere reads as
         // off here until the user agrees for the new one.
-        setExportToggle(contactsSettingsStore.isSystemSyncOn(forServer: contactSyncServer))
+        setExportToggle(contactsSettingsStore.isSystemSyncOn(for: contactSyncRelay))
         contactsExportDenied = systemContactsExporter.isDenied
         hasExportedContacts = systemContactsExporter.hasExportedContacts()
     }
@@ -375,11 +378,11 @@ final class SettingsViewModel {
     }
 
     private func askToSyncContacts() {
-        guard let server = contactSyncServer else {
+        guard let relay = contactSyncRelay else {
             statusMessage = String(localized: "Pair with your KyPost server first. Contact sync sends your contacts to that server.")
             return
         }
-        contactSyncDisclosure = ContactSyncDisclosure(server: server)
+        contactSyncDisclosure = ContactSyncDisclosure(relay: relay)
     }
 
     /// Not now: the toggle stays off and nothing is recorded.
@@ -393,9 +396,9 @@ final class SettingsViewModel {
         guard let disclosure = contactSyncDisclosure else { return }
         contactSyncDisclosure = nil
         // The pairing may have changed while the disclosure was open: the
-        // user agreed to the server it named, not to whichever is paired now.
-        guard disclosure.server == contactSyncServer else { return }
-        contactsSettingsStore.recordSyncConsent(forServer: disclosure.server)
+        // user agreed to the relay it named, not to whichever is paired now.
+        guard disclosure.relay == contactSyncRelay else { return }
+        contactsSettingsStore.recordSyncConsent(for: disclosure.relay)
         // The disclosure says cards already in Apple Contacts are not sent.
         systemContactsExporter.resetImportBaseline()
         guard await systemContactsExporter.requestAccessIfNeeded() else {

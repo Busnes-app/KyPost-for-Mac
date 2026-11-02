@@ -24,22 +24,22 @@ final class ContactsViewModel {
     /// says so). Shown before the sync, not after — the point is to say what
     /// is about to leave the device while that is still a choice.
     var syncDisclosure: ContactSyncDisclosure? {
-        guard let server = repository.pairedServerName,
-              !settingsStore.hasSyncConsent(forServer: server)
+        guard let relay = repository.pairedRelay,
+              !settingsStore.hasSyncConsent(for: relay)
         else { return nil }
-        return ContactSyncDisclosure(server: server)
+        return ContactSyncDisclosure(relay: relay)
     }
 
-    /// Agree on this screen: consent for the server the disclosure named.
+    /// Agree on this screen: consent for the relay the disclosure named.
     /// Apple Contacts sync is still turned on only in Settings, so a toggle
     /// left on without consent (an older install, another server) is turned
     /// off rather than resumed here.
     func agreeToSync(_ disclosure: ContactSyncDisclosure) {
-        guard disclosure.server == repository.pairedServerName else { return }
-        if !settingsStore.hasSyncConsent(forServer: disclosure.server) {
+        guard disclosure.relay == repository.pairedRelay else { return }
+        if !settingsStore.hasSyncConsent(for: disclosure.relay) {
             settingsStore.exportToSystemContactsEnabled = false
         }
-        settingsStore.recordSyncConsent(forServer: disclosure.server)
+        settingsStore.recordSyncConsent(for: disclosure.relay)
     }
 
     /// Reads the cached bootstrap custody. Cheap and idempotent: the service

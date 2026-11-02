@@ -264,8 +264,8 @@ final class SingletonGraph {
             linkStore: systemContactsLinkStore,
             baselineStore: systemContactsBaselineStore,
             settings: contactsSettingsStore,
-            currentServer: { [securePairingStore] in
-                (try? securePairingStore.loadPairing()).map { ContactSyncDisclosure.serverName(fromSrv: $0.srv) }
+            currentRelay: { [securePairingStore] in
+                (try? securePairingStore.loadPairing()).map { ContactSyncRelay(srv: $0.srv) }
             },
             contactDAO: contactDAO,
             photoCache: contactPhotoCache,
@@ -465,7 +465,9 @@ final class SingletonGraph {
             // finds consent for it and nothing syncs.
             if DemoContent.requestedScreen == "contacts-sync-on" {
                 contactsSettingsStore.exportToSystemContactsEnabled = true
-                contactsSettingsStore.recordSyncConsent(forServer: DemoContent.pairingDisplay.serverHost)
+                contactsSettingsStore.recordSyncConsent(
+                    for: ContactSyncRelay(srv: "https://\(DemoContent.pairingDisplay.serverHost)")
+                )
             }
             // Compose asks the relay who holds the account's key before it
             // offers Encrypt/Sign. The demo account is server-custody.

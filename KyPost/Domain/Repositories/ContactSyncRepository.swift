@@ -235,7 +235,7 @@ final class ContactSyncRepository {
     }
 
     func pendingSummary() async -> ContactPendingSummary {
-        let pending = ((try? await contactDAO.listPendingSync()) ?? []).filter {
+        let pending = ((try? await pendingUploads()) ?? []).filter {
             !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         let tombstones = pendingDeletesStore.all().count
@@ -243,10 +243,17 @@ final class ContactSyncRepository {
         return ContactPendingSummary(count: pending.count + tombstones, oldestQueuedAt: oldest)
     }
 
-    /// The paired server, as the contact-sync disclosure names it
-    /// (`ContactSyncDisclosure.serverName`); nil when unpaired.
-    var pairedServerName: String? {
-        (try? securePairingStore.loadPairing()).map { ContactSyncDisclosure.serverName(fromSrv: $0.srv) }
+    /// The paired relay, as the contact-sync disclosure names it and
+    /// consent is recorded against; nil when unpaired.
+    var pairedRelay: ContactSyncRelay? {
+        (try? securePairingStore.loadPairing()).map { ContactSyncRelay(srv: $0.srv) }
+    }
+
+    /// Contacts flagged `needsSync`, less Apple Contacts imports whose
+    /// consent no longer stands: those never leave the device.
+    private func pendingUploads() async throws -> [Contact] {
+        let pending = try await contactDAO.listPendingSync()
+        return systemContactsExporter?.withholdingUnconsentedImports(pending) ?? pending
     }
 
     /// - Parameter afterTooOld: this pass is the re-pull a `tooOld` answer
@@ -273,7 +280,7 @@ final class ContactSyncRepository {
             try await reconcileUnansweredCreates(serverUrl: pairing.srv, auth: auth, since: cursor)
         }
 
-        let pending = try await contactDAO.listPendingSync()
+        let pending = try await pendingUploads()
         // The server silently drops any non-delete change with an empty fn
         // (llama-labels contacts_handlers.go), so a nameless contact is never
         // echoed back and can never reconcile — pushing it just strands it.
@@ -455,7 +462,7 @@ final class ContactSyncRepository {
     /// time. A `tooOld` answer is left to the sync's own `tooOld` handling,
     /// whose re-pull from 0 comes back here.
     private func reconcileUnansweredCreates(serverUrl: String, auth: RelayAuth, since cursor: Int) async throws {
-        var creates = try await contactDAO.listPendingSync().filter {
+        var creates = try await pendingUploads().filter {
             $0.uid == nil && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         guard !creates.isEmpty else {
