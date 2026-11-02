@@ -173,6 +173,9 @@ struct KyPostApp: App {
                     if graph.isDemo, DemoContent.requestedScreen == "mfa" {
                         router.handle(.openMfaApproval(DemoContent.mfaChallenge))
                     }
+                    if graph.isDemo, DemoContent.pairingApprovalScreen != nil {
+                        router.handle(.openPairingFlow(DemoContent.pairingParams))
+                    }
 #endif
                 }
                 .lockCover(theme: themeManager.palette)

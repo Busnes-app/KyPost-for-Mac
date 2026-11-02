@@ -26,7 +26,8 @@ enum DemoContent {
     /// Set by the screenshot runner; absent in an ordinary Debug run.
     nonisolated static let launchArgument = "-KyPostDemo"
     /// Optional follow-on argument selecting a screen that has no navigable
-    /// route (currently only `mfa`, which normally arrives by push).
+    /// route: `mfa`, which normally arrives by push, and `pairing-approval` /
+    /// `pairing-denied`, which need a server's 202.
     static let screenArgument = "-KyPostDemoScreen"
 
     nonisolated static var isEnabled: Bool {
@@ -444,6 +445,29 @@ enum DemoContent {
         matchDigits: "47",
         decoyDigits: ["12", "83"]
     )
+
+    /// The device-approval screens (`-KyPostDemoScreen pairing-approval` or
+    /// `pairing-denied`). A pending pairing needs a server's 202; the
+    /// runner opens the pairing sheet with `pairingParams` and the sheet
+    /// shows this state instead of asking to pair.
+    enum PairingScreen {
+        case awaiting(PendingApproval)
+        case notApproved
+    }
+
+    static let pairingParams = PairingParams(sub: "demo", srv: "https://kypost.example", pt: "demo")
+
+    /// Nil unless the demo was launched with one of the two screen names.
+    static var pairingApprovalScreen: PairingScreen? {
+        switch requestedScreen {
+        case "pairing-approval":
+            .awaiting(PendingApproval(approvalCode: "048213", server: "kypost.example"))
+        case "pairing-denied":
+            .notApproved
+        default:
+            nil
+        }
+    }
 
     private static func contact(
         name: String,
