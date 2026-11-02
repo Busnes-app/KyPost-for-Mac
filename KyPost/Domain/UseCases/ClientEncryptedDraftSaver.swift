@@ -48,7 +48,7 @@ nonisolated struct ClientEncryptedDraftSaver: Sendable {
     private let transport: any ClientEncryptedDraftTransport
     private let crypto: any PgpEncrypting
     private let session: EnrollmentSession
-    /// Bootstrap's `suggestedUserIDs[0]`, the draft's `From`.
+    /// Bootstrap's `sendingAddresses[0]`, the draft's `From`.
     private let accountAddress: String
     private let now: @Sendable () -> Date
     private let boundaryToken: @Sendable () -> String

@@ -1069,7 +1069,7 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
 
     /// Reply as above, Cc'ing everyone else on the original To/Cc — minus
     /// whoever is already in To and every one of `ownAddresses` (the
-    /// pairing's sub and bootstrap's `suggestedUserIDs`, aliases included).
+    /// pairing's sub and bootstrap's `sendingAddresses`, aliases included).
     static func replyAll(to email: Email, ownAddresses: [String]) -> ComposeDraft {
         var draft = reply(to: email, ownAddresses: ownAddresses)
         var excluded = normalized(ownAddresses + [email.senderEmail, draft.to])

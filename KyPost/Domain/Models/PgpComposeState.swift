@@ -37,8 +37,8 @@ nonisolated struct PgpComposeState: Equatable, Sendable {
 ///     "client" sends people to webmail for no reason. An unrecognised
 ///     non-nil value is treated as "not server": degrade, never guess.
 ///   - deviceEnrolled: whether this device still holds the account's key.
-///   - accountAddress: bootstrap's `suggestedUserIDs[0]` and nothing else —
-///     the server derives it from the same expression. Blank means no mail
+///   - accountAddress: bootstrap's `sendingAddresses[0]` and nothing else —
+///     the relay's default `From` for this account. Blank means no mail
 ///     account is configured, so no delivery `From` can be built, and an
 ///     enrolled client-custody account still falls back to the handoff rather
 ///     than offering a Send the relay is certain to refuse with 403.
