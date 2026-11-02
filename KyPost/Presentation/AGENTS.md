@@ -95,7 +95,8 @@ Domain.
   server it waits on, "Approve this device on the KyPost web page that
   showed the code. Check the code matches." and Cancel. Polling runs only
   while that screen is up: Cancel and `onDisappear` both call
-  `cancelApproval`. Not approved (410 or expiry) returns to the scan/paste
+  `cancelPairing`, which also ends a registration still in flight, so a
+  late 200 or 202 stores, keeps and polls nothing. Not approved (410 or expiry) returns to the scan/paste
   screen with "Not approved: denied or timed out. Scan a new code."
   (`PushPairingViewModel.notice`).
 - **A new pairing reloads the Mac window at once.** `MacRootView` observes

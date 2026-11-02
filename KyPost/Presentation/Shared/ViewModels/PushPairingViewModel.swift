@@ -84,8 +84,8 @@ final class PushPairingViewModel {
     /// otherwise silently repoint the pairing at an attacker server with no
     /// warning at all.
     func present(params: PairingParams) {
-        // A new link replaces a pairing still waiting for approval.
-        cancelApproval()
+        // A new link replaces a pairing still registering or waiting.
+        cancelPairing()
         notice = nil
         state = .confirming(PendingPairingConfirmation(params: params, existingHost: currentPairedHost))
     }
@@ -130,12 +130,17 @@ final class PushPairingViewModel {
         }
     }
 
-    /// Cancel on the waiting screen, or the screen closing: stops polling
-    /// and drops the pending credentials. No-op in any other state.
-    func cancelApproval() {
-        guard case .awaitingApproval = state else { return }
+    /// Cancel on the waiting screen, or the screen closing: ends the
+    /// attempt whether it is still registering or waiting on approval, so a
+    /// late answer stores nothing and starts no polls. No-op in any other
+    /// state.
+    func cancelPairing() {
+        switch state {
+        case .working, .awaitingApproval: break
+        default: return
+        }
         attempt += 1
-        registrationService.cancelPendingPairing()
+        registrationService.cancelPairing()
         state = .idle
     }
 

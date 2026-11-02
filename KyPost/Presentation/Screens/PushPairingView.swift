@@ -109,9 +109,10 @@ struct PushPairingView: View {
                 viewModel.present(params: initialParams)
             }
         }
-        // Polling runs only while this screen is up (device-approval
-        // contract); closing it drops the pending credentials.
-        .onDisappear { viewModel.cancelApproval() }
+        // Pairing runs only while this screen is up (device-approval
+        // contract); closing it ends a registration still in flight and
+        // drops the pending credentials.
+        .onDisappear { viewModel.cancelPairing() }
 #if os(iOS)
         .modifier(SignOnHandoffReceiver(signOn: signOn, showSignOn: $showSignOn) { params in
             viewModel.present(params: params)
@@ -197,7 +198,7 @@ struct PushPairingView: View {
                     .foregroundStyle(theme.secondaryInk)
             }
             .accessibilityElement(children: .combine)
-            Button("Cancel") { viewModel.cancelApproval() }
+            Button("Cancel") { viewModel.cancelPairing() }
                 .buttonStyle(SecondaryButtonStyle())
         }
         .frame(maxHeight: .infinity)
