@@ -18,12 +18,29 @@ final class ContactsViewModel {
     /// `pgpIdentityPresent`.
     private(set) var accountIdentityPresent: Bool?
 
-    /// True until the user has been told what contact sync does. Explained
-    /// before the first sync, not after — the point is to say what is about to
-    /// leave the device while that is still a choice.
-    var shouldExplainSync: Bool { !settingsStore.syncExplained }
+    /// The disclosure to show before a Sync from this screen: until the user
+    /// agrees for the paired server, the same text Settings shows before
+    /// Apple Contacts sync. Nil once agreed, and when unpaired (the sync then
+    /// says so). Shown before the sync, not after — the point is to say what
+    /// is about to leave the device while that is still a choice.
+    var syncDisclosure: ContactSyncDisclosure? {
+        guard let server = repository.pairedServerName,
+              !settingsStore.hasSyncConsent(forServer: server)
+        else { return nil }
+        return ContactSyncDisclosure(server: server)
+    }
 
-    func markSyncExplained() { settingsStore.syncExplained = true }
+    /// Agree on this screen: consent for the server the disclosure named.
+    /// Apple Contacts sync is still turned on only in Settings, so a toggle
+    /// left on without consent (an older install, another server) is turned
+    /// off rather than resumed here.
+    func agreeToSync(_ disclosure: ContactSyncDisclosure) {
+        guard disclosure.server == repository.pairedServerName else { return }
+        if !settingsStore.hasSyncConsent(forServer: disclosure.server) {
+            settingsStore.exportToSystemContactsEnabled = false
+        }
+        settingsStore.recordSyncConsent(forServer: disclosure.server)
+    }
 
     /// Reads the cached bootstrap custody. Cheap and idempotent: the service
     /// fetches once per session.

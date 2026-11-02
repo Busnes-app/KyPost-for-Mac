@@ -365,6 +365,19 @@ Same protocol as KyPost for Android and Linux; change it in all three.
     linked card or more than half of them (cards already gone do not count),
     aborts on a failed Contacts read, and reports withheld deletes through
     `ContactSyncHealth.withheldCardDeletes` to `ContactSyncBanner`.
+- **Consent before contacts leave Apple Contacts** (`ContactSyncDisclosure`,
+  Android #282). "Sync with Apple Contacts" is on only with the toggle **and**
+  consent for the paired server (`ContactsSettingsStore.isSystemSyncOn`); an
+  install that had the toggle on before consent existed reads as off. The
+  toggle only asks: on shows the disclosure, and only Agree records consent
+  (hashed server name, one server at a time), resets the import baseline,
+  then asks iOS for access; off asks to confirm, then forgets consent and
+  keeps the cards. `SystemContactsExporter` checks consent on every pass and
+  again before importing. The Contacts screen's Sync shows the same
+  disclosure once per server; agreeing there never turns the toggle on.
+  Contacts typed into KyPost sync with the server without this gate, as on
+  Android. The disclosure's "How they are used" and "How long" come from
+  KyPost-Server's code; change them when the server's use of contacts changes.
 - **vCard** (`Utilities/VCard.swift`, Android #184): 4.0 or 3.0; every value
   escaped and stripped of control characters by **unicode scalar** (C0, DEL,
   C1, U+2028/2029 — wider than Android), so no field can start a property or a

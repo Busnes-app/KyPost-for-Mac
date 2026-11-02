@@ -18,7 +18,7 @@ struct ContactsListView: View {
     var selection: Binding<UUID?>?
     @State private var showNewContact = false
     @State private var showScanKey = false
-    @State private var syncIntroShown = false
+    @State private var syncDisclosure: ContactSyncDisclosure?
 
     /// The self-contact first, everyone else in the order the view model
     /// supplies. There is at most one, so this is a partition rather than a
@@ -66,21 +66,19 @@ struct ContactsListView: View {
             // in memory is stale until it reloads.
             if !isPresented { Task { await viewModel.load() } }
         }
-        .confirmationDialog(
-            "Sync contacts with your server?",
-            isPresented: $syncIntroShown,
-            titleVisibility: .visible
-        ) {
-            Button("Sync Contacts") {
-                viewModel.markSyncExplained()
-                Task { await viewModel.sync() }
-            }
-            Button("Not Now", role: .cancel) {}
-        } message: {
-            // Shown once, before the first sync rather than after it: the
-            // point is to say what is about to leave the device while that is
-            // still a choice.
-            Text("Contacts sync both ways with your KyPost server. Contacts you add here are uploaded, and contacts from the server appear here. Your server is the only place they go.")
+        .sheet(item: $syncDisclosure) { disclosure in
+            // The same disclosure Settings shows, once per server, before
+            // the first Sync from here.
+            ContactSyncDisclosureView(
+                disclosure: disclosure,
+                onAgree: {
+                    viewModel.agreeToSync(disclosure)
+                    syncDisclosure = nil
+                    Task { await viewModel.sync() }
+                },
+                onDecline: { syncDisclosure = nil }
+            )
+            .environment(\.theme, theme)
         }
         .task {
             await viewModel.load()
@@ -167,8 +165,8 @@ struct ContactsListView: View {
         ToolbarItem {
             Menu {
                 Button {
-                    if viewModel.shouldExplainSync {
-                        syncIntroShown = true
+                    if let disclosure = viewModel.syncDisclosure {
+                        syncDisclosure = disclosure
                     } else {
                         Task { await viewModel.sync() }
                     }

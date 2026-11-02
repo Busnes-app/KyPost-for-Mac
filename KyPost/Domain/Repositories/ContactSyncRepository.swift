@@ -243,6 +243,12 @@ final class ContactSyncRepository {
         return ContactPendingSummary(count: pending.count + tombstones, oldestQueuedAt: oldest)
     }
 
+    /// The paired server, as the contact-sync disclosure names it
+    /// (`ContactSyncDisclosure.serverName`); nil when unpaired.
+    var pairedServerName: String? {
+        (try? securePairingStore.loadPairing()).map { ContactSyncDisclosure.serverName(fromSrv: $0.srv) }
+    }
+
     /// - Parameter afterTooOld: this pass is the re-pull a `tooOld` answer
     ///   asked for; a second `tooOld` is not retried again.
     private func performSync(afterTooOld: Bool = false) async throws -> ContactSyncSummary {

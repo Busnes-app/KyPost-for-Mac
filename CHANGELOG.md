@@ -28,6 +28,20 @@
 
 ### Security
 
+- **Contacts leave Apple Contacts only after you agree.** Turning on Sync with
+  Apple Contacts now first shows what is sent, to which server (named by its
+  address), how that server uses contacts and how long it keeps them, with
+  **Agree** and **Not now**. Only Agree leads to the Contacts permission
+  prompt. Consent belongs to one server: pairing another needs it again. The
+  Contacts row says "On. Contacts are sent to <server>." or "Off.", and
+  turning it off asks first, then stops sync and keeps the cards. The
+  Contacts screen's Sync shows the same text. Before, the toggle started
+  two-way sync after only the iOS prompt, and cards added in Apple Contacts
+  were uploaded with no warning.
+- **Installs that had Sync with Apple Contacts on read as off after updating**
+  until you agree. Nothing is read from or written to Apple Contacts until
+  then; cards already there stay.
+
 - **TLS certificates need strong keys on the whole chain.** Every app connection
   now runs the system's trust evaluation itself, then requires RSA of at least
   2048 actual bits or EC of at least P-256 on every certificate of the evaluated

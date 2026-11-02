@@ -394,7 +394,9 @@ Rules:
   why `tab(_:_:)` and `back(_:)` fall back to `app.buttons`; query by label
   or identifier, never by bar.
 - `-KyPostDemoScreen mfa` exists because MFA approval arrives by push and has
-  no navigable route. Add a case there rather than a new launch argument.
+  no navigable route; `contacts-sync-on` seeds Settings → Contacts as on
+  (the demo's Contacts store refuses access, so Agree cannot get there).
+  Add a case there rather than a new launch argument.
 - The fixtures are invented. Keep them invented, and keep the addresses on
   `.example` — a screenshot is published, and a real address in one is a
   real person's inbox.

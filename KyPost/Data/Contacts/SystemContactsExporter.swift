@@ -3,8 +3,9 @@
 //  KyPost
 //
 //  Two-way sync with the system Contacts database, gated by the
-//  ContactsSettingsStore toggle. Export: app contacts become cards. Import
-//  (sync-back): cards added in Contacts.app after sync was first enabled
+//  ContactsSettingsStore toggle and the user's consent for the paired
+//  server (`ContactSyncDisclosure`). Export: app contacts become cards. Import
+//  (sync-back): cards added in Contacts.app after the user agreed to sync
 //  become app contacts queued for the next relay push; everything older is
 //  baselined and left alone. Identity is link-based (localId -> CNContact
 //  identifier via SystemContactsLinkStore): only linked cards are ever
@@ -121,6 +122,9 @@ final class SystemContactsExporter {
     private let linkStore: SystemContactsLinkStore
     private let baselineStore: SystemContactsBaselineStore
     private let settings: ContactsSettingsStore
+    /// The paired server (`ContactSyncDisclosure.serverName`), or nil when
+    /// unpaired. Read on every pass: sync runs only with consent for it.
+    private let currentServer: () -> String?
     private let contactDAO: ContactDAO
     /// Cached server photo bytes written onto cards; nil in tests that don't
     /// exercise photos.
@@ -131,6 +135,7 @@ final class SystemContactsExporter {
         linkStore: SystemContactsLinkStore,
         baselineStore: SystemContactsBaselineStore,
         settings: ContactsSettingsStore,
+        currentServer: @escaping () -> String?,
         contactDAO: ContactDAO,
         photoCache: ContactPhotoCache? = nil,
         groupLinker: SystemContactGroupLinker? = nil,
@@ -140,6 +145,7 @@ final class SystemContactsExporter {
         self.linkStore = linkStore
         self.baselineStore = baselineStore
         self.settings = settings
+        self.currentServer = currentServer
         self.contactDAO = contactDAO
         self.photoCache = photoCache
         self.groupLinker = groupLinker
@@ -191,6 +197,19 @@ final class SystemContactsExporter {
         }
     }
 
+    /// Sync on, with consent for the server paired now.
+    var isSyncOn: Bool {
+        settings.isSystemSyncOn(forServer: currentServer())
+    }
+
+    /// Forgets which cards were already in Apple Contacts, so the next pass
+    /// recaptures them and only cards added after it are imported. Called
+    /// when the user agrees to the disclosure: it promises that cards
+    /// already there are not sent.
+    func resetImportBaseline() {
+        baselineStore.clear()
+    }
+
     func hasExportedContacts() -> Bool {
         !linkStore.all().isEmpty
     }
@@ -228,7 +247,7 @@ final class SystemContactsExporter {
 
     private func performReconcile() async -> Summary {
         var summary = Summary()
-        guard settings.exportToSystemContactsEnabled, isAuthorized else { return summary }
+        guard isSyncOn, isAuthorized else { return summary }
         // A failed read is not an empty Contacts database either: every
         // linked card would read as already gone, and its link be dropped.
         let cards: [CNContact]
@@ -348,7 +367,7 @@ final class SystemContactsExporter {
 
     /// Incremental hook for a single save from ContactSyncRepository.
     func exportUpsert(_ contact: Contact) async {
-        guard settings.exportToSystemContactsEnabled, isAuthorized else { return }
+        guard isSyncOn, isAuthorized else { return }
         await serialized {
             var summary = Summary()
             if let link = self.linkStore.link(localId: contact.localId) {
@@ -380,7 +399,7 @@ final class SystemContactsExporter {
 
     /// Incremental hook for a single delete; only linked (app-created) cards.
     func exportDelete(localId: UUID) async {
-        guard settings.exportToSystemContactsEnabled, isAuthorized else { return }
+        guard isSyncOn, isAuthorized else { return }
         await serialized {
             guard let link = self.linkStore.link(localId: localId) else { return Summary() }
             var summary = Summary()
@@ -514,11 +533,14 @@ final class SystemContactsExporter {
         }
     }
 
-    /// Cards added in Contacts.app after sync was enabled become app contacts
+    /// Cards added in Contacts.app after the user agreed become app contacts
     /// queued (needsSync) for the next relay push. The very first pass only
     /// captures the baseline, so enabling sync doesn't import the user's
     /// whole pre-existing address book.
     private func importNewCards(_ cards: [CNContact], summary: inout Summary) async {
+        // Checked again here, after the reads above: the pairing may have
+        // changed since the pass began, and an import queues an upload.
+        guard isSyncOn else { return }
         guard baselineStore.isCaptured else {
             baselineStore.capture(identifiers: cards.map(\.identifier))
             return

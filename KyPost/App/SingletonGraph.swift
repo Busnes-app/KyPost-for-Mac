@@ -264,6 +264,9 @@ final class SingletonGraph {
             linkStore: systemContactsLinkStore,
             baselineStore: systemContactsBaselineStore,
             settings: contactsSettingsStore,
+            currentServer: { [securePairingStore] in
+                (try? securePairingStore.loadPairing()).map { ContactSyncDisclosure.serverName(fromSrv: $0.srv) }
+            },
             contactDAO: contactDAO,
             photoCache: contactPhotoCache,
             groupLinker: SystemContactGroupLinker(
@@ -456,6 +459,14 @@ final class SingletonGraph {
 #if DEBUG
         if isDemo {
             await DemoContent.seedContacts(into: contactDAO)
+            // Settings → Contacts reading "On", for its screenshot: the
+            // demo's Contacts store refuses access, so Agree cannot get
+            // there. The demo graph holds no pairing, so the exporter never
+            // finds consent for it and nothing syncs.
+            if DemoContent.requestedScreen == "contacts-sync-on" {
+                contactsSettingsStore.exportToSystemContactsEnabled = true
+                contactsSettingsStore.recordSyncConsent(forServer: DemoContent.pairingDisplay.serverHost)
+            }
             // Compose asks the relay who holds the account's key before it
             // offers Encrypt/Sign. The demo account is server-custody.
             pgpSendService.preload(

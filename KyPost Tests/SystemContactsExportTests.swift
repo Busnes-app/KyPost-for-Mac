@@ -181,6 +181,9 @@ private func makeEnvironment(
     let baselineStore = SystemContactsBaselineStore(defaults: defaults)
     let settings = ContactsSettingsStore(defaults: defaults)
     settings.exportToSystemContactsEnabled = enabled
+    // Sync runs only with consent for the paired server
+    // (`ContactSyncConsentTests` covers it); these tests are about the rest.
+    settings.recordSyncConsent(forServer: "relay.test")
     let database = try AppDatabase(inMemory: true)
     let dao = ContactDAO(modelContainer: database.container)
     let exporter = SystemContactsExporter(
@@ -188,6 +191,7 @@ private func makeEnvironment(
         linkStore: linkStore,
         baselineStore: baselineStore,
         settings: settings,
+        currentServer: { "relay.test" },
         contactDAO: dao
     )
     return ExporterEnvironment(

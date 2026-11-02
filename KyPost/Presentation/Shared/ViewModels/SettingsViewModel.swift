@@ -56,17 +56,27 @@ final class SettingsViewModel {
         didSet { pushSettingsStore.systemNotificationsEnabled = systemNotificationsEnabled }
     }
 
-    /// "Export to Apple Contacts" toggle. Enabling prompts for Contacts
-    /// access first; when denied the toggle flips back with guidance.
+    /// "Sync with Apple Contacts" toggle. It only asks: turning it on shows
+    /// the disclosure (`contactSyncDisclosure`) and turning it off asks to
+    /// confirm (`confirmingStopContactSync`); it stays where it was until
+    /// the user answers.
     var exportContactsToSystem: Bool {
         didSet {
             guard !suppressExportToggle, exportContactsToSystem != oldValue else { return }
-            Task { await handleExportToggleChanged(exportContactsToSystem) }
+            setExportToggle(oldValue)
+            if oldValue {
+                confirmingStopContactSync = true
+            } else {
+                askToSyncContacts()
+            }
         }
     }
-    /// Re-entrancy guard so flipping the toggle back after a denial doesn't
-    /// trigger another handleExportToggleChanged pass.
+    /// Re-entrancy guard so setting the toggle from code doesn't ask again.
     @ObservationIgnored private var suppressExportToggle = false
+    /// The disclosure, while shown. Nothing is asked of iOS and nothing is
+    /// sent until `agreeToContactSync`.
+    var contactSyncDisclosure: ContactSyncDisclosure?
+    var confirmingStopContactSync = false
     private(set) var contactsExportDenied = false
     private(set) var hasExportedContacts = false
 
@@ -127,7 +137,9 @@ final class SettingsViewModel {
         self.onUnpaired = onUnpaired
         self.pairingDisplayOverride = pairingDisplayOverride
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
-        exportContactsToSystem = contactsSettingsStore.exportToSystemContactsEnabled
+        exportContactsToSystem = contactsSettingsStore.isSystemSyncOn(
+            forServer: Self.contactSyncServer(securePairingStore, override: pairingDisplayOverride)
+        )
     }
 
     // MARK: - Pairing status
@@ -141,6 +153,7 @@ final class SettingsViewModel {
     /// A pairing was stored (`.kyPostPaired`): re-read it.
     func pairingDidChange() {
         pairingRevision += 1
+        refreshContactsExportState()
     }
 
     var isPaired: Bool {
@@ -293,7 +306,32 @@ final class SettingsViewModel {
 
     // MARK: - Apple Contacts export
 
+    /// The server contact sync sends to, as named on the disclosure and in
+    /// the Contacts row; nil when unpaired. The screenshot build names its
+    /// display-only server, which no sync path ever reads.
+    var contactSyncServer: String? {
+        _ = pairingRevision
+        return Self.contactSyncServer(securePairingStore, override: pairingDisplayOverride)
+    }
+
+    private static func contactSyncServer(_ store: SecurePairingStore, override: PairingDisplay?) -> String? {
+        if let override { return override.serverHost }
+        guard let pairing = try? store.loadPairing() else { return nil }
+        return ContactSyncDisclosure.serverName(fromSrv: pairing.srv)
+    }
+
+    /// The Contacts row's state line, as on Android.
+    var contactSyncStatus: String {
+        if exportContactsToSystem, let server = contactSyncServer {
+            return String(localized: "On. Contacts are sent to \(server).")
+        }
+        return String(localized: "Off. Turn on to send this \(ContactSyncDisclosure.thisDevice)'s contacts to your KyPost server.")
+    }
+
     func refreshContactsExportState() {
+        // Consent belongs to one server: a pairing changed elsewhere reads as
+        // off here until the user agrees for the new one.
+        setExportToggle(contactsSettingsStore.isSystemSyncOn(forServer: contactSyncServer))
         contactsExportDenied = systemContactsExporter.isDenied
         hasExportedContacts = systemContactsExporter.hasExportedContacts()
     }
@@ -330,16 +368,37 @@ final class SettingsViewModel {
         #endif
     }
 
-    private func handleExportToggleChanged(_ enabled: Bool) async {
-        guard enabled else {
-            contactsSettingsStore.exportToSystemContactsEnabled = false
-            statusMessage = "Contacts export turned off — exported cards were kept."
+    private func setExportToggle(_ on: Bool) {
+        suppressExportToggle = true
+        exportContactsToSystem = on
+        suppressExportToggle = false
+    }
+
+    private func askToSyncContacts() {
+        guard let server = contactSyncServer else {
+            statusMessage = String(localized: "Pair with your KyPost server first. Contact sync sends your contacts to that server.")
             return
         }
+        contactSyncDisclosure = ContactSyncDisclosure(server: server)
+    }
+
+    /// Not now: the toggle stays off and nothing is recorded.
+    func declineContactSync() {
+        contactSyncDisclosure = nil
+    }
+
+    /// Agree: consent for the server the disclosure named, then today's
+    /// flow — the Contacts permission prompt, then a reconcile.
+    func agreeToContactSync() async {
+        guard let disclosure = contactSyncDisclosure else { return }
+        contactSyncDisclosure = nil
+        // The pairing may have changed while the disclosure was open: the
+        // user agreed to the server it named, not to whichever is paired now.
+        guard disclosure.server == contactSyncServer else { return }
+        contactsSettingsStore.recordSyncConsent(forServer: disclosure.server)
+        // The disclosure says cards already in Apple Contacts are not sent.
+        systemContactsExporter.resetImportBaseline()
         guard await systemContactsExporter.requestAccessIfNeeded() else {
-            suppressExportToggle = true
-            exportContactsToSystem = false
-            suppressExportToggle = false
             contactsExportDenied = true
             statusMessage = "Contacts access is denied. Allow KyPost under "
                 + "System Settings > Privacy & Security > Contacts."
@@ -347,9 +406,26 @@ final class SettingsViewModel {
         }
         contactsExportDenied = false
         contactsSettingsStore.exportToSystemContactsEnabled = true
+        setExportToggle(true)
         let summary = await systemContactsExporter.reconcileAll()
         hasExportedContacts = systemContactsExporter.hasExportedContacts()
         statusMessage = "Exported \(summary.created + summary.updated) contact(s) to Apple Contacts"
+    }
+
+    var stopContactSyncMessage: String {
+        let server = contactSyncServer ?? String(localized: "your KyPost server")
+        return String(localized: "KyPost stops syncing this \(ContactSyncDisclosure.thisDevice)'s contacts with \(server). Cards in Apple Contacts stay; Remove Exported Contacts deletes the ones KyPost added. Contacts already on your server stay there until you delete them.")
+    }
+
+    /// Turn off, confirmed: consent is forgotten and nothing more is read
+    /// from or written to Apple Contacts. Cards are kept, as before; Remove
+    /// Exported Contacts deletes the ones KyPost made.
+    func stopContactSync() {
+        confirmingStopContactSync = false
+        contactsSettingsStore.exportToSystemContactsEnabled = false
+        contactsSettingsStore.forgetSyncConsent()
+        setExportToggle(false)
+        statusMessage = String(localized: "Contact sync turned off. Cards in Apple Contacts were kept.")
     }
 
     // MARK: - Keyword visibility (spec §9 KeywordSettingsView)
