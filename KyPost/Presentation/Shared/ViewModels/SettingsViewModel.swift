@@ -97,6 +97,8 @@ final class SettingsViewModel {
     /// display text and nothing else — `isPaired`, unpair, Fix Notifications
     /// and every relay path still read `securePairingStore`.
     private let pairingDisplayOverride: PairingDisplay?
+    /// `AccountTeardown.legacyHTTPCache`.
+    private let legacyHTTPCache: URLCache
 
     init(
         securePairingStore: SecurePairingStore,
@@ -116,7 +118,8 @@ final class SettingsViewModel {
         recipientPinStore: RecipientPinStore? = nil,
         mailSignatureStore: MailSignatureStore? = nil,
         onUnpaired: (() -> Void)? = nil,
-        pairingDisplayOverride: PairingDisplay? = nil
+        pairingDisplayOverride: PairingDisplay? = nil,
+        legacyHTTPCache: URLCache = .shared
     ) {
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
@@ -136,6 +139,7 @@ final class SettingsViewModel {
         self.mailSignatureStore = mailSignatureStore
         self.onUnpaired = onUnpaired
         self.pairingDisplayOverride = pairingDisplayOverride
+        self.legacyHTTPCache = legacyHTTPCache
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.isSystemSyncOn(
             for: Self.contactSyncRelay(securePairingStore, override: pairingDisplayOverride)
@@ -214,7 +218,8 @@ final class SettingsViewModel {
             recipientPinStore: recipientPinStore,
             mailSignatureStore: mailSignatureStore,
             mailRepository: mailRepository,
-            forgetInbox: onUnpaired
+            forgetInbox: onUnpaired,
+            legacyHTTPCache: legacyHTTPCache
         ).run()
         statusMessage = pairingCleared && tornDown
             ? "Pairing removed"
