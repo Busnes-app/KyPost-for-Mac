@@ -121,13 +121,35 @@ nonisolated struct Contact: Identifiable, Hashable, Sendable {
     var updatedAt: Date
     /// True for local creates/edits not yet pushed to the server (spec §4).
     var needsSync: Bool = false
-    /// Set on a card imported from Apple Contacts: the consent it was
-    /// imported under (`ContactsSettingsStore.importConsentStamp`). Until the
-    /// server has the contact, it uploads only while that same consent
-    /// stands (`SystemContactsExporter.mayUpload`). Nil for everything else,
-    /// and once the server assigns a uid. Kept on the row, not the Apple
+    /// Where an unsent contact came from, which decides whether it may be
+    /// uploaded (`SystemContactsExporter.mayUpload`) until the server has it:
+    /// - `createdInKyPost`: made or edited in KyPost
+    ///   (`ContactSyncRepository.saveContact`); uploads freely.
+    /// - A card imported from Apple Contacts: the consent it was imported
+    ///   under (`ContactsSettingsStore.importConsentStamp`); uploads only
+    ///   while that same consent stands. An edit in KyPost keeps it.
+    /// - `legacyImport`: an import made before this field existed; never
+    ///   uploads, and an edit keeps it.
+    /// - `quarantined`, or nil: origin unknown (a row from before this field
+    ///   existed); never uploads, until the user edits it in KyPost.
+    ///
+    /// Cleared once the server assigns a uid. Kept on the row, not the Apple
     /// Contacts link, so no export cleanup can drop it.
     var importConsent: String?
+
+    /// `importConsent` of a contact made or edited in KyPost.
+    static let createdInKyPost = "kypost"
+    /// `importConsent` of a pre-V10 row with no proof of where it came from.
+    static let quarantined = "quarantined"
+    /// `importConsent` of a pre-V10 row its Apple Contacts link names an import.
+    static let legacyImport = "legacy"
+
+    /// Whether `stamp` names an Apple Contacts import: a consent stamp, or
+    /// `legacyImport`. An edit in KyPost never releases one.
+    static func isImportStamp(_ stamp: String?) -> Bool {
+        guard let stamp else { return false }
+        return stamp != createdInKyPost && stamp != quarantined
+    }
 
     var id: UUID { localId }
 

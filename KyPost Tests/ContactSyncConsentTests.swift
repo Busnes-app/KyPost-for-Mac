@@ -10,6 +10,7 @@
 
 import Contacts
 import Foundation
+import SwiftData
 import Testing
 @testable import KyPost
 
@@ -30,11 +31,15 @@ import Testing
 
     /// The exporter runs on a mock store: the graph's own would reach the
     /// real Contacts database of whoever runs the suite.
-    private func makeHarness(pairedTo srv: String?, legacyToggleOn: Bool = false) throws -> Harness {
+    private func makeHarness(
+        pairedTo srv: String?,
+        legacyToggleOn: Bool = false,
+        database: AppDatabase? = nil
+    ) throws -> Harness {
         let graph = try SingletonGraph(
             userDefaults: UserDefaults(suiteName: "tests.\(UUID().uuidString)")!,
             keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)"),
-            database: AppDatabase(inMemory: true)
+            database: database ?? AppDatabase(inMemory: true)
         )
         if let srv { try pair(graph, to: srv) }
         graph.contactsSettingsStore.exportToSystemContactsEnabled = legacyToggleOn
@@ -408,7 +413,8 @@ import Testing
                 emails: [ContactLabeledValue(label: nil, value: "typed\(index)@example.com")],
                 createdAt: Date(timeIntervalSince1970: TimeInterval(index)),
                 updatedAt: Date(timeIntervalSince1970: TimeInterval(index)),
-                needsSync: true
+                needsSync: true,
+                importConsent: Contact.createdInKyPost
             )
         }
         try await harness.graph.contactDAO.upsert(contacts: typed)
@@ -483,6 +489,107 @@ import Testing
         let (repository, bodies) = uploads(harness)
         _ = try? await repository.sync()
         #expect(!bodies.value.contains { $0.contains("ada@example.com") })
+
+        // A known import is not released by an edit, as a quarantined row is.
+        var edited = try #require(try await queued(harness).first)
+        edited.notes = "Met at the conference"
+        try await repository.saveContact(edited)
+        _ = try? await repository.sync()
+        #expect(!bodies.value.contains { $0.contains("ada@example.com") })
+    }
+
+    // MARK: - Provenance
+
+    /// A store written at V9 holding one unsent contact, Ada, with no
+    /// Apple Contacts link: an import whose link "Remove Exported Contacts"
+    /// dropped looks exactly like this. Opened with the current plan.
+    private func legacyStoreWithUnsentAda() throws -> (database: AppDatabase, directory: URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "kypost-consent-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appending(path: "store.sqlite")
+        try {
+            let schema = Schema(versionedSchema: AppSchemaV9.self)
+            let container = try ModelContainer(
+                for: schema, configurations: [ModelConfiguration(schema: schema, url: url)]
+            )
+            let context = ModelContext(container)
+            let ada = AppSchemaV9.ContactEntity(
+                localId: UUID(), uid: nil, name: "Ada", createdAt: Date(), updatedAt: Date(), needsSync: true
+            )
+            ada.givenName = "Ada"
+            ada.emails = [ContactLabeledValue(label: nil, value: "ada@example.com")]
+            context.insert(ada)
+            try context.save()
+        }()
+        return (try AppDatabase(url: url), directory)
+    }
+
+    /// The reviewer's regression: a legacy unsent import whose link is gone
+    /// had no stamp after V10, and a nil stamp uploaded unconditionally.
+    /// Synced with no consent, it must not go out.
+    @Test func legacyUnsentContactWithoutLinkIsNotUploaded() async throws {
+        let (database, directory) = try legacyStoreWithUnsentAda()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let harness = try makeHarness(pairedTo: serverA, database: database)
+        #expect(!harness.exporter.hasExportedContacts())
+        #expect(try await queued(harness).map(\.givenName) == ["Ada"])
+
+        try await harness.exporter.stampLegacyImports()
+        let (repository, bodies) = uploads(harness)
+        _ = try? await repository.sync()
+        #expect(!bodies.value.contains { $0.contains("ada@example.com") })
+        #expect(await repository.pendingSummary().count == 0)
+    }
+
+    /// The way out of quarantine: an edit in KyPost is a deliberate act
+    /// there, so the edited contact uploads, sync off and no consent.
+    @Test func quarantinedContactEditedInKyPostIsUploaded() async throws {
+        let (database, directory) = try legacyStoreWithUnsentAda()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let harness = try makeHarness(pairedTo: serverA, database: database)
+        var ada = try #require(try await queued(harness).first)
+        #expect(ada.importConsent == Contact.quarantined)
+
+        let (repository, bodies) = uploads(harness)
+        ada.notes = "Met at the conference"
+        try await repository.saveContact(ada)
+        _ = try? await repository.sync()
+        #expect(bodies.value.contains { $0.contains("ada@example.com") })
+    }
+
+    /// A contact typed into KyPost after the update carries the KyPost mark
+    /// and uploads with Apple Contacts sync off.
+    @Test func contactTypedInKyPostUploadsWithSyncOff() async throws {
+        let harness = try makeHarness(pairedTo: serverA)
+        #expect(!harness.exporter.isSyncOn)
+
+        let (repository, bodies) = uploads(harness)
+        try await repository.saveContact(Contact(
+            name: "Cy",
+            emails: [ContactLabeledValue(label: nil, value: "cy@example.com")],
+            createdAt: Date(),
+            updatedAt: Date()
+        ))
+        #expect(try await queued(harness).first?.importConsent == Contact.createdInKyPost)
+        _ = try? await repository.sync()
+        #expect(bodies.value.contains { $0.contains("cy@example.com") })
+    }
+
+    /// No path but `saveContact` marks a contact made in KyPost: a row
+    /// written with no provenance stays unsent.
+    @Test func contactWithoutProvenanceIsNotUploaded() async throws {
+        let harness = try makeHarness(pairedTo: serverA)
+        try await harness.graph.contactDAO.upsert(contacts: [Contact(
+            name: "Dee",
+            emails: [ContactLabeledValue(label: nil, value: "dee@example.com")],
+            createdAt: Date(),
+            updatedAt: Date(),
+            needsSync: true
+        )])
+        let (repository, bodies) = uploads(harness)
+        _ = try? await repository.sync()
+        #expect(!bodies.value.contains { $0.contains("dee@example.com") })
     }
 
     /// The Contacts screen's Sync shows the same disclosure, once per

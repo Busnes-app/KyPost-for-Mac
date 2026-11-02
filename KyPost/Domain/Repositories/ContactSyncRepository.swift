@@ -86,6 +86,12 @@ final class ContactSyncRepository {
 
     /// Saves a local create/edit and marks it for the next sync.
     ///
+    /// Every create and edit in KyPost comes through here, and only those:
+    /// the contact is marked `Contact.createdInKyPost`, so it uploads without
+    /// Apple Contacts consent. An edit is a deliberate act in KyPost, so it
+    /// releases a contact of unknown origin (`Contact.quarantined`), but an
+    /// Apple Contacts import keeps its stamp (`ContactEntity.applyFields`).
+    ///
     /// `verifiedInPerson` is the QR flow's save: the contact's key becomes the
     /// pin for each of its addresses, replacing whatever was pinned there.
     /// Every other save only records revocations against existing pins.
@@ -93,6 +99,7 @@ final class ContactSyncRepository {
         var dirty = contact
         dirty.needsSync = true
         dirty.updatedAt = Date()
+        dirty.importConsent = Contact.createdInKyPost
         try await contactDAO.upsert(contacts: [dirty])
         // The user is the authority on their own key: an edit (including a
         // freshly scanned QR key) resets what we remember as verified, and
@@ -262,7 +269,7 @@ final class ContactSyncRepository {
         if let systemContactsExporter, let relay {
             return systemContactsExporter.mayUpload(to: relay)
         }
-        return { $0.uid != nil || $0.importConsent == nil }
+        return { $0.uid != nil || $0.importConsent == Contact.createdInKyPost }
     }
 
     /// - Parameter afterTooOld: this pass is the re-pull a `tooOld` answer

@@ -381,13 +381,22 @@ Same protocol as KyPost for Android and Linux; change it in all three.
   suspension and before each card. An import carries its stamp on the
   contact row (`Contact.importConsent`, AppSchemaV10), never on the Apple
   Contacts link, so no link cleanup can drop it; only `assignUid` clears it.
-  One rule, `SystemContactsExporter.mayUpload`: an import without a uid
-  uploads only while sync is on for the same relay under the same stamp.
-  `ContactSyncRepository` reads it for the pending set and again before
-  each push page, so imports queued before Turn Off, another relay, or a
-  newer Agree stay unsent, edited or not. The Contacts screen's Sync shows
-  the same disclosure once per server; agreeing there never turns the toggle
-  on.
+  One rule, `SystemContactsExporter.mayUpload`: a contact without a uid
+  uploads only if it is marked made in KyPost (`Contact.createdInKyPost`,
+  set by `ContactSyncRepository.saveContact`, the one path for every create
+  and edit in KyPost) or is an import while sync is on for the same relay
+  under the same stamp. Provenance is positive: nil, `Contact.quarantined`
+  and `Contact.legacyImport` never upload. `ContactSyncRepository` reads it
+  for the pending set and again before each push page, so imports queued
+  before Turn Off, another relay, or a newer Agree stay unsent, edited or
+  not (`ContactEntity.applyFields` never lets the KyPost mark replace an
+  import stamp). The V9→V10 stage quarantines every row without a uid,
+  since no pre-V10 field proves origin; an edit in KyPost releases a
+  quarantined row, and launch (`stampLegacyImports`) turns those still
+  linked as imports into `legacyImport`, which no edit releases. Any new
+  path that creates contacts must go through `saveContact` or set the
+  stamp itself. The Contacts screen's Sync shows the same disclosure once
+  per server; agreeing there never turns the toggle on.
   Contacts typed into KyPost sync with the server without this gate, as on
   Android. The disclosure's "How they are used" and "How long" come from
   KyPost-Server's code; change them when the server's use of contacts changes.

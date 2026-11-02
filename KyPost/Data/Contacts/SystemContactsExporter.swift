@@ -208,26 +208,31 @@ final class SystemContactsExporter {
     /// under the consent it was imported under. Sync turned off, another
     /// relay paired, or a newer Agree (which promised that cards already in
     /// Apple Contacts are not sent) keeps it in the app, unsent, for good.
-    /// Everything else may go. Consent is read once, here: ask again before
-    /// each request.
+    /// Contacts the server already has, and contacts made in KyPost
+    /// (`Contact.createdInKyPost`), may go; nothing else does, so a contact
+    /// whose origin is unknown stays unsent. Consent is read once, here: ask
+    /// again before each request.
     func mayUpload(to relay: ContactSyncRelay) -> (Contact) -> Bool {
         let standing = isSyncOn && currentRelay()?.consentKey == relay.consentKey
             ? settings.importConsentStamp(for: relay)
             : nil
         return { contact in
-            guard contact.uid == nil, let stamp = contact.importConsent else { return true }
-            return stamp == standing
+            if contact.uid != nil || contact.importConsent == Contact.createdInKyPost { return true }
+            guard let standing else { return false }
+            return contact.importConsent == standing
         }
     }
 
-    /// Stamps imports made before `Contact.importConsent` existed with a
-    /// stamp no consent matches: they were in Apple Contacts before the
-    /// user agreed, so they are never sent. The links are the only record of
-    /// them, so this runs at launch, before any reconcile can prune one.
+    /// Stamps imports made before `Contact.importConsent` existed with
+    /// `Contact.legacyImport`, which no consent matches and no edit
+    /// releases: they were in Apple Contacts before the user agreed, so they
+    /// are never sent. The V10 migration quarantined them with every other
+    /// unsent row; their links are the only record that they are imports,
+    /// so this runs at launch, before any reconcile can prune one.
     func stampLegacyImports() async throws {
         let imported = Set(linkStore.all().filter(\.imported).map(\.localId))
         guard !imported.isEmpty else { return }
-        try await contactDAO.stampImports(localIds: imported, stamp: "legacy")
+        try await contactDAO.stampImports(localIds: imported, stamp: Contact.legacyImport)
     }
 
     /// Forgets which cards were already in Apple Contacts, so the next pass

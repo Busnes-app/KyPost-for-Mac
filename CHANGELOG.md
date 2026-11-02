@@ -45,6 +45,10 @@
 - **Installs that had Sync with Apple Contacts on read as off after updating**
   until you agree. Nothing is read from or written to Apple Contacts until
   then; cards already there stay.
+- **Unsent contacts from before this update are held back** until you edit
+  them in KyPost: the app cannot tell whether each came from Apple Contacts.
+  Cards known to be Apple Contacts imports stay unsent, edited or not.
+  Contacts you create in KyPost after updating sync as before.
 - **New devices wait for approval on the web** (KyPost-Server 0.6.0, #516).
   A pairing code from Settings → Security → Devices now registers the device
   pending: the app shows a six-digit code and waits until you approve it on

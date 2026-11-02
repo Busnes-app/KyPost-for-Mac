@@ -95,11 +95,14 @@ actor ContactDAO {
         try modelContext.save()
     }
 
-    /// Stamps the uid-less rows among `localIds` that carry no
-    /// `importConsent` yet with `stamp`.
+    /// Stamps the uid-less rows among `localIds` whose origin is unknown
+    /// (no `importConsent`, or `Contact.quarantined`) with `stamp`.
     func stampImports(localIds: Set<UUID>, stamp: String) throws {
+        let quarantined = Contact.quarantined
         let entities = try modelContext.fetch(FetchDescriptor<ContactEntity>(
-            predicate: #Predicate { $0.uid == nil && $0.importConsent == nil }
+            predicate: #Predicate {
+                $0.uid == nil && ($0.importConsent == nil || $0.importConsent == quarantined)
+            }
         ))
         for entity in entities where localIds.contains(entity.localId) {
             entity.importConsent = stamp

@@ -130,9 +130,14 @@ extension ContactEntity {
         pronouns = contact.pronouns
         isSelf = contact.isSelf
         avatarUrl = contact.avatarUrl
-        // Set once, at import, and cleared only by `ContactDAO.assignUid`: a
-        // write that does not carry it (an edit, a server copy) keeps it.
-        importConsent = contact.importConsent ?? importConsent
+        // Cleared only by `ContactDAO.assignUid`: a write that does not carry
+        // it (a server copy) keeps it, and an edit in KyPost
+        // (`Contact.createdInKyPost`) never turns an import into a KyPost
+        // contact.
+        if let incoming = contact.importConsent,
+           incoming != Contact.createdInKyPost || !Contact.isImportStamp(importConsent) {
+            importConsent = incoming
+        }
     }
 
     var toDomain: Contact {
