@@ -115,13 +115,24 @@ struct PendingApproval: Equatable, Sendable {
     }
 }
 
+/// A `native/pairing-status` body. Every field optional: the 202 carries no
+/// `ok`, and a pending answer that fails to decode would read as an error.
+struct PairingStatusResponse: Decodable, Equatable, Sendable {
+    var ok: Bool?
+    var synced: Bool?
+    var status: String?
+    var deviceId: String?
+    var deliveryMode: RegistrationResponse.DeliveryMode?
+    var pullEndpoint: String?
+}
+
 /// One answer from `native/pairing-status`.
 enum PairingStatusOutcome: Equatable, Sendable {
     /// 202: keep polling.
     case pending
     /// 200: paired. Carries `deviceId`, `deliveryMode` and `pullEndpoint`;
     /// the secret is the one the 202 handed over.
-    case approved(RegistrationResponse)
+    case approved(PairingStatusResponse)
     /// 410 (denied, expired or unknown) or 401/403: final.
     case rejected
     /// Transient (transport, 429, 5xx, unreadable body): back off and poll
@@ -265,7 +276,7 @@ final class NativeRegistrationClient: Sendable {
     func pairingStatus(_ pending: PendingRegistration) async -> PairingStatusOutcome {
         do {
             let (status, response) = try await httpClient.getWithStatus(
-                RegistrationResponse.self,
+                PairingStatusResponse.self,
                 url: pending.statusEndpoint,
                 headers: pending.auth.headerFields
             )

@@ -90,6 +90,14 @@ Domain.
   offers only "Paste Pairing Link…" (the native `PushPairingView`, for the
   link the web page shows when the browser could not open it). There is no
   desktop pairing screen.
+- **A pending pairing shows its approval code until the web answers**
+  (`PushPairingView.awaitingApprovalContent`): the six digits large, the
+  server it waits on, "Approve this device on the KyPost web page that
+  showed the code. Check the code matches." and Cancel. Polling runs only
+  while that screen is up: Cancel and `onDisappear` both call
+  `cancelApproval`. Not approved (410 or expiry) returns to the scan/paste
+  screen with "Not approved: denied or timed out. Scan a new code."
+  (`PushPairingViewModel.notice`).
 - **A new pairing reloads the Mac window at once.** `MacRootView` observes
   `.kyPostPaired` and loads the inbox, its subfolders and a contact sync,
   rather than leaving "not paired" up until the 90 s refresh.

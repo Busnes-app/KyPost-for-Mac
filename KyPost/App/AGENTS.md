@@ -394,7 +394,10 @@ Rules:
   why `tab(_:_:)` and `back(_:)` fall back to `app.buttons`; query by label
   or identifier, never by bar.
 - `-KyPostDemoScreen mfa` exists because MFA approval arrives by push and has
-  no navigable route. Add a case there rather than a new launch argument.
+  no navigable route; `pairing-approval` and `pairing-denied` because a
+  pending pairing needs a server's 202 (the pairing sheet opens on
+  `DemoContent.pairingParams` and shows that state; nothing registers). Add
+  a case there rather than a new launch argument.
 - The fixtures are invented. Keep them invented, and keep the addresses on
   `.example` — a screenshot is published, and a real address in one is a
   real person's inbox.
