@@ -37,7 +37,10 @@ import Testing
     /// Built on a mock contact store rather than `graph.systemContactsExporter`,
     /// whose live store reads the real Contacts database of whoever runs the
     /// suite.
-    private func makeViewModel(_ graph: SingletonGraph) -> SettingsViewModel {
+    private func makeViewModel(
+        _ graph: SingletonGraph,
+        legacyHTTPCache: URLCache = .shared
+    ) -> SettingsViewModel {
         let store = MockSystemContactStore()
         let exporter = SystemContactsExporter(
             store: store,
@@ -69,7 +72,8 @@ import Testing
             erasePreservedStore: graph.erasePreservedStoreStep,
             enrollmentVault: graph.enrollmentVault,
             pushRepository: graph.pushRepository,
-            mailSignatureStore: graph.mailSignatureStore
+            mailSignatureStore: graph.mailSignatureStore,
+            legacyHTTPCache: legacyHTTPCache
         )
     }
 
@@ -121,7 +125,9 @@ import Testing
 
     /// Desktop pairing is gone, but a session token an older build stored is
     /// still this account's credential and goes with the pairing — as do the
-    /// pin and any relay response an older `.default` session cached.
+    /// pin and any relay response an older `.default` session cached. The
+    /// response goes in a cache of the test's own: one stored in
+    /// `URLCache.shared` from this process can outlast the purge.
     @Test func unpairingErasesLegacyDesktopSessionPinAndCache() async throws {
         let graph = try makeGraph()
         // No device secret: the deregister call skips the network.
@@ -134,18 +140,20 @@ import Testing
         }
         let url = URL(string: "\(server)/api/inbox")!
         let response = try #require(HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil))
-        URLCache.shared.storeCachedResponse(
+        let cache = URLCache(memoryCapacity: 1 << 20, diskCapacity: 0, directory: nil)
+        cache.storeCachedResponse(
             CachedURLResponse(response: response, data: Data("mail".utf8)),
             for: URLRequest(url: url)
         )
+        #expect(cache.cachedResponse(for: URLRequest(url: url)) != nil)
 
-        await makeViewModel(graph).unpair()
+        await makeViewModel(graph, legacyHTTPCache: cache).unpair()
 
         for key in DesktopSessionStore.legacyKeys {
             #expect(try graph.keychain.string(forKey: key) == nil)
         }
         #expect(try graph.securePairingStore.pinnedSpkiHash(forHost: "relay.example.com") == nil)
-        #expect(URLCache.shared.cachedResponse(for: URLRequest(url: url)) == nil)
+        #expect(cache.cachedResponse(for: URLRequest(url: url)) == nil)
     }
 
     /// Destroying the sealed blob while an unsealed copy sits in this process

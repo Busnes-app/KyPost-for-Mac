@@ -29,6 +29,9 @@ struct AccountTeardown {
     /// actions, rows on screen and in-flight refreshes
     /// (`InboxViewModel.forgetAccount`).
     var forgetInbox: (() -> Void)?
+    /// Where an older build's relay session cached responses. Tests pass a
+    /// private cache: see "Tests never seed `URLCache.shared`" in AGENTS.md.
+    var legacyHTTPCache: URLCache = .shared
 
     /// Runs every step; a failing step is logged and the rest still run.
     /// Returns false when any step failed, so the caller cannot report the
@@ -84,7 +87,7 @@ struct AccountTeardown {
         }
         // Relay responses an older build's `.default` session cached on disk,
         // and any cookies it kept. The relay session no longer writes either.
-        PinnedSessionDelegate.purgeLegacySharedHTTPState()
+        PinnedSessionDelegate.purgeLegacySharedHTTPState(cache: legacyHTTPCache)
         // Again, now the cache is empty: rows the inbox repainted from it
         // while a step above awaited are the account just left.
         forgetInbox?()

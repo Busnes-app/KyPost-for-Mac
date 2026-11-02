@@ -112,6 +112,13 @@ Default section order:
   Note `parallelizable` belongs on each entry in `testTargets`, not in
   `defaultOptions`, where it is silently ignored.
 
+- **Tests never seed `URLCache.shared`.** A response stored there from the
+  test process stays readable for a while after `removeAllCachedResponses()`
+  (measured on macOS 27 and the iOS 26.5 simulator), so an assertion that a
+  purge emptied it fails at random. Pass a private memory-only cache
+  (`diskCapacity: 0`) instead, as `AccountTeardown.legacyHTTPCache`. One
+  stored by an earlier process, the case the app purges, goes at once.
+
 - **The GopenPGP binary bakes in `GODEBUG=asyncpreemptoff=1`; nothing sets
   it at run time.** Without it the embedded Go runtime kills whatever process
   links it, the shipping app as well as the test host:
