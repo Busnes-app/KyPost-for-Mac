@@ -11,9 +11,12 @@ name: Release
 #          with an Admin key), so the Developer ID identity is a secret.
 #
 # The Mac release goes first, so an App Store Connect failure does not hold
-# it back. A re-run never replaces a disk image already published: people may
-# have downloaded it, and a second build under the same name is a different
-# binary. It leaves the published one and carries on to the iOS upload.
+# it back, and a Mac failure does not hold back the iOS upload either: the
+# Mac steps may fail, the iOS upload still runs, and the job then fails on
+# the Mac result. A re-run never replaces a disk image already published:
+# people may have downloaded it, and a second build under the same name is a
+# different binary. It leaves the published one and carries on to the iOS
+# upload.
 #
 # Modelled on kypost-android's release.yml, which gates publication on the tag
 # matching the versioned manifest and on the artifact carrying the expected
@@ -263,6 +266,8 @@ jobs:
       # Re-signs the Mac app with Developer ID. ExportOptions-macOS carries
       # destination=export, so the .app lands on disk for the steps below.
       - name: Export Mac app (Developer ID)
+        id: mac_export
+        continue-on-error: true
         run: |
           set -euo pipefail
           xcodebuild -exportArchive \
@@ -297,6 +302,9 @@ jobs:
       # covers the app inside, and the ticket is stapled to the image so the
       # first open needs no network.
       - name: Package, notarise and staple the disk image
+        id: mac_package
+        if: steps.mac_export.outcome == 'success'
+        continue-on-error: true
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -339,6 +347,9 @@ jobs:
           echo "DMG=$dmg" >> "$GITHUB_ENV"
 
       - name: Publish the GitHub Release
+        id: mac_publish
+        if: steps.mac_package.outcome == 'success'
+        continue-on-error: true
         env:
           TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
@@ -371,6 +382,17 @@ jobs:
             -authenticationKeyPath "$RUNNER_TEMP/private_keys/AuthKey_${ASC_KEY_ID}.p8" \
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      # The Mac steps above may fail without stopping the iOS upload; the
+      # run must still say the Mac release did not ship.
+      - name: Mac release shipped
+        env:
+          MAC_PUBLISH: ${{ steps.mac_publish.outcome }}
+        run: |
+          if [ "$MAC_PUBLISH" != success ]; then
+            echo "::error::The Mac release did not ship (publish step: ${MAC_PUBLISH:-skipped}). See the Mac steps above."
+            exit 1
+          fi
 
       - name: Remove the signing keychain
         # `always()`: a keychain holding the team's development and Developer
