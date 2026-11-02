@@ -49,12 +49,17 @@ final class ContactsSettingsStore {
         defaults.removeObject(forKey: Key.syncConsentToken)
     }
 
-    /// Names one Agree: new each time consent is recorded, nil once it is
-    /// forgotten. An import holds the token it started under and stops when
-    /// it changes; a card imported under an earlier token is never uploaded
-    /// (`SystemContactsExporter.withholdingUnconsentedImports`).
-    var syncConsentToken: String? {
-        defaults.string(forKey: Key.syncConsentToken)
+    /// Names one Agree for `relay`: its consent key's digest and the token
+    /// recorded with it, new each time consent is recorded. Nil without
+    /// consent for `relay`. Stamped on every Apple Contacts import
+    /// (`Contact.importConsent`); an import stops, and an unsent card stays
+    /// unsent, once it changes (`SystemContactsExporter.mayUpload`).
+    func importConsentStamp(for relay: ContactSyncRelay?) -> String? {
+        guard hasSyncConsent(for: relay),
+              let server = defaults.string(forKey: Key.syncConsentServer),
+              let token = defaults.string(forKey: Key.syncConsentToken)
+        else { return nil }
+        return "\(server)/\(token)"
     }
 
     /// What "Sync with Apple Contacts" reads as: on only with consent for the

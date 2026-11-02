@@ -374,14 +374,20 @@ Same protocol as KyPost for Android and Linux; change it in all three.
   access; off asks to confirm, then forgets consent and keeps the cards.
   Consent is keyed on `ContactSyncRelay.consentKey`, the canonical base URL
   (scheme, host, port, path), stored hashed; the host (`name`) is display
-  only and never compared as consent. Each Agree gets a new
-  `syncConsentToken`, and forgetting clears it. `SystemContactsExporter`
-  checks consent on every pass, and the import re-checks the token after
-  each suspension and before each card. An import is stamped with its token
-  (`SystemContactLink.importConsent`), and until it reaches the server
-  `ContactSyncRepository` sends it only while that consent stands: imports
-  queued before Turn Off, another relay, or a newer Agree stay unsent. The Contacts screen's Sync shows the same
-  disclosure once per server; agreeing there never turns the toggle on.
+  only and never compared as consent. Each Agree gets a new token, and
+  forgetting clears it; `ContactsSettingsStore.importConsentStamp` is the
+  relay's hashed key plus that token. `SystemContactsExporter` checks
+  consent on every pass, and the import re-checks the stamp after each
+  suspension and before each card. An import carries its stamp on the
+  contact row (`Contact.importConsent`, AppSchemaV10), never on the Apple
+  Contacts link, so no link cleanup can drop it; only `assignUid` clears it.
+  One rule, `SystemContactsExporter.mayUpload`: an import without a uid
+  uploads only while sync is on for the same relay under the same stamp.
+  `ContactSyncRepository` reads it for the pending set and again before
+  each push page, so imports queued before Turn Off, another relay, or a
+  newer Agree stay unsent, edited or not. The Contacts screen's Sync shows
+  the same disclosure once per server; agreeing there never turns the toggle
+  on.
   Contacts typed into KyPost sync with the server without this gate, as on
   Android. The disclosure's "How they are used" and "How long" come from
   KyPost-Server's code; change them when the server's use of contacts changes.

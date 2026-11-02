@@ -35,7 +35,8 @@
   prompt. Consent belongs to one server, by its full address: pairing
   another, even on the same host with another port or path, needs it again.
   Turning it off also stops cards already imported from Apple Contacts but
-  not yet sent from going out. The
+  not yet sent from going out, including during a sync already under way
+  and after "Remove Exported Contacts". The
   Contacts row says "On. Contacts are sent to <server>." or "Off.", and
   turning it off asks first, then stops sync and keeps the cards. The
   Contacts screen's Sync shows the same text. Before, the toggle started

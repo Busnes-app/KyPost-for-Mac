@@ -61,6 +61,8 @@ final class ContactEntity {
     var updatedAt: Date
     /// Local create/edit not yet pushed to the server.
     var needsSync: Bool
+    /// See Contact.importConsent; added in AppSchemaV10.
+    var importConsent: String?
 
     init(
         localId: UUID,
@@ -128,6 +130,9 @@ extension ContactEntity {
         pronouns = contact.pronouns
         isSelf = contact.isSelf
         avatarUrl = contact.avatarUrl
+        // Set once, at import, and cleared only by `ContactDAO.assignUid`: a
+        // write that does not carry it (an edit, a server copy) keeps it.
+        importConsent = contact.importConsent ?? importConsent
     }
 
     var toDomain: Contact {
@@ -166,7 +171,8 @@ extension ContactEntity {
             avatarUrl: avatarUrl,
             createdAt: createdAt,
             updatedAt: updatedAt,
-            needsSync: needsSync
+            needsSync: needsSync,
+            importConsent: importConsent
         )
     }
 }

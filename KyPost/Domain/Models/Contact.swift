@@ -121,6 +121,13 @@ nonisolated struct Contact: Identifiable, Hashable, Sendable {
     var updatedAt: Date
     /// True for local creates/edits not yet pushed to the server (spec §4).
     var needsSync: Bool = false
+    /// Set on a card imported from Apple Contacts: the consent it was
+    /// imported under (`ContactsSettingsStore.importConsentStamp`). Until the
+    /// server has the contact, it uploads only while that same consent
+    /// stands (`SystemContactsExporter.mayUpload`). Nil for everything else,
+    /// and once the server assigns a uid. Kept on the row, not the Apple
+    /// Contacts link, so no export cleanup can drop it.
+    var importConsent: String?
 
     var id: UUID { localId }
 

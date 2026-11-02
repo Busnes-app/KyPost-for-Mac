@@ -441,6 +441,7 @@ final class SingletonGraph {
     private static let legacyContactFieldsMigratedKey = "contacts.legacyFieldsMigrated"
     private static let reconciliationRepairKey = "contacts.reconciliationRepair.v1"
     private static let systemImportDupeRepairKey = "contacts.systemImportDupeRepair.v1"
+    private static let legacyImportStampKey = "contacts.legacyImportStamp.v1"
     /// Exposed so the security wipe can sweep the same domain the
     /// UserDefaults-backed stores were built against — the app's in production,
     /// a scratch suite in tests.
@@ -500,6 +501,16 @@ final class SingletonGraph {
                 userDefaults.set(true, forKey: Self.reconciliationRepairKey)
             } catch {
                 Log.sync.error("Contact reconciliation repair failed: \(error.localizedDescription)")
+            }
+        }
+        // Before the repair below, which forgets every link: they are the
+        // only record of which unsent contacts were imports.
+        if !userDefaults.bool(forKey: Self.legacyImportStampKey) {
+            do {
+                try await systemContactsExporter.stampLegacyImports()
+                userDefaults.set(true, forKey: Self.legacyImportStampKey)
+            } catch {
+                Log.sync.error("Legacy import stamp failed: \(error.localizedDescription)")
             }
         }
         if !userDefaults.bool(forKey: Self.systemImportDupeRepairKey) {

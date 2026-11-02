@@ -363,6 +363,125 @@ import Testing
         #expect(bodies.value.contains { $0.contains("ada@example.com") })
     }
 
+    // MARK: - Consent kept on the contact
+
+    enum LinkCleanup: CaseIterable {
+        /// Settings → Remove Exported Contacts.
+        case removeExported
+        /// Every link forgotten, as the launch duplicate repair does.
+        case forgetLinks
+    }
+
+    /// The stamp is on the contact, not the Apple Contacts link: cleaning the
+    /// links up after Turn Off does not make a revoked import uploadable.
+    @Test(arguments: LinkCleanup.allCases)
+    func linkCleanupKeepsARevokedImportUnsent(cleanup: LinkCleanup) async throws {
+        let harness = try makeHarness(pairedTo: serverA)
+        await turnOnAndAgree(harness)
+        addCard(harness, given: "Ada")
+        #expect(await harness.exporter.reconcileAll().imported == 1)
+        turnOff(harness)
+
+        switch cleanup {
+        case .removeExported: await harness.exporter.removeAllExported()
+        case .forgetLinks: harness.graph.systemContactsLinkStore.clear()
+        }
+        #expect(!harness.exporter.hasExportedContacts())
+        #expect(try await queued(harness).map(\.givenName) == ["Ada"])
+
+        let (repository, bodies) = uploads(harness)
+        _ = try? await repository.sync()
+        #expect(!bodies.value.contains { $0.contains("ada@example.com") })
+        #expect(await repository.pendingSummary().count == 0)
+    }
+
+    /// Consent is read again before each page of a push: Turn Off while page
+    /// one is in flight keeps the import on page two from going out. Contacts
+    /// typed into KyPost still do.
+    @Test func turnOffBetweenPagesStopsLaterImportUploads() async throws {
+        let harness = try makeHarness(pairedTo: serverA)
+        await turnOnAndAgree(harness)
+        // One page and one more, all queued before the import.
+        let typed = (0...500).map { index in
+            Contact(
+                name: "Typed \(index)",
+                emails: [ContactLabeledValue(label: nil, value: "typed\(index)@example.com")],
+                createdAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                updatedAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                needsSync: true
+            )
+        }
+        try await harness.graph.contactDAO.upsert(contacts: typed)
+        addCard(harness, given: "Ada")
+        #expect(await harness.exporter.reconcileAll().imported == 1)
+
+        let settings = Box(harness.settings)
+        let bodies = Box<[String]>([])
+        let client = stubClient(json: #"{"cursor": 1}"#) { request in
+            guard let body = request.httpBody, !body.isEmpty else { return }
+            bodies.mutate { $0.append(String(decoding: body, as: UTF8.self)) }
+            // Turn Off lands while page one is in flight.
+            settings.value.forgetSyncConsent()
+        }
+        let repository = ContactSyncRepository(
+            client: ContactSyncClient(httpClient: client),
+            contactDAO: harness.graph.contactDAO,
+            cursorStore: harness.graph.contactCursorStore,
+            pendingDeletesStore: harness.graph.contactPendingDeletesStore,
+            securePairingStore: harness.graph.securePairingStore,
+            systemContactsExporter: harness.exporter
+        )
+        _ = try await repository.sync()
+
+        #expect(bodies.value.count == 2)
+        #expect(!bodies.value.contains { $0.contains("ada@example.com") })
+        #expect(bodies.value.last?.contains("typed500@example.com") == true)
+        #expect(try await queued(harness).contains { $0.givenName == "Ada" })
+    }
+
+    /// Editing a withheld import in KyPost does not make it a KyPost
+    /// contact: it stays unsent, even when the edit is saved without the
+    /// stamp.
+    @Test func editingAWithheldImportKeepsItUnsent() async throws {
+        let harness = try makeHarness(pairedTo: serverA)
+        await turnOnAndAgree(harness)
+        addCard(harness, given: "Ada")
+        #expect(await harness.exporter.reconcileAll().imported == 1)
+        turnOff(harness)
+
+        let (repository, bodies) = uploads(harness)
+        var edited = try #require(try await queued(harness).first)
+        edited.importConsent = nil
+        edited.notes = "Met at the conference"
+        try await repository.saveContact(edited)
+        _ = try? await repository.sync()
+        #expect(!bodies.value.contains { $0.contains("ada@example.com") })
+    }
+
+    /// An import queued before `Contact.importConsent` existed is known only
+    /// by its link; the launch backfill stamps it so it is never sent.
+    @Test func legacyUnsentImportIsNotUploaded() async throws {
+        let harness = try makeHarness(pairedTo: serverA)
+        await turnOnAndAgree(harness)
+        let legacy = Contact(
+            name: "Ada",
+            emails: [ContactLabeledValue(label: nil, value: "ada@example.com")],
+            createdAt: Date(),
+            updatedAt: Date(),
+            needsSync: true
+        )
+        try await harness.graph.contactDAO.upsert(contacts: [legacy])
+        harness.graph.systemContactsLinkStore.upsert(SystemContactLink(
+            localId: legacy.localId, uid: nil, cnIdentifier: "card-ada",
+            exportedUpdatedAt: legacy.updatedAt, imported: true
+        ))
+
+        try await harness.exporter.stampLegacyImports()
+        let (repository, bodies) = uploads(harness)
+        _ = try? await repository.sync()
+        #expect(!bodies.value.contains { $0.contains("ada@example.com") })
+    }
+
     /// The Contacts screen's Sync shows the same disclosure, once per
     /// server; agreeing there never turns Apple Contacts sync back on.
     @Test func contactsScreenAsksOncePerServerAndNeverResumesAppleSync() throws {

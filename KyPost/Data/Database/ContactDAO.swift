@@ -87,8 +87,22 @@ actor ContactDAO {
         guard try fetchEntity(uid: uid) == nil,
               let entity = try fetchEntity(localId: localId) else { return }
         entity.uid = uid
+        // The server has it: an import is an ordinary contact from here on.
+        entity.importConsent = nil
         if pushedUpdatedAt.map({ entity.updatedAt <= $0 }) ?? true {
             entity.needsSync = false
+        }
+        try modelContext.save()
+    }
+
+    /// Stamps the uid-less rows among `localIds` that carry no
+    /// `importConsent` yet with `stamp`.
+    func stampImports(localIds: Set<UUID>, stamp: String) throws {
+        let entities = try modelContext.fetch(FetchDescriptor<ContactEntity>(
+            predicate: #Predicate { $0.uid == nil && $0.importConsent == nil }
+        ))
+        for entity in entities where localIds.contains(entity.localId) {
+            entity.importConsent = stamp
         }
         try modelContext.save()
     }
