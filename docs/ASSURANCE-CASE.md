@@ -52,7 +52,10 @@ app.
    RSA ≥ 2048 or EC ≥ P-256 on every certificate of the evaluated chain, TLS ≥ 1.2, and
    redirects allowed only to the same host and port over HTTPS
    (`Data/Networking/PinnedSessionDelegate.swift`). Pairing runs on its own pinned connection
-   (`Data/Networking/RelayPairingConnection.swift`).
+   (`Data/Networking/RelayPairingConnection.swift`). A web-minted pairing token only creates a
+   pending device; it gets mail access after the user approves it on the web page whose
+   six-digit code matches the app's. The pending secret stays in memory and is polled over the
+   same pinned connection (`Domain/UseCases/DeviceRegistrationService.swift`).
 2. **Relay → device data.** Signature verdicts are decided on this device. The relay supplies
    candidate keys, so a key it offers can reach *signer not confirmed* and, through first-seen
    history, *same key as last time*. Only a key pinned by QR on this device gives *you confirmed

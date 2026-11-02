@@ -303,6 +303,35 @@ final class HTTPClient: Sendable {
         try await send(type, method: "PUT", url: url, query: query, headers: headers, jsonBody: jsonBody)
     }
 
+    /// `post`, plus the 2xx status that answered, for an endpoint where 200
+    /// and 202 mean different things (`native/register`: paired or pending).
+    func postWithStatus<Response: Decodable>(
+        _ type: Response.Type,
+        url: URL,
+        jsonBody: some Encodable
+    ) async throws -> (status: Int, body: Response) {
+        let request = try jsonRequest(
+            method: "POST", url: url, query: [], headers: [:], jsonBody: jsonBody, timeout: nil
+        )
+        let (data, status) = try await executeWithStatus(request)
+        return (status, try decode(data))
+    }
+
+    /// `get`, plus the 2xx status that answered (`native/pairing-status`:
+    /// 200 approved, 202 still pending).
+    func getWithStatus<Response: Decodable>(
+        _ type: Response.Type,
+        url: URL,
+        headers: [String: String] = [:]
+    ) async throws -> (status: Int, body: Response) {
+        var request = URLRequest(url: url)
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        let (data, status) = try await executeWithStatus(request)
+        return (status, try decode(data))
+    }
+
     /// DELETE with no request body — the relay identifies the target with a
     /// query parameter, not a payload.
     func delete<Response: Decodable>(
@@ -330,6 +359,19 @@ final class HTTPClient: Sendable {
         jsonBody: some Encodable,
         timeout: TimeInterval? = nil
     ) async throws -> Response {
+        try await decode(execute(jsonRequest(
+            method: method, url: url, query: query, headers: headers, jsonBody: jsonBody, timeout: timeout
+        )))
+    }
+
+    private func jsonRequest(
+        method: String,
+        url: URL,
+        query: [URLQueryItem],
+        headers: [String: String],
+        jsonBody: some Encodable,
+        timeout: TimeInterval?
+    ) throws -> URLRequest {
         var request = URLRequest(url: try url.appending(queryOrThrow: query))
         request.httpMethod = method
         if let timeout { request.timeoutInterval = timeout }
@@ -342,13 +384,20 @@ final class HTTPClient: Sendable {
         } catch {
             throw NetworkError.decoding(description: "Encoding request body: \(error)")
         }
-        return try await decode(execute(request))
+        return request
     }
 
     /// `streamingUpTo` routes through the capped streaming transport; nil uses
     /// the buffering one (JSON endpoints, whose bodies the relay's own handlers
     /// bound).
     private func execute(_ request: URLRequest, streamingUpTo limit: Int? = nil) async throws -> Data {
+        try await executeWithStatus(request, streamingUpTo: limit).data
+    }
+
+    private func executeWithStatus(
+        _ request: URLRequest,
+        streamingUpTo limit: Int? = nil
+    ) async throws -> (data: Data, status: Int) {
         let data: Data
         let response: URLResponse
         do {
@@ -372,7 +421,7 @@ final class HTTPClient: Sendable {
         ) {
             throw error
         }
-        return data
+        return (data, http.statusCode)
     }
 
     private func decode<Response: Decodable>(_ data: Data) throws -> Response {

@@ -990,6 +990,23 @@ old sentence edited out.
   relay client `URLSession.shared`. Redirects must keep scheme https, host and
   effective port.
 - A pairing (not a re-registration) posts `.kyPostPaired` once stored.
+- **A web-minted token registers pending** (KyPost-Server
+  `docs/device-approval.md`, #516). `native/register` answers 202 with a
+  `deviceId`, `deviceSecret` and six-digit `approvalCode`; the HTTP status
+  decides, never the body (`HTTPClient.postWithStatus`). The service holds
+  the pending credentials **in memory only** (`PendingPairing`) and keeps
+  the pairing's pinned connection open for the polls of
+  `native/pairing-status`; nothing reaches the Keychain until 200. 200
+  stores the pairing as a 200 from register would, with the status answer's
+  `deviceId`; 410 (also 401/403), the deadline (`expiresAt`, at most 5
+  minutes on this clock), Cancel, the screen closing or a session reset drop
+  them and close the connection. Polls go every `pollIntervalSeconds`
+  (clamped 1–30 s), backing off on transient errors to 30 s and never
+  sooner than `Retry-After`; one shared loop serves every waiting window. A
+  `statusEndpoint` that is not same-origin with `srv` is ignored. A
+  re-registration answered 202 stores nothing and fails. Tokens with the
+  signed `direct` claim (sign-on, review pairing) still get 200 at once;
+  there is no client or server switch that skips approval.
 - **A reset ends registrations in flight.** `.kyPostSessionReset` and
   `SingletonGraph.shutdown()` call `DeviceRegistrationService.cancelAll()`,
   which closes open pairing connections (graph shutdown's

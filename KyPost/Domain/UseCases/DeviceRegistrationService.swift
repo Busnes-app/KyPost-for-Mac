@@ -38,6 +38,9 @@ protocol PairingConnection: AnyObject {
     func pin(_ hash: String)
     /// Registers over this connection.
     func register(deviceToken: String, params: PairingParams, deviceId: String?) async -> RegistrationOutcome
+    /// Polls `native/pairing-status` for a pending device over this
+    /// connection, still held to the pin the registration rode.
+    func pairingStatus(_ pending: PendingRegistration) async -> PairingStatusOutcome
     /// Ends the connection. Called once the attempt is over, success or not.
     func close()
 }
@@ -87,10 +90,55 @@ final class DeviceRegistrationService {
     /// that answered after a wipe or failed-unlock reset would otherwise put
     /// the erased account back — on an app the reset just left unlocked.
     private var session = 0
+    /// Moves on whenever the pairing screen is cancelled or closed
+    /// (`cancelPairing`). Re-registration does not read it.
+    private var pairingGeneration = 0
+
+    /// What a registration started under. Once either value moves on, its
+    /// result stores, keeps and announces nothing.
+    private struct Attempt {
+        var session: Int
+        /// Nil for a re-registration, which a pairing cancel leaves running.
+        var pairing: Int?
+    }
     /// Pairing connections open right now, closed by `cancelAll`. Graph
     /// shutdown cancels `relaySession` but not these.
     private var openConnections: [ObjectIdentifier: any PairingConnection] = [:]
     private var resetObservation: NotificationObservation?
+
+    /// A pairing the server answered 202 for, waiting on the user's approval
+    /// on the web (KyPost-Server `docs/device-approval.md`). Memory only:
+    /// the pending secret is never written to the Keychain or anywhere else,
+    /// so dropping this value (cancel, 410, expiry, session reset) is the
+    /// wipe. Its connection stays open, held to the pin, for the polls.
+    private struct PendingPairing {
+        var registration: PendingRegistration
+        var params: PairingParams
+        var deviceId: String?
+        var pin: String
+        var connection: any PairingConnection
+        var attempt: Attempt
+        var deadline: Date
+        /// The one poll loop, shared by every screen waiting on this pairing
+        /// (a deep link reaches every open Mac window).
+        var wait: Task<RegistrationOutcome, Never>?
+    }
+    private var pendingPairing: PendingPairing?
+
+    /// What the pending screen shows; nil when nothing is waiting.
+    var pendingApproval: PendingApproval? {
+        pendingPairing.map {
+            PendingApproval(
+                approvalCode: $0.registration.approvalCode,
+                server: SecurePairingStore.host(ofServer: $0.params.srv) ?? $0.params.srv
+            )
+        }
+    }
+
+    /// Waits between polls. A `var` so tests need not wait out real
+    /// intervals; it must throw on cancellation, as `Task.sleep` does.
+    var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    var now: () -> Date = Date.init
 
     init(
         client: NativeRegistrationClient,
@@ -118,6 +166,8 @@ final class DeviceRegistrationService {
     /// `SingletonGraph.shutdown()`.
     func cancelAll() {
         session += 1
+        pendingPairing?.wait?.cancel()
+        pendingPairing = nil
         for connection in openConnections.values {
             connection.close()
         }
@@ -127,8 +177,34 @@ final class DeviceRegistrationService {
         }
     }
 
-    private static var cancelledMessage: String {
-        String(localized: "Pairing was cancelled because this device's session ended. Nothing was saved.")
+    /// Ends the pairing in flight, whether it is still registering or
+    /// waiting on approval: the screen was cancelled or closed. A
+    /// registration answering after this keeps no pending credentials,
+    /// starts no polls and stores nothing.
+    func cancelPairing() {
+        pairingGeneration += 1
+        discardPendingPairing()
+        for connection in openConnections.values {
+            connection.close()
+        }
+        openConnections = [:]
+        for (key, task) in inFlight where key.hasPrefix("pair|") {
+            task.cancel()
+            // The next link opened, even the same one, starts afresh rather
+            // than joining this cancelled registration.
+            inFlight[key] = nil
+        }
+    }
+
+    /// Why `attempt` must stop, or nil while it is still current.
+    private func cancellation(of attempt: Attempt) -> RegistrationOutcome? {
+        if attempt.session != session {
+            return .failure(String(localized: "Pairing was cancelled because this device's session ended. Nothing was saved."))
+        }
+        if let pairing = attempt.pairing, pairing != pairingGeneration {
+            return .failure(String(localized: "Pairing was cancelled. Nothing was saved."))
+        }
+        return nil
     }
 
     /// Initial pairing (QR scan / deep link). Persists the pairing, its
@@ -160,15 +236,20 @@ final class DeviceRegistrationService {
         // store it again over the teardown.
         guard let pairing = try? securePairingStore.loadActivePairing() else { return nil }
         let params = PairingParams(pairing: pairing)
-        let session = session
+        let attempt = Attempt(session: session, pairing: nil)
         return await deduplicated(key: "reregister|\(params.pt)|\(deviceToken)") {
             let outcome = await self.client.register(
                 deviceToken: deviceToken,
                 params: params,
                 deviceId: pairing.lastDeviceId
             )
+            // Approval belongs to a pairing the user is watching, not to a
+            // background refresh. The pending secret is dropped here.
+            if case .approvalRequired = outcome {
+                return .failure(String(localized: "The server wants this device approved again. Pair it again from the web app."))
+            }
             return await self.storeRegistration(
-                outcome, params: params, deviceId: pairing.lastDeviceId, pin: nil, session: session
+                outcome, params: params, deviceId: pairing.lastDeviceId, pin: nil, attempt: attempt
             )
         }
     }
@@ -183,7 +264,10 @@ final class DeviceRegistrationService {
         let task = Task { await operation() }
         inFlight[key] = task
         let outcome = await task.value
-        inFlight[key] = nil
+        // `cancelPairing` may have handed the key to a newer registration.
+        if inFlight[key] == task {
+            inFlight[key] = nil
+        }
         return outcome
     }
 
@@ -223,17 +307,22 @@ final class DeviceRegistrationService {
         }
         let expectedPin = params.pin ?? storedPin
 
-        let session = session
+        let attempt = Attempt(session: session, pairing: pairingGeneration)
         let connection = makePairingConnection(host, expectedPin)
         let connectionId = ObjectIdentifier(connection)
         openConnections[connectionId] = connection
+        // A pending pairing keeps its connection for the polls;
+        // `discardPendingPairing` closes it then.
+        var keepsConnection = false
         defer {
-            openConnections[connectionId] = nil
-            connection.close()
+            if !keepsConnection {
+                openConnections[connectionId] = nil
+                connection.close()
+            }
         }
 
         guard let observed = await connection.probe(srvURL) else {
-            guard session == self.session else { return .failure(Self.cancelledMessage) }
+            if let cancelled = cancellation(of: attempt) { return cancelled }
             Log.app.error("No certificate could be observed on the pairing handshake; refusing to register.")
             return .failure(String(localized: "KyPost couldn't read this server's security certificate, so it didn't pair. Check the connection and try again. Nothing was sent."))
         }
@@ -243,8 +332,9 @@ final class DeviceRegistrationService {
                 ? Self.storedPinMismatchMessage(host: host)
                 : String(localized: "This server's certificate does not match the pairing link. Nothing was sent. Do not pair on this network."))
         }
-        // A session that ended during the probe sends nothing at all.
-        guard session == self.session else { return .failure(Self.cancelledMessage) }
+        // A session that ended, or a pairing cancelled, during the probe
+        // sends nothing at all.
+        if let cancelled = cancellation(of: attempt) { return cancelled }
         connection.pin(observed)
 
         let outcome = await connection.register(
@@ -252,7 +342,120 @@ final class DeviceRegistrationService {
             params: params,
             deviceId: deviceId
         )
-        return await storeRegistration(outcome, params: params, deviceId: deviceId, pin: observed, session: session)
+        // Answered after a cancel: the pending secret in `outcome` is
+        // dropped here, unkept and unpolled, and a 200 stores nothing.
+        if let cancelled = cancellation(of: attempt) { return cancelled }
+        if case .approvalRequired(let registration) = outcome {
+            discardPendingPairing()
+            keepsConnection = true
+            pendingPairing = PendingPairing(
+                registration: registration,
+                params: params,
+                deviceId: deviceId,
+                pin: observed,
+                connection: connection,
+                attempt: attempt,
+                deadline: deadline(for: registration)
+            )
+            return pendingApproval.map(RegistrationOutcome.awaitingApproval) ?? .notApproved
+        }
+        return await storeRegistration(outcome, params: params, deviceId: deviceId, pin: observed, attempt: attempt)
+    }
+
+    /// Polls `native/pairing-status` until the pending pairing is approved,
+    /// denied, expires, or the calling task is cancelled (the screen
+    /// closed). Approved stores the pairing exactly as a 200 from register
+    /// does, with the deviceId the status answer names. Every other end
+    /// drops the pending credentials.
+    ///
+    /// Polls every `pollIntervalSeconds` while pending. A transient failure
+    /// backs off from that interval, doubling to 30 s, and never sooner than
+    /// a `Retry-After`. Concurrent callers share one loop; it stops when
+    /// `cancelPairing` or `cancelAll` runs.
+    func awaitApproval() async -> RegistrationOutcome {
+        guard let pending = pendingPairing else { return .notApproved }
+        if let wait = pending.wait { return await wait.value }
+        let wait = Task { await self.pollForApproval(pending) }
+        pendingPairing?.wait = wait
+        return await wait.value
+    }
+
+    private func pollForApproval(_ pending: PendingPairing) async -> RegistrationOutcome {
+        let interval = pending.registration.pollInterval
+        var retryDelay = interval
+        while true {
+            let answer = await pending.connection.pairingStatus(pending.registration)
+            if let ended = endedWait(pending) { return ended }
+            let delay: Duration
+            switch answer {
+            case .approved(let status):
+                // Not cancelling this task: storing the pairing awaits.
+                discardPendingPairing(cancellingWait: false)
+                let response = RegistrationResponse(
+                    ok: true,
+                    synced: status.synced,
+                    deviceId: status.deviceId ?? pending.registration.auth.deviceId,
+                    deviceSecret: pending.registration.auth.deviceSecret,
+                    deliveryMode: status.deliveryMode,
+                    pullEndpoint: status.pullEndpoint
+                )
+                return await storeRegistration(
+                    .success(response),
+                    params: pending.params,
+                    deviceId: pending.deviceId,
+                    pin: pending.pin,
+                    attempt: pending.attempt
+                )
+            case .rejected:
+                discardPendingPairing(cancellingWait: false)
+                return .notApproved
+            case .pending:
+                retryDelay = interval
+                delay = interval
+            case .retry(let retryAfter):
+                delay = max(retryDelay, .seconds(retryAfter ?? 0))
+                retryDelay = min(retryDelay * 2, .seconds(30))
+            }
+            // The poll at the deadline was the last one.
+            let remaining = pending.deadline.timeIntervalSince(now())
+            guard remaining > 0 else {
+                discardPendingPairing(cancellingWait: false)
+                return .notApproved
+            }
+            try? await sleep(min(delay, .seconds(remaining)))
+            if let ended = endedWait(pending) { return ended }
+        }
+    }
+
+    /// Why a wait on `pending` is over, or nil to keep polling: the session
+    /// ended, or a cancel or another pairing replaced it.
+    private func endedWait(_ pending: PendingPairing) -> RegistrationOutcome? {
+        if let cancelled = cancellation(of: pending.attempt) { return cancelled }
+        let isCurrent = pendingPairing.map { $0.connection === pending.connection } ?? false
+        return isCurrent && !Task.isCancelled ? nil : .notApproved
+    }
+
+    /// Drops the pending credentials, closes their connection and stops the
+    /// poll loop.
+    private func discardPendingPairing(cancellingWait: Bool = true) {
+        guard let pending = pendingPairing else { return }
+        pendingPairing = nil
+        openConnections[ObjectIdentifier(pending.connection)] = nil
+        pending.connection.close()
+        if cancellingWait { pending.wait?.cancel() }
+    }
+
+    /// When polling gives up. The server's `expiresAt` (5 minutes), read on
+    /// this device's clock; a value that is past or further out than the
+    /// contract's 5 minutes means the clocks disagree, so 5 minutes from now.
+    /// The server's 410 stays the authority either way.
+    private func deadline(for registration: PendingRegistration) -> Date {
+        let limit: TimeInterval = 5 * 60
+        let start = now()
+        guard let remaining = registration.expiresAt?.timeIntervalSince(start),
+              remaining > 0, remaining <= limit
+        else { return start + limit }
+        return start + remaining
     }
 
     static func replacesStoredPinMessage(host: String) -> String {
@@ -271,11 +474,12 @@ final class DeviceRegistrationService {
         params: PairingParams,
         deviceId: String?,
         pin: String?,
-        session: Int
+        attempt: Attempt
     ) async -> RegistrationOutcome {
         // Checked before every write and after every await below: a reset
-        // can land while the response is in flight or while a step awaits.
-        guard session == self.session else { return .failure(Self.cancelledMessage) }
+        // or a cancel can land while the response is in flight or while a
+        // step awaits.
+        if let cancelled = cancellation(of: attempt) { return cancelled }
         guard case .success(let response) = outcome else { return outcome }
         // Routine re-registration of the same account (foreground, token
         // refresh) must not restart the heartbeat's quiet clock: it proves
@@ -303,7 +507,7 @@ final class DeviceRegistrationService {
         if replacesAccount, let onAccountReplaced, !(await onAccountReplaced()) {
             return .failure(String(localized: "Registered, but this device could not erase the previous account's data, so the new pairing was not saved. Try again."))
         }
-        guard session == self.session else { return .failure(Self.cancelledMessage) }
+        if let cancelled = cancellation(of: attempt) { return cancelled }
         do {
             // The pin is written with the pairing, under the same lock, and
             // a pin for another host is dropped there. A pairing that
@@ -340,7 +544,7 @@ final class DeviceRegistrationService {
         if isExistingPairingWithoutStamp {
             await reconcileExistingPairingPushes?()
         }
-        if pin != nil, session == self.session {
+        if pin != nil, cancellation(of: attempt) == nil {
             // A new pairing: screens showing "not paired" load at once
             // instead of waiting for their next timer.
             NotificationCenter.default.post(name: .kyPostPaired, object: nil)

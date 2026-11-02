@@ -47,6 +47,9 @@ final class PushPairingViewModel {
         /// user taps through (see `pair(params:)`).
         case confirming(PendingPairingConfirmation)
         case working
+        /// The server created the device pending (202): the code is on
+        /// screen and `pair` is polling until the user approves it on the web.
+        case awaitingApproval(PendingApproval)
         case paired(deviceId: String?)
         case failed(String)
     }
@@ -56,7 +59,14 @@ final class PushPairingViewModel {
     private let securePairingStore: SecurePairingStore
 
     private(set) var state: State = .idle
+    /// Shown above the scan/paste screen after a wait ended without approval.
+    private(set) var notice: String?
     var pastedLink = ""
+    /// Moves on with every pairing attempt and cancel, so a wait that ends
+    /// after the user moved on changes nothing.
+    private var attempt = 0
+
+    static let notApprovedMessage = String(localized: "Not approved: denied or timed out. Scan a new code.")
 
     init(
         registrationService: DeviceRegistrationService,
@@ -74,6 +84,9 @@ final class PushPairingViewModel {
     /// otherwise silently repoint the pairing at an attacker server with no
     /// warning at all.
     func present(params: PairingParams) {
+        // A new link replaces a pairing still registering or waiting.
+        cancelPairing()
+        notice = nil
         state = .confirming(PendingPairingConfirmation(params: params, existingHost: currentPairedHost))
     }
 
@@ -83,11 +96,20 @@ final class PushPairingViewModel {
     }
 
     func pair(params: PairingParams) async {
+        attempt += 1
+        let attempt = attempt
+        notice = nil
         state = .working
         // Simulators never receive an APNs token; register with a placeholder
         // so pairing still completes (pull mode works without APNs).
         let token = pushSettingsStore.lastDeviceToken ?? "no-apns-token"
-        let outcome = await registrationService.pair(params: params, deviceToken: token)
+        var outcome = await registrationService.pair(params: params, deviceToken: token)
+        if case .awaitingApproval(let approval) = outcome {
+            guard attempt == self.attempt else { return }
+            state = .awaitingApproval(approval)
+            outcome = await registrationService.awaitApproval()
+        }
+        guard attempt == self.attempt else { return }
         switch outcome {
         case .success(let response):
             state = .paired(deviceId: response.deviceId)
@@ -97,7 +119,29 @@ final class PushPairingViewModel {
             state = .failed("The server is not configured for native pairing (503).")
         case .failure(let message):
             state = .failed(message)
+        case .notApproved:
+            // Back to the start, where a new code can be scanned.
+            pastedLink = ""
+            notice = Self.notApprovedMessage
+            state = .idle
+        case .approvalRequired, .awaitingApproval:
+            // The service never returns these from a wait.
+            state = .failed(Self.notApprovedMessage)
         }
+    }
+
+    /// Cancel on the waiting screen, or the screen closing: ends the
+    /// attempt whether it is still registering or waiting on approval, so a
+    /// late answer stores nothing and starts no polls. No-op in any other
+    /// state.
+    func cancelPairing() {
+        switch state {
+        case .working, .awaitingApproval: break
+        default: return
+        }
+        attempt += 1
+        registrationService.cancelPairing()
+        state = .idle
     }
 
     /// Parses a pasted kypost://native-pair link and asks for confirmation.
@@ -145,8 +189,22 @@ final class PushPairingViewModel {
         }
     }
 
+#if DEBUG
+    /// Screenshot runs only (`DemoContent.pairingApprovalScreen`).
+    func showDemo(_ screen: DemoContent.PairingScreen) {
+        switch screen {
+        case .awaiting(let approval):
+            state = .awaitingApproval(approval)
+        case .notApproved:
+            notice = Self.notApprovedMessage
+            state = .idle
+        }
+    }
+#endif
+
     /// Back to the scan/paste screen after a failure.
     func reset() {
+        notice = nil
         pastedLink = ""
         state = .idle
     }
