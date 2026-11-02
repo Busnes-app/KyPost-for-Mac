@@ -45,6 +45,13 @@
 - **Installs that had Sync with Apple Contacts on read as off after updating**
   until you agree. Nothing is read from or written to Apple Contacts until
   then; cards already there stay.
+- **New devices wait for approval on the web** (KyPost-Server 0.6.0, #516).
+  A pairing code from Settings → Security → Devices now registers the device
+  pending: the app shows a six-digit code and waits until you approve it on
+  the web page that showed the same code. Denied or timed out, it says
+  "Not approved: denied or timed out. Scan a new code." and keeps nothing.
+  KyIdentity sign-on still pairs at once. Before, the app treated the
+  server's pending answer as a finished pairing.
 
 - **TLS certificates need strong keys on the whole chain.** Every app connection
   now runs the system's trust evaluation itself, then requires RSA of at least

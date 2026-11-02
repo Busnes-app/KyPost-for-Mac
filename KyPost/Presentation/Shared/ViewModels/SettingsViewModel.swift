@@ -283,6 +283,9 @@ final class SettingsViewModel {
                 + "notifications can't be fixed from this device."
         case .failure(let text):
             statusMessage = "Could not re-register: \(text)"
+        case .approvalRequired, .awaitingApproval, .notApproved:
+            // reregisterIfPaired turns a 202 into .failure; never reached.
+            statusMessage = "Could not re-register — pair this device again from the web app."
         case nil:
             statusMessage = "Not paired — pair this device first."
         }

@@ -82,6 +82,10 @@ final class RelayPairingConnection: PairingConnection {
         await client.register(deviceToken: deviceToken, params: params, deviceId: deviceId)
     }
 
+    func pairingStatus(_ pending: PendingRegistration) async -> PairingStatusOutcome {
+        await client.pairingStatus(pending)
+    }
+
     func close() {
         session.invalidateAndCancel()
     }
