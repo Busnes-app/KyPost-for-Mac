@@ -415,13 +415,16 @@ import Testing
         addCard(harness, given: "Ada")
         #expect(await harness.exporter.reconcileAll().imported == 1)
 
-        let settings = Box(harness.settings)
+        let settings = harness.settings
         let bodies = Box<[String]>([])
-        let client = stubClient(json: #"{"cursor": 1}"#) { request in
-            guard let body = request.httpBody, !body.isEmpty else { return }
-            bodies.mutate { $0.append(String(decoding: body, as: UTF8.self)) }
-            // Turn Off lands while page one is in flight.
-            settings.value.forgetSyncConsent()
+        let client = HTTPClient { request in
+            if let body = request.httpBody, !body.isEmpty {
+                bodies.mutate { $0.append(String(decoding: body, as: UTF8.self)) }
+                // Turn Off lands while page one is in flight.
+                await settings.forgetSyncConsent()
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"cursor": 1}"#.utf8), response)
         }
         let repository = ContactSyncRepository(
             client: ContactSyncClient(httpClient: client),
