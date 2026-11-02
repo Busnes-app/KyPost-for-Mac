@@ -44,6 +44,9 @@ import Testing
             linkStore: graph.systemContactsLinkStore,
             baselineStore: graph.systemContactsBaselineStore,
             settings: graph.contactsSettingsStore,
+            currentRelay: {
+                (try? graph.securePairingStore.loadPairing()).map { ContactSyncRelay(srv: $0.srv) }
+            },
             contactDAO: graph.contactDAO,
             photoCache: graph.contactPhotoCache,
             groupLinker: SystemContactGroupLinker(

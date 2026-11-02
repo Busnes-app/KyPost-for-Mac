@@ -396,8 +396,10 @@ Rules:
 - `-KyPostDemoScreen mfa` exists because MFA approval arrives by push and has
   no navigable route; `pairing-approval` and `pairing-denied` because a
   pending pairing needs a server's 202 (the pairing sheet opens on
-  `DemoContent.pairingParams` and shows that state; nothing registers). Add
-  a case there rather than a new launch argument.
+  `DemoContent.pairingParams` and shows that state; nothing registers);
+  `contacts-sync-on` seeds Settings → Contacts as on (the demo's Contacts
+  store refuses access, so Agree cannot get there). Add a case there rather
+  than a new launch argument.
 - The fixtures are invented. Keep them invented, and keep the addresses on
   `.example` — a screenshot is published, and a real address in one is a
   real person's inbox.

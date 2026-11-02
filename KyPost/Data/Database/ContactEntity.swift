@@ -61,6 +61,8 @@ final class ContactEntity {
     var updatedAt: Date
     /// Local create/edit not yet pushed to the server.
     var needsSync: Bool
+    /// See Contact.importConsent; added in AppSchemaV10.
+    var importConsent: String?
 
     init(
         localId: UUID,
@@ -128,6 +130,14 @@ extension ContactEntity {
         pronouns = contact.pronouns
         isSelf = contact.isSelf
         avatarUrl = contact.avatarUrl
+        // Cleared only by `ContactDAO.assignUid`: a write that does not carry
+        // it (a server copy) keeps it, and an edit in KyPost
+        // (`Contact.createdInKyPost`) never turns an import into a KyPost
+        // contact.
+        if let incoming = contact.importConsent,
+           incoming != Contact.createdInKyPost || !Contact.isImportStamp(importConsent) {
+            importConsent = incoming
+        }
     }
 
     var toDomain: Contact {
@@ -166,7 +176,8 @@ extension ContactEntity {
             avatarUrl: avatarUrl,
             createdAt: createdAt,
             updatedAt: updatedAt,
-            needsSync: needsSync
+            needsSync: needsSync,
+            importConsent: importConsent
         )
     }
 }

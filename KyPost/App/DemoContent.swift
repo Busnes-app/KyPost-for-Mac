@@ -26,8 +26,9 @@ enum DemoContent {
     /// Set by the screenshot runner; absent in an ordinary Debug run.
     nonisolated static let launchArgument = "-KyPostDemo"
     /// Optional follow-on argument selecting a screen that has no navigable
-    /// route: `mfa`, which normally arrives by push, and `pairing-approval` /
-    /// `pairing-denied`, which need a server's 202.
+    /// route: `mfa`, which normally arrives by push, `pairing-approval` /
+    /// `pairing-denied`, which need a server's 202, and `contacts-sync-on`,
+    /// Settings → Contacts with sync on, which Agree cannot reach here.
     static let screenArgument = "-KyPostDemoScreen"
 
     nonisolated static var isEnabled: Bool {

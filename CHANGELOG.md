@@ -28,6 +28,27 @@
 
 ### Security
 
+- **Contacts leave Apple Contacts only after you agree.** Turning on Sync with
+  Apple Contacts now first shows what is sent, to which server (named by its
+  address), how that server uses contacts and how long it keeps them, with
+  **Agree** and **Not now**. Only Agree leads to the Contacts permission
+  prompt. Consent belongs to one server, by its full address: pairing
+  another, even on the same host with another port or path, needs it again.
+  Turning it off also stops cards already imported from Apple Contacts but
+  not yet sent from going out, including during a sync already under way
+  and after "Remove Exported Contacts". The
+  Contacts row says "On. Contacts are sent to <server>." or "Off.", and
+  turning it off asks first, then stops sync and keeps the cards. The
+  Contacts screen's Sync shows the same text. Before, the toggle started
+  two-way sync after only the iOS prompt, and cards added in Apple Contacts
+  were uploaded with no warning.
+- **Installs that had Sync with Apple Contacts on read as off after updating**
+  until you agree. Nothing is read from or written to Apple Contacts until
+  then; cards already there stay.
+- **Unsent contacts from before this update are held back** until you edit
+  them in KyPost: the app cannot tell whether each came from Apple Contacts.
+  Cards known to be Apple Contacts imports stay unsent, edited or not.
+  Contacts you create in KyPost after updating sync as before.
 - **New devices wait for approval on the web** (KyPost-Server 0.6.0, #516).
   A pairing code from Settings → Security → Devices now registers the device
   pending: the app shows a six-digit code and waits until you approve it on

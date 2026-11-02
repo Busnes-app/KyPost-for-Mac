@@ -365,6 +365,41 @@ Same protocol as KyPost for Android and Linux; change it in all three.
     linked card or more than half of them (cards already gone do not count),
     aborts on a failed Contacts read, and reports withheld deletes through
     `ContactSyncHealth.withheldCardDeletes` to `ContactSyncBanner`.
+- **Consent before contacts leave Apple Contacts** (`ContactSyncDisclosure`,
+  Android #282). "Sync with Apple Contacts" is on only with the toggle **and**
+  consent for the paired server (`ContactsSettingsStore.isSystemSyncOn`); an
+  install that had the toggle on before consent existed reads as off. The
+  toggle only asks: on shows the disclosure, and only Agree records consent
+  (one relay at a time), resets the import baseline, then asks iOS for
+  access; off asks to confirm, then forgets consent and keeps the cards.
+  Consent is keyed on `ContactSyncRelay.consentKey`, the canonical base URL
+  (scheme, host, port, path), stored hashed; the host (`name`) is display
+  only and never compared as consent. Each Agree gets a new token, and
+  forgetting clears it; `ContactsSettingsStore.importConsentStamp` is the
+  relay's hashed key plus that token. `SystemContactsExporter` checks
+  consent on every pass, and the import re-checks the stamp after each
+  suspension and before each card. An import carries its stamp on the
+  contact row (`Contact.importConsent`, AppSchemaV10), never on the Apple
+  Contacts link, so no link cleanup can drop it; only `assignUid` clears it.
+  One rule, `SystemContactsExporter.mayUpload`: a contact without a uid
+  uploads only if it is marked made in KyPost (`Contact.createdInKyPost`,
+  set by `ContactSyncRepository.saveContact`, the one path for every create
+  and edit in KyPost) or is an import while sync is on for the same relay
+  under the same stamp. Provenance is positive: nil, `Contact.quarantined`
+  and `Contact.legacyImport` never upload. `ContactSyncRepository` reads it
+  for the pending set and again before each push page, so imports queued
+  before Turn Off, another relay, or a newer Agree stay unsent, edited or
+  not (`ContactEntity.applyFields` never lets the KyPost mark replace an
+  import stamp). The V9→V10 stage quarantines every row without a uid,
+  since no pre-V10 field proves origin; an edit in KyPost releases a
+  quarantined row, and launch (`stampLegacyImports`) turns those still
+  linked as imports into `legacyImport`, which no edit releases. Any new
+  path that creates contacts must go through `saveContact` or set the
+  stamp itself. The Contacts screen's Sync shows the same disclosure once
+  per server; agreeing there never turns the toggle on.
+  Contacts typed into KyPost sync with the server without this gate, as on
+  Android. The disclosure's "How they are used" and "How long" come from
+  KyPost-Server's code; change them when the server's use of contacts changes.
 - **vCard** (`Utilities/VCard.swift`, Android #184): 4.0 or 3.0; every value
   escaped and stripped of control characters by **unicode scalar** (C0, DEL,
   C1, U+2028/2029 — wider than Android), so no field can start a property or a

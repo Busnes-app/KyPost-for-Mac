@@ -32,6 +32,8 @@ private func makeContact(
     if !email.isEmpty {
         contact.emails = [ContactLabeledValue(label: nil, value: email)]
     }
+    // A queued row stands for one made in KyPost (`saveContact` marks it).
+    if needsSync { contact.importConsent = Contact.createdInKyPost }
     return contact
 }
 

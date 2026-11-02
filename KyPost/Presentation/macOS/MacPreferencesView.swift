@@ -277,7 +277,10 @@ private struct ContactsPane: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Sync contacts with Apple Contacts", isOn: $viewModel.exportContactsToSystem)
+                Toggle(isOn: $viewModel.exportContactsToSystem) {
+                    Text("Sync contacts with Apple Contacts")
+                    Text(viewModel.contactSyncStatus)
+                }
                 if viewModel.contactsExportDenied {
                     HStack {
                         Text("Contacts access is denied for KyPost.")
@@ -289,7 +292,7 @@ private struct ContactsPane: View {
                     }
                 }
             } footer: {
-                Text("Contacts sync both ways: new cards you add in Apple Contacts are imported, matching contacts (same email) are linked instead of duplicated, and only cards created or imported by KyPost are ever updated or removed.")
+                Text("Contacts sync both ways: cards you add in Apple Contacts after you agree are sent to your KyPost server, matching contacts (same email) are linked instead of duplicated, and only cards created or imported by KyPost are ever updated or removed.")
             }
 
             if viewModel.exportContactsToSystem || viewModel.hasExportedContacts {
@@ -321,6 +324,7 @@ private struct ContactsPane: View {
         }
         .formStyle(.grouped)
         .onAppear { viewModel.refreshContactsExportState() }
+        .contactSyncPrompts(viewModel)
     }
 }
 
