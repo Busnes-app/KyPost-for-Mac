@@ -2,9 +2,11 @@
 //  SignatureSettingsView.swift
 //  KyPost
 //
-//  Edits the plain-text email signature (Android #177): a Settings
-//  destination on iOS and a Settings pane on macOS. Plain text only, at most
-//  `MailSignatureStore.maxCharacters`; compose places it, never this screen.
+//  The mobile signature (`MailSignatureStore`): a Settings destination on
+//  iOS and a Settings pane on macOS. Kept on this device only; the web
+//  signature lives on the server and is never read here. Every change saves
+//  at once; a refused text is not saved and says why. Compose places the
+//  signature, never this screen.
 //
 
 import SwiftUI
@@ -12,46 +14,39 @@ import SwiftUI
 struct SignatureSettingsView: View {
     @Environment(\.theme) private var theme
 
-    @State private var text = ""
-    @State private var saved = ""
+    @State private var settings = MailSignatureSettings()
+    @State private var problem: MailSignatureProblem?
     @State private var loaded = false
+
+    private var store: MailSignatureStore { SingletonGraph.shared.mailSignatureStore }
 
     var body: some View {
         Form {
             Section {
-                TextEditor(text: $text)
-                    .font(AppFont.mono(13))
-                    .frame(minHeight: 120)
-                    .onChange(of: text) { _, new in
-                        if new.count > MailSignatureStore.maxCharacters {
-                            text = String(new.prefix(MailSignatureStore.maxCharacters))
-                        }
-                    }
-            } header: {
-                Text("Signature")
-            } footer: {
-                Text("Added below a “-- ” line on new messages, replies and forwards, above any quoted text. Plain text only. \(text.count)/\(MailSignatureStore.maxCharacters)")
+                Toggle("Use a signature", isOn: $settings.isOn)
             }
             .listRowBackground(theme.panel)
 
             Section {
-                HStack {
-                    Button("Save") {
-                        SingletonGraph.shared.mailSignatureStore.save(text)
-                        saved = SingletonGraph.shared.mailSignatureStore.signature
-                        text = saved
-                    }
-                    .disabled(text == saved)
-                    Spacer()
-                    if !saved.isEmpty {
-                        Button("Remove Signature", role: .destructive) {
-                            SingletonGraph.shared.mailSignatureStore.clear()
-                            saved = ""
-                            text = ""
-                        }
-                    }
+                TextEditor(text: $settings.text)
+                    .font(AppFont.mono(13))
+                    .frame(minHeight: 120)
+                    .accessibilityLabel("Signature text")
+                if let problem {
+                    StatusText(problem.message, kind: .danger, size: 12)
                 }
+            } header: {
+                Text("Signature")
+            } footer: {
+                Text("Used only on this device. Your web signature is set in KyPost on the web. Plain text. \(settings.text.unicodeScalars.count)/\(MailSignatureStore.maxCharacters)")
             }
+            .listRowBackground(theme.panel)
+
+            Section {
+                Toggle("Add to replies", isOn: $settings.addToReplies)
+                Toggle("Add to forwards", isOn: $settings.addToForwards)
+            }
+            .disabled(!settings.isOn)
             .listRowBackground(theme.panel)
         }
         .formStyle(.grouped)
@@ -61,8 +56,11 @@ struct SignatureSettingsView: View {
         .onAppear {
             guard !loaded else { return }
             loaded = true
-            saved = SingletonGraph.shared.mailSignatureStore.signature
-            text = saved
+            settings = store.settings
+        }
+        .onChange(of: settings) { _, new in
+            guard loaded else { return }
+            problem = store.save(new)
         }
     }
 }

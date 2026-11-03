@@ -178,7 +178,7 @@ final class ComposeViewModel {
         contacts: ContactsViewModel,
         pgp: PgpSendService,
         draft: ComposeDraft? = nil,
-        signature: String = "",
+        signature: MailSignatureSettings = MailSignatureSettings(),
         isLocked: @escaping () -> Bool,
         isEnrolled: (() -> Bool)? = nil,
         makeDraftSaver: ((String) -> ClientEncryptedDraftSaver?)? = nil,
@@ -1000,6 +1000,15 @@ final class ComposeViewModel {
 
 // MARK: - Reply / Reply All / Forward drafts
 
+/// What a compose window was opened for; decides whether the mobile
+/// signature goes in (`MailSignatureSettings.text(for:)`).
+enum ComposeKind: String, Codable, Hashable, Sendable {
+    case new, reply, forward
+    /// A saved or restored draft: its body already holds whatever the author
+    /// left, so nothing is inserted.
+    case draft
+}
+
 /// Prefilled compose state built from an existing email. Codable + Hashable
 /// so macOS can pass it as a "compose" WindowGroup value; Identifiable so
 /// iOS can present it with sheet(item:).
@@ -1013,6 +1022,7 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
     /// The body came from outside the app (a `mailto:` link): it is the
     /// message, not a quote, so no signature goes above it.
     var bodyIsExternal = false
+    var kind: ComposeKind = .new
 
     init(
         id: UUID = UUID(),
@@ -1021,7 +1031,8 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         bcc: String = "",
         subject: String = "",
         body: String = "",
-        bodyIsExternal: Bool = false
+        bodyIsExternal: Bool = false,
+        kind: ComposeKind = .new
     ) {
         self.id = id
         self.to = to
@@ -1030,6 +1041,7 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         self.subject = subject
         self.body = body
         self.bodyIsExternal = bodyIsExternal
+        self.kind = kind
     }
 
     /// Hand-written because synthesized Decodable doesn't fall back to
@@ -1045,16 +1057,19 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         subject = try container.decodeIfPresent(String.self, forKey: .subject) ?? ""
         body = try container.decodeIfPresent(String.self, forKey: .body) ?? ""
         bodyIsExternal = try container.decodeIfPresent(Bool.self, forKey: .bodyIsExternal) ?? false
+        kind = try container.decodeIfPresent(ComposeKind.self, forKey: .kind) ?? .new
     }
 
-    /// The body compose opens with: the signature after its `-- ` delimiter,
+    /// The body compose opens with: the signature for this kind, if any,
     /// above any quote — except above text another app asked to send, which
     /// is the message itself. A blank external body still gets one.
-    func initialBody(signature: String) -> String {
+    /// Inserted once, here; compose never touches it again, so an edit the
+    /// user makes to it stays.
+    func initialBody(signature: MailSignatureSettings) -> String {
         if bodyIsExternal, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return body
         }
-        return withSignature(body, signature: signature)
+        return withSignature(body, signature: signature.text(for: kind))
     }
 
     /// Reply to the sender — or, on a message we sent (`ownAddresses` holds
@@ -1063,7 +1078,8 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         ComposeDraft(
             to: replyRecipients(of: email, own: normalized(ownAddresses)).joined(separator: ", "),
             subject: prefixed("Re:", email.subject),
-            body: quotedBody(of: email)
+            body: quotedBody(of: email),
+            kind: .reply
         )
     }
 
@@ -1110,7 +1126,8 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         }
         return ComposeDraft(
             subject: prefixed("Fwd:", email.subject),
-            body: "\n\n\(header)\n\n\(plainText(email.body))"
+            body: "\n\n\(header)\n\n\(plainText(email.body))",
+            kind: .forward
         )
     }
 

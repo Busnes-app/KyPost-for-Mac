@@ -224,10 +224,22 @@ Domain.
   refuses send, pickup re-send, webmail hand-off and Save Draft while it is true, on both
   platforms. The lock also closes compose's own sheets and dialogs, which
   would otherwise sit above the cover.
-- **The signature is plain text placed by compose** (Android #177,
-  `MailSignatureStore`, ≤1000 characters): after an RFC 3676 `-- ` line and
-  above any quote on new messages, replies and forwards, never above a
-  non-blank external body (`ComposeDraft.bodyIsExternal`, a `mailto:` body).
+- **The signature is the mobile signature: on this device only**
+  (`MailSignatureStore`, owner decision 2026-11-03). It is separate from the
+  web signatures KyPost-Server stores (`docs/SIGNATURES.md` there); the app
+  never fetches `/api/mail/signatures` and never sends the signature except
+  in a message body. Settings → Signature: a switch (off by default; a text
+  saved before the switch existed reads as on), plain text, "Add to replies"
+  and "Add to forwards" (on by default), each saved on change. The text
+  follows the server's `config/signatures.go` text rules
+  (`MailSignatureStore.problem`): at most 2000 Unicode scalars, no Cc control
+  character except newline and tab, no bidi embedding/override/isolate
+  (U+202A–202E, U+2066–2069); a refused text saves nothing and says why.
+  Compose inserts it once at open (`ComposeDraft.initialBody`, by
+  `ComposeDraft.kind`): web placement, typing line, blank line, signature,
+  blank line, quote; no `-- `. Never into `.draft` (a saved or restored
+  draft) or above a non-blank external body (`ComposeDraft.bodyIsExternal`,
+  a `mailto:` body), and never touched again, so the user's edits stay.
   Compose builds its `AttributedString` from plain text, so markup in a
   signature or a mailto body is shown, never interpreted. Account data:
   unpair, the failed-unlock reset and the wipe clear it; Hostile Location

@@ -187,8 +187,8 @@ import Testing
     @Test func unpairingClearsOnlyTheInjectedSignature() async throws {
         let graph = try makeGraph()
         let other = try makeGraph()
-        graph.mailSignatureStore.save("Ada")
-        other.mailSignatureStore.save("Grace")
+        graph.mailSignatureStore.save(MailSignatureSettings(isOn: true, text: "Ada"))
+        other.mailSignatureStore.save(MailSignatureSettings(isOn: true, text: "Grace"))
 
         await makeViewModel(graph).unpair()
         #expect(graph.mailSignatureStore.signature.isEmpty)
@@ -266,7 +266,7 @@ import Testing
         )
         graph.notificationCursorStore.advance(to: 9)
         #expect(graph.recipientPinStore.pin(addresses: ["alice@example.invalid"], publicKey: PinnedKeyFixtures.alicePinned))
-        graph.mailSignatureStore.save("Ada, account A")
+        graph.mailSignatureStore.save(MailSignatureSettings(isOn: true, text: "Ada, account A"))
         try await seedMail(graph)
         graph.inboxViewModel.delete(serverIds: ["w1"])
         #expect(graph.inboxViewModel.undoMessage != nil)

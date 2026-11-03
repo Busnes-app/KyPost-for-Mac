@@ -13,50 +13,168 @@ import Testing
 // MARK: - Signature
 
 @Suite struct MailSignatureTests {
+    private let on = MailSignatureSettings(isOn: true, text: "Ada\nKyPost")
+    private let replyBody = "\n\nOn Monday, Bob wrote:\n> hi"
+
+    private func store() -> MailSignatureStore {
+        MailSignatureStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+    }
+
     @Test func aBlankSignatureLeavesTheBodyUntouched() {
-        #expect(withSignature("\n\nOn Monday, Bob wrote:\n> hi", signature: "  \n ") == "\n\nOn Monday, Bob wrote:\n> hi")
+        #expect(withSignature(replyBody, signature: "  \n ") == replyBody)
     }
 
-    /// RFC 3676: "-- " (with the space) on its own line, then the signature,
-    /// and the quote after it.
-    @Test func theSignatureGoesAfterTheDelimiterAndAboveTheQuote() {
-        let body = withSignature("\n\nOn Monday, Bob wrote:\n> hi", signature: "Ada\nKyPost")
-        #expect(body == "\n\n-- \nAda\nKyPost\n\nOn Monday, Bob wrote:\n> hi")
-        #expect(withSignature("", signature: "Ada") == "\n\n-- \nAda")
+    /// The web composer's placement (KyPost-Server docs/SIGNATURES.md): the
+    /// typing line, a blank line, the signature, a blank line, the quote. No
+    /// `-- ` delimiter.
+    @Test func theSignatureGoesBelowTheTypingLineAndAboveTheQuote() {
+        #expect(withSignature(replyBody, signature: "Ada\nKyPost") == "\n\nAda\nKyPost\n\nOn Monday, Bob wrote:\n> hi")
+        #expect(withSignature("", signature: "Ada") == "\n\nAda")
+        #expect(!withSignature("", signature: "Ada").contains("-- "))
     }
 
-    @Test func theStoreTrimsCapsAndClears() {
-        let store = MailSignatureStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
-        store.save("  Ada  \n")
-        #expect(store.signature == "Ada")
-        store.save(String(repeating: "x", count: MailSignatureStore.maxCharacters + 50))
-        #expect(store.signature.count == MailSignatureStore.maxCharacters)
-        store.save("   ")
-        #expect(store.signature.isEmpty)
-        store.save("Ada")
-        store.clear()
-        #expect(store.signature.isEmpty)
+    // MARK: Validation — config/signatures.go's text rules
+
+    @Test func twoThousandCharactersAreAllowedAndOneMoreIsNot() {
+        #expect(MailSignatureStore.problem(in: String(repeating: "é", count: 2000)) == nil)
+        #expect(MailSignatureStore.problem(in: String(repeating: "é", count: 2001)) == .tooLong)
     }
 
-    @Test func newRepliesAndForwardsGetTheSignature() {
-        #expect(ComposeDraft().initialBody(signature: "Ada") == "\n\n-- \nAda")
-        let reply = ComposeDraft(body: "\n\nOn Monday, Bob wrote:\n> hi")
-        #expect(reply.initialBody(signature: "Ada").hasPrefix("\n\n-- \nAda\n\nOn Monday"))
+    /// Counted as the server counts: Unicode scalars, not grapheme clusters.
+    @Test func theLimitCountsScalars() {
+        let family = "👨‍👩‍👧" // one Character, five scalars
+        #expect(MailSignatureStore.problem(in: String(repeating: family, count: 400)) == nil)
+        #expect(MailSignatureStore.problem(in: String(repeating: family, count: 401)) == .tooLong)
+    }
+
+    @Test func controlCharactersAreRefusedButNewlineAndTabAreText() {
+        #expect(MailSignatureStore.problem(in: "Ada\u{07}") == .controlCharacter)
+        #expect(MailSignatureStore.problem(in: "Ada\u{0}") == .controlCharacter)
+        #expect(MailSignatureStore.problem(in: "Ada\u{1B}[31m") == .controlCharacter)
+        #expect(MailSignatureStore.problem(in: "Ada\u{85}") == .controlCharacter)
+        #expect(MailSignatureStore.problem(in: "Ada\rLovelace") == .controlCharacter)
+        #expect(MailSignatureStore.problem(in: "Ada\r\nLovelace\n\tAnalyst") == nil)
+    }
+
+    @Test func directionOverridesAndIsolatesAreRefused() {
+        for scalar in [0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069] {
+            let text = "Ada \(Character(UnicodeScalar(scalar)!)) Lovelace"
+            #expect(MailSignatureStore.problem(in: text) == .directionControl)
+        }
+        // Marks that only hint at direction are not controls.
+        #expect(MailSignatureStore.problem(in: "Ada \u{200E}\u{200F} עדה") == nil)
+    }
+
+    @Test func aRefusedTextSavesNothing() {
+        let store = store()
+        store.save(on)
+        var bad = on
+        bad.text = "Ada\u{202E}"
+        bad.addToReplies = false
+        #expect(store.save(bad) == .directionControl)
+        #expect(store.settings == on)
+    }
+
+    // MARK: Persistence
+
+    @Test func theDefaultIsOffWithRepliesAndForwardsOn() {
+        #expect(store().settings == MailSignatureSettings(isOn: false, text: "", addToReplies: true, addToForwards: true))
+    }
+
+    @Test func settingsSurviveARoundTrip() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let saved = MailSignatureSettings(isOn: true, text: "Ada\r\nKyPost\n", addToReplies: false, addToForwards: true)
+        #expect(MailSignatureStore(defaults: defaults).save(saved) == nil)
+        let read = MailSignatureStore(defaults: defaults).settings
+        #expect(read == MailSignatureSettings(isOn: true, text: "Ada\nKyPost", addToReplies: false, addToForwards: true))
+        MailSignatureStore(defaults: defaults).clear()
+        #expect(MailSignatureStore(defaults: defaults).settings == MailSignatureSettings())
+    }
+
+    /// A signature saved before the switch existed was always inserted; it
+    /// keeps being inserted until the user changes something.
+    @Test func aSignatureFromBeforeTheSwitchReadsAsOn() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        defaults.set("Ada", forKey: MailSignatureStore.key)
+        #expect(MailSignatureStore(defaults: defaults).settings.isOn)
+    }
+
+    // MARK: Insertion
+
+    @Test func aNewMessageGetsTheSignatureWhenOn() {
+        #expect(ComposeDraft().initialBody(signature: on) == "\n\nAda\nKyPost")
+    }
+
+    @Test func nothingIsInsertedWhenOff() {
+        var off = on
+        off.isOn = false
+        #expect(ComposeDraft().initialBody(signature: off) == "")
+        #expect(ComposeDraft(body: replyBody, kind: .reply).initialBody(signature: off) == replyBody)
+        #expect(ComposeDraft(body: replyBody, kind: .forward).initialBody(signature: off) == replyBody)
+    }
+
+    @Test func repliesFollowTheirSwitch() {
+        let reply = ComposeDraft(body: replyBody, kind: .reply)
+        #expect(reply.initialBody(signature: on) == "\n\nAda\nKyPost\n\nOn Monday, Bob wrote:\n> hi")
+        var noReplies = on
+        noReplies.addToReplies = false
+        #expect(reply.initialBody(signature: noReplies) == replyBody)
+        #expect(ComposeDraft(body: replyBody, kind: .forward).initialBody(signature: noReplies).hasPrefix("\n\nAda"))
+    }
+
+    @Test func forwardsFollowTheirSwitch() {
+        let forward = ComposeDraft(body: replyBody, kind: .forward)
+        #expect(forward.initialBody(signature: on).hasPrefix("\n\nAda\nKyPost\n\nOn Monday"))
+        var noForwards = on
+        noForwards.addToForwards = false
+        #expect(forward.initialBody(signature: noForwards) == replyBody)
+        #expect(ComposeDraft(body: replyBody, kind: .reply).initialBody(signature: noForwards).hasPrefix("\n\nAda"))
+    }
+
+    @Test func aRestoredDraftGetsNothing() {
+        let restored = ComposeDraft(body: "Hi Bob,\n\nSee you then.", kind: .draft)
+        #expect(restored.initialBody(signature: on) == "Hi Bob,\n\nSee you then.")
+        #expect(ComposeDraft(kind: .draft).initialBody(signature: on) == "")
+    }
+
+    /// A stored text that would be refused today is never inserted.
+    @Test func aStoredTextThatFailsValidationIsNotInserted() {
+        let bad = MailSignatureSettings(isOn: true, text: "Ada\u{202E}")
+        #expect(ComposeDraft().initialBody(signature: bad) == "")
+    }
+
+    @Test func repliesAndForwardsAreTaggedWithTheirKind() {
+        let email = Email(
+            serverId: "1", folder: "INBOX", senderName: "Bob", senderEmail: "bob@example.com",
+            subject: "Hi", body: "hi", keywords: [], receivedAt: Date(), read: false, starred: false
+        )
+        #expect(ComposeDraft.reply(to: email, ownAddresses: []).kind == .reply)
+        #expect(ComposeDraft.replyAll(to: email, ownAddresses: []).kind == .reply)
+        #expect(ComposeDraft.forward(email).kind == .forward)
+        #expect(ComposeDraft().kind == .new)
     }
 
     /// Text another app asked to send is the message, not a quote: nothing
     /// goes above it. A blank external compose still gets one.
     @Test func externallySuppliedTextGetsNoSignatureAboveIt() {
         let shared = ComposeDraft(body: "Please see the attached.", bodyIsExternal: true)
-        #expect(shared.initialBody(signature: "Ada") == "Please see the attached.")
+        #expect(shared.initialBody(signature: on) == "Please see the attached.")
         let blank = ComposeDraft(to: "a@example.com", body: " ", bodyIsExternal: true)
-        #expect(blank.initialBody(signature: "Ada").contains("-- \nAda"))
+        #expect(blank.initialBody(signature: on) == "\n\nAda\nKyPost")
     }
 
-    /// A scene value archived before the flag existed restores as internal.
+    /// A scene value archived before the flags existed restores as an
+    /// internal new message.
     @Test func anOlderArchivedDraftDecodesAsInternal() throws {
         let draft = try JSONDecoder().decode(ComposeDraft.self, from: Data(#"{"to":"a@example.com"}"#.utf8))
         #expect(!draft.bodyIsExternal)
+        #expect(draft.kind == .new)
+    }
+
+    @Test func theKindSurvivesSceneArchiving() throws {
+        let draft = ComposeDraft(body: replyBody, kind: .forward)
+        let decoded = try JSONDecoder().decode(ComposeDraft.self, from: JSONEncoder().encode(draft))
+        #expect(decoded.kind == .forward)
     }
 
     @MainActor
@@ -67,7 +185,7 @@ import Testing
             keychain: KeychainStorage(service: "org.kysecurity.mail.tests.\(UUID().uuidString)"),
             database: AppDatabase(inMemory: true)
         )
-        graph.mailSignatureStore.save("Ada")
+        graph.mailSignatureStore.save(MailSignatureSettings(isOn: true, text: "Ada"))
         let step = try #require(
             SecurityWipeSteps.build(graph: graph, defaultsDomain: nil).first { $0.name == "mailSignature" }
         )
@@ -130,7 +248,7 @@ private func makeCompose(
             securePairingStore: pairingStore
         ),
         draft: draft,
-        signature: signature,
+        signature: MailSignatureSettings(isOn: !signature.isEmpty, text: signature),
         isLocked: isLocked,
         debounceInterval: .zero
     )
@@ -250,7 +368,7 @@ private func makeCompose(
     /// Markup in a signature reaches the editor as the characters typed.
     @Test func signatureMarkupIsShownNotInterpreted() throws {
         let compose = try makeCompose(signature: "<b>Ada</b> & co")
-        #expect(String(compose.body.characters) == "\n\n-- \n<b>Ada</b> & co")
+        #expect(String(compose.body.characters) == "\n\n<b>Ada</b> & co")
         #expect(compose.body.runs.count == 1)
     }
 }
@@ -430,7 +548,7 @@ private func makeCompose(
         let draft = try #require(parse("mailto:?body=%3Cscript%3Ealert(1)%3C/script%3E"))
         #expect(draft.to.isEmpty)
         #expect(draft.body == "<script>alert(1)</script>")
-        #expect(draft.initialBody(signature: "Ada") == "<script>alert(1)</script>")
+        #expect(draft.initialBody(signature: MailSignatureSettings(isOn: true, text: "Ada")) == "<script>alert(1)</script>")
     }
 
     @Test func theBodyIsBounded() throws {
