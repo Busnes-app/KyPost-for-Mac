@@ -351,12 +351,14 @@ Domain.
   an unframed `EmptyStateView` (muted icon and text, no dashed box). The HTML constrains text, tables, images, and preformatted
   blocks to the reader width. Decrypt uses `PrimaryButtonStyle`, whose accent
   fill and `readableOnAccent` foreground are contrast-tested for every theme.
-- **The reader's To/Cc lines are flattened** (`displayHeaderText`): controls,
-  format characters and line/paragraph separators become one space, so a
-  display name cannot forge a labelled line or reverse an address with a bidi
-  override. A field with nothing left is hidden. Decrypted attachment names
-  are flattened the same way for display and through `safeAttachmentFileName`
-  for any file written.
+- **The reader's subject, sender and To/Cc lines are flattened**
+  (`displayHeaderText`): controls, format characters and line/paragraph
+  separators become one space, so a display name cannot forge a labelled line
+  or reverse an address with a bidi override. A field with nothing left is
+  hidden. Attachment names, server and decrypted alike, are flattened the same
+  way for display and through `safeAttachmentFileName` for any file written
+  (preview file and Save As name). The reader's keyword chips leave out
+  system (`$`) keywords, as the list row does.
 - **Forward carries the original's attachments through
   `ForwardAttachmentHandoff`, never `ComposeDraft`** (a scene value restoration
   archives). One slot keyed by draft id, claimed once from compose's `.task`,
