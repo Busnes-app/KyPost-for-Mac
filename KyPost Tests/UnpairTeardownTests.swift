@@ -73,6 +73,7 @@ import Testing
             enrollmentVault: graph.enrollmentVault,
             pushRepository: graph.pushRepository,
             mailSignatureStore: graph.mailSignatureStore,
+            pgpSendService: graph.pgpSendService,
             legacyHTTPCache: legacyHTTPCache
         )
     }
@@ -105,6 +106,34 @@ import Testing
         #expect(AppDatabase.storeMayOpen(defaults: graph.userDefaults, at: url))
         let reopened = try AppDatabase(url: url)
         #expect(try ModelContext(reopened.container).fetch(FetchDescriptor<EmailEntity>()).isEmpty)
+    }
+
+    /// Bootstrap's custody is the account's: left cached, the next account's
+    /// drafts would take the save path chosen for this one.
+    @Test func unpairingForgetsTheCachedKeyCustody() async throws {
+        let graph = try makeGraph()
+        graph.pgpSendService.preload(hasIdentity: true, protection: "server", accountAddress: "a@x")
+        #expect(graph.pgpSendService.custody != nil)
+
+        await makeViewModel(graph).unpair()
+
+        #expect(graph.pgpSendService.custody == nil)
+        #expect(graph.pgpSendService.accountAddresses.isEmpty)
+    }
+
+    /// A compose window open on the account being left closes: Send would
+    /// otherwise go out through whichever account is paired next.
+    @Test func unpairingClosesOpenComposeWindows() async throws {
+        let graph = try makeGraph()
+        let closed = Box(0)
+        let observer = NotificationCenter.default.addObserver(
+            forName: .kyPostCloseComposeWindows, object: nil, queue: nil
+        ) { _ in closed.mutate { $0 += 1 } }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        await makeViewModel(graph).unpair()
+
+        #expect(closed.value > 0)
     }
 
     /// The envelope is the account's private key sealed to *this* Mac. Left

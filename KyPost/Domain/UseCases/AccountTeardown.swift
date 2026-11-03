@@ -44,6 +44,10 @@ struct AccountTeardown {
         // otherwise commit it — with the credentials it was bound to —
         // while a later step awaits. Dropped, not sent.
         forgetInbox?()
+        // An open compose belongs to the account being left: a reply's body
+        // is its quoted mail, and Send would go out through whichever account
+        // is paired next. Closed, as the wipe closes them.
+        NotificationCenter.default.post(name: .kyPostCloseComposeWindows, object: nil)
         // Also before any suspension. A failed delete still leaves the erase
         // marked, so no later launch opens the file: the step cannot leave
         // the data reachable, and does not fail the teardown.
