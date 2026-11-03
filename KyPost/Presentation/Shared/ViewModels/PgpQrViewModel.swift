@@ -128,9 +128,11 @@ final class MyPgpQrViewModel {
     /// Opens this device's key (a presence prompt), then re-mints the code
     /// with its fingerprint.
     func unlockKey() async {
+        // As in the reader and sender: a lock during the open wins.
+        let epoch = session.epoch
         switch await opener.open() {
         case .opened(let material):
-            session.install(material)
+            guard session.install(material, ifEpoch: epoch) else { return }
             await refresh()
         case .cancelled:
             return
