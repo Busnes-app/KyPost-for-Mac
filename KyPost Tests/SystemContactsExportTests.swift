@@ -1003,6 +1003,22 @@ private func makeCard(
         #expect(env.linkStore.all().isEmpty)
         #expect(!env.exporter.hasExportedContacts())
     }
+
+    /// A refused delete keeps its link: a resumed wipe reads the links to
+    /// know which cards are still in Contacts.
+    @Test func removeAllExportedKeepsTheLinkOfACardItCouldNotDelete() async throws {
+        let env = try makeEnvironment()
+        try await env.dao.upsert(contacts: [makeContact()])
+        await env.exporter.reconcileAll()
+        let card = try #require(env.linkStore.all().first?.cnIdentifier)
+        env.mock.failingIdentifiers = [card]
+
+        let summary = await env.exporter.removeAllExported()
+
+        #expect(summary.failed == 1)
+        #expect(env.linkStore.all().map(\.cnIdentifier) == [card])
+        #expect(env.exporter.hasExportedContacts())
+    }
 }
 
 // MARK: - CNGroup materialization
