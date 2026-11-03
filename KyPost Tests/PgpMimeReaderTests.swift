@@ -184,11 +184,14 @@ private func read(_ text: String) -> DecryptedBody? {
     }
 
     /// Deep enough to exhaust a thread's stack if parsing recursed past the
-    /// depth the walk reads: about 60 bytes a level, so any sender can.
+    /// depth the walk reads: about 60 bytes a level, so any sender can. The
+    /// trailing `x` keeps one level's boundary from being a prefix of a
+    /// deeper one's (`b1` of `b10`), which would split the nesting into
+    /// siblings instead.
     @Test func thousandsOfNestedMultipartsDoNotExhaustTheStack() {
         var text = ""
-        for depth in 0..<5_000 {
-            text += "Content-Type: multipart/mixed; boundary=\"b\(depth)\"\r\n\r\n--b\(depth)\r\n"
+        for depth in 0..<10_000 {
+            text += "Content-Type: multipart/mixed; boundary=\"b\(depth)x\"\r\n\r\n--b\(depth)x\r\n"
         }
         text += "Content-Type: text/plain\r\n\r\ntoo deep\r\n"
         _ = PgpMimeReader.read(Data(text.utf8))
