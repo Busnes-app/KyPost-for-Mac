@@ -114,6 +114,8 @@ import Testing
             exportedUpdatedAt: Date(), imported: false, userOwned: false
         ))
         defaults.set("something", forKey: "keywords.tabs")
+        // The repair already ran on this install.
+        defaults.set(true, forKey: SingletonGraph.systemImportDupeRepairKey)
 
         let step = try #require(
             SecurityWipeSteps.build(graph: graph, defaultsDomain: suite)
@@ -123,6 +125,11 @@ import Testing
 
         #expect(defaults.string(forKey: "keywords.tabs") == nil)
         #expect(graph.systemContactsLinkStore.all().map(\.cnIdentifier) == ["card-1"])
+
+        // The next launch's migrations must not clear them either.
+        let relaunched = try makeGraph(defaults: defaults)
+        await relaunched.runStartupMigrationsIfNeeded()
+        #expect(relaunched.systemContactsLinkStore.all().map(\.cnIdentifier) == ["card-1"])
     }
 
     /// **The wipe's own record must outlive the wipe's own deletions.** Sweeping

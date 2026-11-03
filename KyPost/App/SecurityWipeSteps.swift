@@ -164,9 +164,14 @@ enum SecurityWipeSteps {
             // Links still on file mean `deviceContactCards` failed, and they
             // are what its resume deletes from. Swept, the resume would find
             // nothing to delete and report the cards gone. Kept, they fail
-            // this step below, which is the truth.
-            let unfinishedCards = graph.systemContactsLinkStore.all().isEmpty ? nil : SystemContactsLinkStore.key
-            for key in domain.keys where !key.hasPrefix(WipeStateStore.retainedKeyPrefix) && key != unfinishedCards {
+            // this step below, which is the truth. The import-dupe repair's
+            // marker stays with them: without it the next launch's repair
+            // clears the links (`runStartupMigrationsIfNeeded`).
+            let unfinishedCards: Set<String> = graph.systemContactsLinkStore.all().isEmpty
+                ? []
+                : [SystemContactsLinkStore.key, SingletonGraph.systemImportDupeRepairKey]
+            for key in domain.keys
+            where !key.hasPrefix(WipeStateStore.retainedKeyPrefix) && !unfinishedCards.contains(key) {
                 defaults.removeObject(forKey: key)
             }
             let remaining = (defaults.persistentDomain(forName: defaultsDomain) ?? [:])

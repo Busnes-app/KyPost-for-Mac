@@ -208,4 +208,15 @@ private func read(_ text: String) -> DecryptedBody? {
         #expect(body.plain == "first")
         #expect(body.attachmentsOmitted)
     }
+
+    /// Exactly the budget is not a cut: nothing was left out.
+    @Test func exactlyTheBudgetIsNotReportedAsOmitted() throws {
+        let text = "Content-Type: multipart/mixed; boundary=\"a\"\r\n\r\n"
+            + "--a\r\nContent-Type: text/plain\r\n\r\nfirst\r\n"
+            + String(repeating: "--a\r\n", count: 999)
+            + "--a--\r\n"
+        let body = try #require(PgpMimeReader.read(Data(text.utf8)))
+        #expect(body.plain == "first")
+        #expect(!body.attachmentsOmitted)
+    }
 }

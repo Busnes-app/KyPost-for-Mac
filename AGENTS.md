@@ -818,8 +818,9 @@ old sentence edited out.
   after the defaults sweep, and is **sticky across resumes** — re-reading it on
   a resumed run reads defaults the interrupted run already swept and loses the
   setting permanently.
-- **The defaults sweep keeps `contacts.systemLinks` while links remain** and
-  then fails: links left means `deviceContactCards` failed, and they are what
+- **The defaults sweep keeps `contacts.systemLinks` while links remain**
+  (with the `contacts.systemImportDupeRepair.v1` marker, whose repair would
+  otherwise clear them at the next launch) and then fails: links left means `deviceContactCards` failed, and they are what
   its resume deletes the cards from. Swept, the resume would see no exported
   cards and report the wipe complete.
 - `SecurityWipe` takes its steps as a parameter. That is what makes its whole

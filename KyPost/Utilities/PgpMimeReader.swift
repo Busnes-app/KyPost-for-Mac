@@ -43,9 +43,10 @@ nonisolated enum PgpMimeReader {
         let root = parse(mime, depth: 0, budget: &budget)
 
         var walk = Walk()
-        // Parts past the budget were never split out, so any file among them
-        // is missing: the screen says so, as it does for the caps below.
-        walk.omitted = budget <= 0
+        // Parts past the budget were never split out (`parse` leaves the
+        // budget negative), so any file among them is missing: the screen
+        // says so, as it does for the caps below.
+        walk.omitted = budget < 0
         walk.noteSignature(root)
         if root.children.isEmpty {
             // A single-part message: its disposition, then its own content
@@ -255,13 +256,24 @@ nonisolated enum PgpMimeReader {
         part.body = bodyBytes
         part.contentType = part.headerValue("content-type")
 
-        guard depth <= maxDepth, budget > 0,
+        guard depth <= maxDepth,
               part.mimeType.hasPrefix("multipart/"),
               let boundary = parameter("boundary", of: part.contentType), !boundary.isEmpty
         else { return part }
+        // A multipart the spent budget cannot split is content left out.
+        guard budget > 0 else {
+            budget = -1
+            return part
+        }
 
-        let bodies = splitMultipart(bodyBytes, boundary: boundary, limit: budget)
-        budget -= bodies.count
+        // One more than the budget, to tell a cut from an exact fit.
+        var bodies = splitMultipart(bodyBytes, boundary: boundary, limit: budget + 1)
+        if bodies.count > budget {
+            bodies.removeLast()
+            budget = -1
+        } else {
+            budget -= bodies.count
+        }
         part.children = bodies.map { parse($0, depth: depth + 1, budget: &budget) }
         return part
     }
