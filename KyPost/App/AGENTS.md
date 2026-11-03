@@ -81,8 +81,7 @@ session and pending reports; `PgpSendService`'s cached bootstrap (custody
 and the addresses replies leave out; a load in flight is voided); notification
 history and pull cursor; recipient pins; mail signature; cached mail and cursors; the relay responses and cookies
 an older build's `.default` relay session left in `URLCache.shared` and
-`HTTPCookieStorage.shared`; the inbox's held actions and rows; open compose
-windows, through `.kyPostCloseComposeWindows`).
+`HTTPCookieStorage.shared`; the inbox's held actions and rows).
 `SettingsViewModel.unpair` runs it after clearing the pairing (and an older
 build's desktop session token), and a
 registration that stores a pairing for another `sub` or server over the

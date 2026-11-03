@@ -20,8 +20,7 @@ import os
 import UserNotifications
 
 extension Notification.Name {
-    /// Posted when Hostile Location Protection is toggled, by the wipe, and
-    /// by an account teardown (`AccountTeardown`). The compose scene
+    /// Posted when Hostile Location Protection is toggled. The compose scene
     /// observes it and dismisses: `dismissWindow` is a SwiftUI environment
     /// value available only inside a View, so it can't be called from here.
     static let kyPostCloseComposeWindows = Notification.Name("kypost.closeComposeWindows")

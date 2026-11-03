@@ -155,7 +155,7 @@ private struct ConnectionPane: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the device from your account's paired devices on the server and clears its local pairing and certificate pin. To pair again, open a new pairing link from KyPost on the web. Messages you are writing are closed without saving.")
+            Text("This removes the device from your account's paired devices on the server and clears its local pairing and certificate pin. To pair again, open a new pairing link from KyPost on the web.")
         }
     }
 }

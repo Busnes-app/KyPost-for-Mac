@@ -223,8 +223,7 @@ struct KyPostApp: App {
 }
 
 #if os(macOS)
-/// Closes a compose window when Hostile Location Protection is toggled, and
-/// on a wipe or account teardown (`kyPostCloseComposeWindows`).
+/// Closes a compose window when Hostile Location Protection is toggled.
 ///
 /// Two things have to happen and only one of them is the visible one: the
 /// scene value is archived for state restoration, and a reply's draft body is

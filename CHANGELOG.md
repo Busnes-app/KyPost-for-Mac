@@ -9,9 +9,8 @@
   1,000 parts.
 - **An attachment that finishes downloading after the app locks no longer
   opens** its preview or save panel over the lock.
-- **Unpairing in Settings forgets the account's key custody and aliases**, and
-  closes open compose windows, so the next account's drafts and sends do not
-  use the previous account's state.
+- **Unpairing in Settings forgets the account's key custody and aliases**, so
+  the next account's drafts and replies do not use the previous account's.
 - **A security wipe that could not remove the cards it exported to Contacts
   no longer reports complete** on its next run. It keeps the list of cards
   until they are deleted.

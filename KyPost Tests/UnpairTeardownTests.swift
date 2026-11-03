@@ -121,21 +121,6 @@ import Testing
         #expect(graph.pgpSendService.accountAddresses.isEmpty)
     }
 
-    /// A compose window open on the account being left closes: Send would
-    /// otherwise go out through whichever account is paired next.
-    @Test func unpairingClosesOpenComposeWindows() async throws {
-        let graph = try makeGraph()
-        let closed = Box(0)
-        let observer = NotificationCenter.default.addObserver(
-            forName: .kyPostCloseComposeWindows, object: nil, queue: nil
-        ) { _ in closed.mutate { $0 += 1 } }
-        defer { NotificationCenter.default.removeObserver(observer) }
-
-        await makeViewModel(graph).unpair()
-
-        #expect(closed.value > 0)
-    }
-
     /// The envelope is the account's private key sealed to *this* Mac. Left
     /// behind, it outlives the pairing that authorised putting it here — on a
     /// machine the account no longer knows about, so no revocation reaches it.
