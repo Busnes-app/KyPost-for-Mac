@@ -182,4 +182,25 @@ private func read(_ text: String) -> DecryptedBody? {
         // The assertion is that this returns at all rather than crashing.
         _ = PgpMimeReader.read(Data(text.utf8))
     }
+
+    /// Deep enough to exhaust a thread's stack if parsing recursed past the
+    /// depth the walk reads: about 60 bytes a level, so any sender can.
+    @Test func thousandsOfNestedMultipartsDoNotExhaustTheStack() {
+        var text = ""
+        for depth in 0..<5_000 {
+            text += "Content-Type: multipart/mixed; boundary=\"b\(depth)\"\r\n\r\n--b\(depth)\r\n"
+        }
+        text += "Content-Type: text/plain\r\n\r\ntoo deep\r\n"
+        _ = PgpMimeReader.read(Data(text.utf8))
+    }
+
+    /// A flat flood of empty parts is a few bytes each; parsing stops at the
+    /// part budget instead of building one value per delimiter.
+    @Test func aFloodOfEmptyPartsIsCut() throws {
+        let text = "Content-Type: multipart/mixed; boundary=\"a\"\r\n\r\n"
+            + "--a\r\nContent-Type: text/plain\r\n\r\nfirst\r\n"
+            + String(repeating: "--a\r\n", count: 500_000)
+        let body = try #require(PgpMimeReader.read(Data(text.utf8)))
+        #expect(body.plain == "first")
+    }
 }
