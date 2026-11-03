@@ -102,6 +102,29 @@ import Testing
         #expect(!defaults.bool(forKey: "contacts.legacyFieldsMigrated"))
     }
 
+    /// Links to exported cards are what a resumed wipe deletes the cards
+    /// from. A failed `deviceContactCards` step leaves them; the sweep must
+    /// too, and say so, or the resume reports cards gone that are not.
+    @Test func theSweepKeepsLinksToCardsAFailedStepLeft() async throws {
+        let suite = "tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let graph = try makeGraph(defaults: defaults)
+        graph.systemContactsLinkStore.upsert(SystemContactLink(
+            localId: UUID(), uid: "u-1", cnIdentifier: "card-1",
+            exportedUpdatedAt: Date(), imported: false, userOwned: false
+        ))
+        defaults.set("something", forKey: "keywords.tabs")
+
+        let step = try #require(
+            SecurityWipeSteps.build(graph: graph, defaultsDomain: suite)
+                .first { $0.name == "userDefaults" }
+        )
+        await #expect(throws: WipeStepFailure.self) { try await step.run() }
+
+        #expect(defaults.string(forKey: "keywords.tabs") == nil)
+        #expect(graph.systemContactsLinkStore.all().map(\.cnIdentifier) == ["card-1"])
+    }
+
     /// **The wipe's own record must outlive the wipe's own deletions.** Sweeping
     /// it away erases the evidence that destruction is still owed, and the next
     /// launch presents a clean first-run app over data that was never deleted.

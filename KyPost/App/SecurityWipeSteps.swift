@@ -161,7 +161,12 @@ enum SecurityWipeSteps {
             guard let defaultsDomain else { return }
             let defaults = graph.userDefaults
             guard let domain = defaults.persistentDomain(forName: defaultsDomain) else { return }
-            for key in domain.keys where !key.hasPrefix(WipeStateStore.retainedKeyPrefix) {
+            // Links still on file mean `deviceContactCards` failed, and they
+            // are what its resume deletes from. Swept, the resume would find
+            // nothing to delete and report the cards gone. Kept, they fail
+            // this step below, which is the truth.
+            let unfinishedCards = graph.systemContactsLinkStore.all().isEmpty ? nil : SystemContactsLinkStore.key
+            for key in domain.keys where !key.hasPrefix(WipeStateStore.retainedKeyPrefix) && key != unfinishedCards {
                 defaults.removeObject(forKey: key)
             }
             let remaining = (defaults.persistentDomain(forName: defaultsDomain) ?? [:])
