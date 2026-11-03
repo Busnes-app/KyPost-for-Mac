@@ -464,7 +464,7 @@ Same protocol as KyPost for Android and Linux; change it in all three.
 - **Decrypt with every held key** (`HeldKeyMaterial.decryptionKeys`): mail
   encrypted to a retired key, or to a hidden recipient, only opens that way.
 - **Decrypted attachments stay in memory** (`DecryptedBody.attachments`,
-  Android #109). `PgpMimeReader` splits at most 12 levels deep and 1,000
+  Android #109). `PgpMimeReader` splits multiparts down to `maxDepth` (12) and 1,000
   parts in all (a crafted nesting must not recurse until the stack gives
   out), keeps at most 50 parts and 4 MiB decoded,
   drops an over-cap part whole (never truncated) and sets

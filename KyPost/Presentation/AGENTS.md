@@ -201,8 +201,9 @@ Domain.
   refuses the swipe-down and `SheetDismissGuard` turns the refused attempt into
   the same prompt; macOS answers `windowShouldClose` through
   `WindowCloseGuard`. Both are proxies that forward every other delegate call
-  to SwiftUI's. Closes the app forces (Hostile Location Protection, wipe) never
-  ask. Quitting on macOS asks once for every open compose: each registers in
+  to SwiftUI's. Closes the app forces (Hostile Location Protection, wipe,
+  unpair and pairing another account — `AccountTeardown`) never ask; the
+  unpair confirmation says open compose windows close. Quitting on macOS asks once for every open compose: each registers in
   `OpenComposeRegistry` on appear, and `applicationShouldTerminate` shows the
   same Discard / Keep editing question as an alert.
 - **Send with a blank subject asks "Send without a subject?" first.**
