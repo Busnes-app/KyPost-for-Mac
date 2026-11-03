@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A message nested thousands of MIME levels deep no longer crashes the
+  reader** when it is decrypted or verified. Parsing stops at 12 levels and
+  1,000 parts.
+- **An attachment that finishes downloading after the app locks no longer
+  opens** its preview or save panel over the lock.
+- **Unpairing in Settings forgets the account's key custody and aliases**, and
+  closes open compose windows, so the next account's drafts and sends do not
+  use the previous account's state.
+- **A security wipe that could not remove the cards it exported to Contacts
+  no longer reports complete** on its next run. It keeps the list of cards
+  until they are deleted.
+- **A recipient key that cannot be read refuses the encrypted send**, instead
+  of sending mail that recipient cannot open.
+- **Attachment names, the subject and the sender line are shown with control
+  and text-direction characters removed**, and an attachment is saved under
+  the cleaned name. System keywords (`$Phishing` and so on) are no longer
+  shown as chips in the reader.
+- **Compose is read-only while a draft saves or a message sends**, so text
+  typed meanwhile is not lost when the window closes.
+- "Unlock Key to Verify" no longer keeps the private key in memory if the
+  app locks while it opens.
+
 ### Changed
 
 - **The signature is a mobile signature, kept on this device** and separate
