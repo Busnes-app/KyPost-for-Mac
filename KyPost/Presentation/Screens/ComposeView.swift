@@ -724,6 +724,7 @@ struct ComposeView: View {
             }
             .keyboardShortcut("u")
         }
+        .disabled(viewModel.isSending)
     }
 
     /// Hidden where nothing may be uploaded (`DraftSaveMode.unavailable`).
@@ -753,6 +754,7 @@ struct ComposeView: View {
         } label: {
             Label("Attach File", systemImage: "paperclip")
         }
+        .disabled(viewModel.isSending)
         .help("Attach a file (max 25 MB total)")
     }
 

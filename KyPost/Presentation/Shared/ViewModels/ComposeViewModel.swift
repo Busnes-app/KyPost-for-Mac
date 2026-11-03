@@ -596,6 +596,12 @@ final class ComposeViewModel {
     /// total budget the backend applies. fileImporter URLs are
     /// security-scoped; access is claimed around the read.
     func addAttachment(from url: URL) {
+        // A file picked or dropped while a send or save is in flight would
+        // miss the snapshot already uploaded, then go with the window.
+        guard !isSending else {
+            errorMessage = "Wait for the message to finish saving or sending, then attach the file again."
+            return
+        }
         let scoped = url.startAccessingSecurityScopedResource()
         defer {
             if scoped { url.stopAccessingSecurityScopedResource() }
