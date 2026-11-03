@@ -70,7 +70,25 @@
     "This event wasn't added." : {
 
     },
-    "Remove Signature" : {
+    "Use a signature" : {
+
+    },
+    "Signature text" : {
+
+    },
+    "Add to replies" : {
+
+    },
+    "Add to forwards" : {
+
+    },
+    "A signature can be at most 2,000 characters. Shorten it to save your changes." : {
+
+    },
+    "A signature can’t contain control characters. Remove them to save your changes." : {
+
+    },
+    "A signature can’t contain invisible text-direction characters. Remove them to save your changes." : {
 
     },
     "Repeats" : {
@@ -127,7 +145,7 @@
     "Add to Calendar" : {
 
     },
-    "Added below a “-- ” line on new messages, replies and forwards, above any quoted text. Plain text only. %lld/%lld" : {
+    "Used only on this device. Your web signature is set in KyPost on the web. Plain text. %lld/%lld" : {
 
     },
     "Added to %@." : {

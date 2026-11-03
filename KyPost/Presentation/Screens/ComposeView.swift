@@ -62,7 +62,7 @@ struct ComposeView: View {
             contacts: SingletonGraph.shared.contactsViewModel,
             pgp: SingletonGraph.shared.pgpSendService,
             draft: draft,
-            signature: SingletonGraph.shared.mailSignatureStore.signature,
+            signature: SingletonGraph.shared.mailSignatureStore.settings,
             isLocked: { SingletonGraph.shared.appLockManager.isLocked }
         ))
     }

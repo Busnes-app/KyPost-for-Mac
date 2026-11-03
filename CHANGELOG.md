@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The signature is a mobile signature, kept on this device** and separate
+  from the web signature you set in KyPost on the web. Settings → Signature
+  has an on/off switch (off for a new signature; one you already saved stays
+  on) and "Add to replies" / "Add to forwards". It is inserted without a
+  `-- ` line, with a blank line each side, above any quoted text, and up to
+  2,000 characters; control characters and invisible text-direction
+  characters are refused.
+
 ## 0.6.0 — 2026-11-02
 
 ### Fixed
