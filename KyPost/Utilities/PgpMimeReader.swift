@@ -43,6 +43,9 @@ nonisolated enum PgpMimeReader {
         let root = parse(mime, depth: 0, budget: &budget)
 
         var walk = Walk()
+        // Parts past the budget were never split out, so any file among them
+        // is missing: the screen says so, as it does for the caps below.
+        walk.omitted = budget <= 0
         walk.noteSignature(root)
         if root.children.isEmpty {
             // A single-part message: its disposition, then its own content

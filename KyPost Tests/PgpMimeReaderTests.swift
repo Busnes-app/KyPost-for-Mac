@@ -198,12 +198,14 @@ private func read(_ text: String) -> DecryptedBody? {
     }
 
     /// A flat flood of empty parts is a few bytes each; parsing stops at the
-    /// part budget instead of building one value per delimiter.
+    /// part budget instead of building one value per delimiter, and says
+    /// that something was left out.
     @Test func aFloodOfEmptyPartsIsCut() throws {
         let text = "Content-Type: multipart/mixed; boundary=\"a\"\r\n\r\n"
             + "--a\r\nContent-Type: text/plain\r\n\r\nfirst\r\n"
             + String(repeating: "--a\r\n", count: 500_000)
         let body = try #require(PgpMimeReader.read(Data(text.utf8)))
         #expect(body.plain == "first")
+        #expect(body.attachmentsOmitted)
     }
 }
