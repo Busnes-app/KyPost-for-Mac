@@ -596,12 +596,18 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
 
     /// Collects armored public keys into one ring, skipping any that do not
     /// parse. A key that fails to parse only ever shrinks the candidate set.
-    /// A key below `PgpKeyFloor` is skipped too, or, for recipients, refused:
-    /// skipping one would send mail that recipient cannot open.
+    /// A key below `PgpKeyFloor` is skipped too. For recipients both are
+    /// refused instead: skipping one would send mail that recipient cannot
+    /// open.
     private func keyRing(fromArmored keys: [String], refusingWeakKeys: Bool = false) throws -> CryptoKeyRing {
         guard let ring = CryptoKeyRing(nil) else { throw PgpCryptoError.unusableKey }
         for armored in keys {
-            guard let key = CryptoKey(fromArmored: armored) else { continue }
+            guard let key = CryptoKey(fromArmored: armored) else {
+                if refusingWeakKeys {
+                    throw PgpCryptoError.cannotEncrypt("a recipient key could not be read")
+                }
+                continue
+            }
             guard Self.meetsKeyFloor(key) else {
                 if refusingWeakKeys {
                     throw PgpCryptoError.cannotEncrypt("a recipient key is shorter than KyPost accepts")

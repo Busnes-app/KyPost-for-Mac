@@ -24,6 +24,11 @@ nonisolated enum PgpMimeReader {
     /// cannot recurse until the stack gives out.
     private static let maxDepth = 12
 
+    /// Parts split out of one message, every level together. A flat flood of
+    /// empty parts is a few bytes each, so the byte caps alone would let one
+    /// message build millions of them.
+    private static let maxParts = 1_000
+
     /// Total decoded attachment bytes retained from one message (Android
     /// `MemoryBudget.DECRYPTED_ATTACHMENT_BYTES`). They live for the life of
     /// the reader screen, so the sender does not get to choose how much.
@@ -34,9 +39,14 @@ nonisolated enum PgpMimeReader {
     static let attachmentPartCap = 50
 
     static func read(_ mime: Data) -> DecryptedBody? {
-        let root = parse(mime)
+        var budget = maxParts
+        let root = parse(mime, depth: 0, budget: &budget)
 
         var walk = Walk()
+        // Parts past the budget were never split out (`parse` leaves the
+        // budget negative), so any file among them is missing: the screen
+        // says so, as it does for the caps below.
+        walk.omitted = budget < 0
         walk.noteSignature(root)
         if root.children.isEmpty {
             // A single-part message: its disposition, then its own content
@@ -236,18 +246,35 @@ nonisolated enum PgpMimeReader {
         }
     }
 
-    private static func parse(_ data: Data) -> Part {
+    /// Splits only down to `maxDepth`, the deepest level `Walk.collect`
+    /// reads: past it the recursion would only feed the stack to a crafted
+    /// nesting.
+    private static func parse(_ data: Data, depth: Int, budget: inout Int) -> Part {
         var part = Part()
         let (headerBytes, bodyBytes) = splitHeaders(data)
         part.headers = parseHeaders(headerBytes)
         part.body = bodyBytes
         part.contentType = part.headerValue("content-type")
 
-        guard part.mimeType.hasPrefix("multipart/"),
+        guard depth <= maxDepth,
+              part.mimeType.hasPrefix("multipart/"),
               let boundary = parameter("boundary", of: part.contentType), !boundary.isEmpty
         else { return part }
+        // A multipart the spent budget cannot split is content left out.
+        guard budget > 0 else {
+            budget = -1
+            return part
+        }
 
-        part.children = splitMultipart(bodyBytes, boundary: boundary).map(parse)
+        // One more than the budget, to tell a cut from an exact fit.
+        var bodies = splitMultipart(bodyBytes, boundary: boundary, limit: budget + 1)
+        if bodies.count > budget {
+            bodies.removeLast()
+            budget = -1
+        } else {
+            budget -= bodies.count
+        }
+        part.children = bodies.map { parse($0, depth: depth + 1, budget: &budget) }
         return part
     }
 
@@ -302,7 +329,7 @@ nonisolated enum PgpMimeReader {
     }
 
     /// Splits a multipart body on its boundary.
-    private static func splitMultipart(_ data: Data, boundary: String) -> [Data] {
+    private static func splitMultipart(_ data: Data, boundary: String, limit: Int) -> [Data] {
         let delimiter = Data("--\(boundary)".utf8)
         var parts: [Data] = []
         var searchFrom = data.startIndex
@@ -320,6 +347,7 @@ nonisolated enum PgpMimeReader {
                     if end > start, data[data.index(before: end)] == 0x0A { end = data.index(before: end) }
                     if end > start, data[data.index(before: end)] == 0x0D { end = data.index(before: end) }
                     parts.append(data[start..<end])
+                    if parts.count >= limit { return parts }
                 }
                 // The closing delimiter is `--boundary--`.
                 let after = found.upperBound

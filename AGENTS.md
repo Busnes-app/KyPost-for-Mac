@@ -191,8 +191,8 @@ a crypto path acceptable.
   `digest` field.
 - **`PgpKeyFloor` closes GopenPGP's 2047-bit RSA minimum.** Every key packet
   must be RSA ≥ 2048 actual modulus bits or an allow-listed algorithm.
-  `GopenPGPCrypto` refuses a short recipient (the whole message, never a
-  silent skip), drops a short signer key, and refuses a short own key as
+  `GopenPGPCrypto` refuses a short or unreadable recipient key (the whole
+  message, never a silent skip), drops a short signer key, and refuses a short own key as
   `unusableKey`. Decryption does not check, so old mail stays readable.
 - **Only `PgpCrypto.swift` and its conforming types may `import Gopenpgp`.**
   The v2→v3 API break is recent enough that a swap must touch one file. The
@@ -464,7 +464,9 @@ Same protocol as KyPost for Android and Linux; change it in all three.
 - **Decrypt with every held key** (`HeldKeyMaterial.decryptionKeys`): mail
   encrypted to a retired key, or to a hidden recipient, only opens that way.
 - **Decrypted attachments stay in memory** (`DecryptedBody.attachments`,
-  Android #109). `PgpMimeReader` keeps at most 50 parts and 4 MiB decoded,
+  Android #109). `PgpMimeReader` splits multiparts down to `maxDepth` (12) and 1,000
+  parts in all (a crafted nesting must not recurse until the stack gives
+  out), keeps at most 50 parts and 4 MiB decoded,
   drops an over-cap part whole (never truncated) and sets
   `attachmentsOmitted`, which the screen says out loud. A
   `multipart/signed`'s `application/pgp-signature` part is transport, not a
@@ -644,8 +646,9 @@ Device envelopes (KyPost-Server #199/#201/#210):
   prompts and its context is kept. `AppLockManager.lock()` /
   `lockAfterGrace()` and `EnrollmentVault.destroy*` invalidate it. **The lock
   wins a race:** an open (or enrollment open) whose lease predates an
-  invalidation throws `cancelled` and returns no plaintext, and the reader and
-  sender install material only through `EnrollmentSession.install(_:ifEpoch:)`
+  invalidation throws `cancelled` and returns no plaintext, and the reader,
+  sender, draft saver and QR "Unlock Key" install material only through
+  `EnrollmentSession.install(_:ifEpoch:)`
   with the epoch read before the open (every `clear()` advances it).
   Enrollment's HPKE open uses the same context, so reading the previous record
   does not prompt twice.
@@ -815,6 +818,11 @@ old sentence edited out.
   after the defaults sweep, and is **sticky across resumes** — re-reading it on
   a resumed run reads defaults the interrupted run already swept and loses the
   setting permanently.
+- **The defaults sweep keeps `contacts.systemLinks` while links remain**
+  (with the `contacts.systemImportDupeRepair.v1` marker, whose repair would
+  otherwise clear them at the next launch) and then fails: links left means `deviceContactCards` failed, and they are what
+  its resume deletes the cards from. Swept, the resume would see no exported
+  cards and report the wipe complete.
 - `SecurityWipe` takes its steps as a parameter. That is what makes its whole
   exit table a plain unit test; `SecurityWipeSteps` is the only half that knows
   about SwiftData, Contacts and the Keychain.

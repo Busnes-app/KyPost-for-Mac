@@ -82,6 +82,15 @@ private struct FixedOpener: VaultOpening {
     func open() async -> VaultOpenOutcome { outcome }
 }
 
+/// Opens successfully, but the app locks (clearing the session) first.
+private struct LockingOpener: VaultOpening {
+    let session: EnrollmentSession
+    func open() async -> VaultOpenOutcome {
+        session.clear()
+        return .opened(privateKey: Data("PRIVATE".utf8))
+    }
+}
+
 // MARK: - Client
 
 @Suite struct PgpQrClientTests {
@@ -430,6 +439,26 @@ private struct FixedOpener: VaultOpening {
         }
         #expect(after.hasSuffix("#fp=\(syntheticKeyFingerprint)"))
         #expect(viewModel.fingerprint == .thisDevice(syntheticKeyFingerprint))
+    }
+
+    /// A lock (or unpair) that clears the session while the vault opens
+    /// wins: the key is not installed behind it.
+    @Test func aLockDuringTheUnlockLeavesNoKeyHeld() async throws {
+        let session = EnrollmentSession()
+        let viewModel = MyPgpQrViewModel(
+            client: PgpQrClient(httpClient: stubClient(status: 200, json: tokenJSON)),
+            pairingStore: try makePairedStore(paired: true),
+            bootstrapClient: PgpSendClient(httpClient: stubClient(status: 200, json: tokenJSON)),
+            session: session,
+            crypto: OwnKeyCrypto(),
+            opener: LockingOpener(session: session),
+            deviceIsEnrolled: { true }
+        )
+        await viewModel.refresh()
+
+        await viewModel.unlockKey()
+
+        #expect(!session.isHeld)
     }
 
     @Test func cancellingTheUnlockKeepsTheCodeWithoutAFingerprint() async throws {

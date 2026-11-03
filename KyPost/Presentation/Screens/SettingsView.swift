@@ -28,6 +28,7 @@ struct SettingsView: View {
         pushRepository: SingletonGraph.shared.pushRepository,
         recipientPinStore: SingletonGraph.shared.recipientPinStore,
         mailSignatureStore: SingletonGraph.shared.mailSignatureStore,
+        pgpSendService: SingletonGraph.shared.pgpSendService,
         onUnpaired: { SingletonGraph.shared.inboxViewModel.forgetAccount() },
         pairingDisplayOverride: SingletonGraph.shared.pairingDisplayOverride
     )

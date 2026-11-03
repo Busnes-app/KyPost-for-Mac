@@ -994,10 +994,7 @@ final class InboxViewModel {
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
             try? root.setResourceValues(values)
-            let safeName = attachment.name
-                .replacingOccurrences(of: "/", with: "_")
-                .replacingOccurrences(of: "\0", with: "")
-            let file = directory.appending(path: safeName.isEmpty ? "attachment" : safeName)
+            let file = directory.appending(path: safeAttachmentFileName(attachment.name))
             try data.write(to: file)
             return file
         } catch {

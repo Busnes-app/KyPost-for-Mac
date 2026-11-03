@@ -449,11 +449,11 @@ final class SystemContactsExporter {
     /// (imports) are kept and baselined so they aren't re-imported. Works
     /// with the toggle off.
     ///
-    /// Returns the whole `Summary`, not just the count removed. `deleteLinked`
-    /// drops a link even when the provider refused the delete — so a caller
-    /// that has to *report* whether anything survived cannot ask
-    /// `hasExportedContacts` afterwards and get a truthful answer.
-    /// `SecurityWipe` is that caller, and `failed` is what it reads.
+    /// Returns the whole `Summary`, not just the count removed. A card whose
+    /// delete the provider refused keeps its link, so a retry (and a resumed
+    /// `SecurityWipe`, which reads `failed` and `hasExportedContacts`) still
+    /// knows the card is there. A card already gone is not a refusal: the
+    /// store returns without error.
     @discardableResult
     func removeAllExported() async -> Summary {
         guard isAuthorized else { return Summary() }
@@ -469,7 +469,7 @@ final class SystemContactsExporter {
                     self.baselineStore.add(link.cnIdentifier)
                     self.linkStore.remove(localId: link.localId)
                 } else {
-                    await self.deleteLinked(link, summary: &summary)
+                    await self.deleteLinked(link, summary: &summary, keepingLinkOnFailure: true)
                 }
             }
             return summary
@@ -700,13 +700,18 @@ final class SystemContactsExporter {
         }
     }
 
-    private func deleteLinked(_ link: SystemContactLink, summary: inout Summary) async {
+    private func deleteLinked(
+        _ link: SystemContactLink,
+        summary: inout Summary,
+        keepingLinkOnFailure: Bool = false
+    ) async {
         do {
             try await store.delete(identifier: link.cnIdentifier)
             summary.deleted += 1
         } catch {
             summary.failed += 1
             Log.sync.error("System contacts delete failed: \(error.localizedDescription)")
+            if keepingLinkOnFailure { return }
         }
         // The app contact is gone either way; a failed delete against this
         // identifier would never succeed later, so drop the link too.

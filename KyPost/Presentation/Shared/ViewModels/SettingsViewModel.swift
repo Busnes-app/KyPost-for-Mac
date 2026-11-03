@@ -92,6 +92,8 @@ final class SettingsViewModel {
     /// `SingletonGraph.erasePreservedStoreStep`: a store file kept under an
     /// in-memory session belongs to the account being left too.
     private let erasePreservedStore: (() -> Bool)?
+    /// Bootstrap's cached custody and aliases (`PgpSendService.forgetAccount`).
+    private let pgpSendService: PgpSendService?
     /// What Settings → Connection shows instead of the stored pairing. Set
     /// only by the DEBUG screenshot graph (`SingletonGraph.pairingDisplayOverride`);
     /// display text and nothing else — `isPaired`, unpair, Fix Notifications
@@ -117,6 +119,7 @@ final class SettingsViewModel {
         pushRepository: PushRepository? = nil,
         recipientPinStore: RecipientPinStore? = nil,
         mailSignatureStore: MailSignatureStore? = nil,
+        pgpSendService: PgpSendService? = nil,
         onUnpaired: (() -> Void)? = nil,
         pairingDisplayOverride: PairingDisplay? = nil,
         legacyHTTPCache: URLCache = .shared
@@ -137,6 +140,7 @@ final class SettingsViewModel {
         self.pushRepository = pushRepository
         self.recipientPinStore = recipientPinStore
         self.mailSignatureStore = mailSignatureStore
+        self.pgpSendService = pgpSendService
         self.onUnpaired = onUnpaired
         self.pairingDisplayOverride = pairingDisplayOverride
         self.legacyHTTPCache = legacyHTTPCache
@@ -218,6 +222,7 @@ final class SettingsViewModel {
             recipientPinStore: recipientPinStore,
             mailSignatureStore: mailSignatureStore,
             mailRepository: mailRepository,
+            pgpSendService: pgpSendService,
             forgetInbox: onUnpaired,
             legacyHTTPCache: legacyHTTPCache
         ).run()

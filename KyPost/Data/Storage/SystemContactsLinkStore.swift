@@ -61,7 +61,7 @@ struct SystemContactLink: Codable, Equatable, Sendable {
 }
 
 final class SystemContactsLinkStore {
-    private static let key = "contacts.systemLinks"
+    static let key = "contacts.systemLinks"
 
     private let defaults: UserDefaults
 

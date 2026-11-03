@@ -73,6 +73,7 @@ import Testing
             enrollmentVault: graph.enrollmentVault,
             pushRepository: graph.pushRepository,
             mailSignatureStore: graph.mailSignatureStore,
+            pgpSendService: graph.pgpSendService,
             legacyHTTPCache: legacyHTTPCache
         )
     }
@@ -105,6 +106,19 @@ import Testing
         #expect(AppDatabase.storeMayOpen(defaults: graph.userDefaults, at: url))
         let reopened = try AppDatabase(url: url)
         #expect(try ModelContext(reopened.container).fetch(FetchDescriptor<EmailEntity>()).isEmpty)
+    }
+
+    /// Bootstrap's custody is the account's: left cached, the next account's
+    /// drafts would take the save path chosen for this one.
+    @Test func unpairingForgetsTheCachedKeyCustody() async throws {
+        let graph = try makeGraph()
+        graph.pgpSendService.preload(hasIdentity: true, protection: "server", accountAddress: "a@x")
+        #expect(graph.pgpSendService.custody != nil)
+
+        await makeViewModel(graph).unpair()
+
+        #expect(graph.pgpSendService.custody == nil)
+        #expect(graph.pgpSendService.accountAddresses.isEmpty)
     }
 
     /// The envelope is the account's private key sealed to *this* Mac. Left

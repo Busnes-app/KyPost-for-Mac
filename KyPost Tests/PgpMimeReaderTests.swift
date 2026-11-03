@@ -182,4 +182,41 @@ private func read(_ text: String) -> DecryptedBody? {
         // The assertion is that this returns at all rather than crashing.
         _ = PgpMimeReader.read(Data(text.utf8))
     }
+
+    /// Deep enough to exhaust a thread's stack if parsing recursed past the
+    /// depth the walk reads: about 60 bytes a level, so any sender can. The
+    /// trailing `x` keeps one level's boundary from being a prefix of a
+    /// deeper one's (`b1` of `b10`), which would split the nesting into
+    /// siblings instead.
+    @Test func thousandsOfNestedMultipartsDoNotExhaustTheStack() {
+        var text = ""
+        for depth in 0..<10_000 {
+            text += "Content-Type: multipart/mixed; boundary=\"b\(depth)x\"\r\n\r\n--b\(depth)x\r\n"
+        }
+        text += "Content-Type: text/plain\r\n\r\ntoo deep\r\n"
+        _ = PgpMimeReader.read(Data(text.utf8))
+    }
+
+    /// A flat flood of empty parts is a few bytes each; parsing stops at the
+    /// part budget instead of building one value per delimiter, and says
+    /// that something was left out.
+    @Test func aFloodOfEmptyPartsIsCut() throws {
+        let text = "Content-Type: multipart/mixed; boundary=\"a\"\r\n\r\n"
+            + "--a\r\nContent-Type: text/plain\r\n\r\nfirst\r\n"
+            + String(repeating: "--a\r\n", count: 500_000)
+        let body = try #require(PgpMimeReader.read(Data(text.utf8)))
+        #expect(body.plain == "first")
+        #expect(body.attachmentsOmitted)
+    }
+
+    /// Exactly the budget is not a cut: nothing was left out.
+    @Test func exactlyTheBudgetIsNotReportedAsOmitted() throws {
+        let text = "Content-Type: multipart/mixed; boundary=\"a\"\r\n\r\n"
+            + "--a\r\nContent-Type: text/plain\r\n\r\nfirst\r\n"
+            + String(repeating: "--a\r\n", count: 999)
+            + "--a--\r\n"
+        let body = try #require(PgpMimeReader.read(Data(text.utf8)))
+        #expect(body.plain == "first")
+        #expect(!body.attachmentsOmitted)
+    }
 }

@@ -128,6 +128,9 @@ struct ComposeView: View {
                 }
             }
         }
+        // Read-only while a send or save is in flight: the window closes on
+        // success, so an edit made meanwhile would be lost unsaved.
+        .disabled(viewModel.isSending)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .background(theme.bg)
         // The dropdown is anchored from up here rather than overlaid on the
@@ -721,6 +724,7 @@ struct ComposeView: View {
             }
             .keyboardShortcut("u")
         }
+        .disabled(viewModel.isSending)
     }
 
     /// Hidden where nothing may be uploaded (`DraftSaveMode.unavailable`).
@@ -750,6 +754,7 @@ struct ComposeView: View {
         } label: {
             Label("Attach File", systemImage: "paperclip")
         }
+        .disabled(viewModel.isSending)
         .help("Attach a file (max 25 MB total)")
     }
 
