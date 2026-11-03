@@ -401,3 +401,17 @@ import Testing
         """
     }
 }
+
+@Suite struct RecipientKeyRingTests {
+    /// One ciphertext goes to every recipient in a group, so a key that does
+    /// not parse refuses the send rather than leaving that recipient out.
+    @Test func anUnreadableRecipientKeyRefusesTheEncryption() {
+        #expect(throws: PgpCryptoError.self) {
+            try GopenPGPCrypto().encryptAndSign(
+                plaintext: Data("x".utf8),
+                recipientKeys: [PinnedKeyFixtures.alicePinned, "not a key"],
+                privateKey: Data(TestPgpFixtures.armoredPrivate.utf8)
+            )
+        }
+    }
+}
