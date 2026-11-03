@@ -551,8 +551,13 @@ struct EmailDetailView: View {
             do throws(ReaderFailure) {
                 let url = try await inboxViewModel.downloadAttachment(attachment, of: email)
                 // A lock that landed during the download wins: the preview
-                // can sit above the lock cover (see the lock handler).
-                if !isLocked { quickLookURL = url }
+                // can sit above the lock cover (see the lock handler). The
+                // file goes too, as it would when a preview closes.
+                if isLocked {
+                    try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+                } else {
+                    quickLookURL = url
+                }
             } catch {
                 showReaderNotice(error.message)
             }
@@ -793,7 +798,7 @@ struct EmailDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             // Flattened like the To/Cc lines: a sender-chosen line break or
             // bidi override must not forge a header line or reverse text.
-            Text(email.subject.isEmpty ? "(No subject)" : displayHeaderText(email.subject))
+            Text(displayHeaderText(email.subject).isEmpty ? "(No subject)" : displayHeaderText(email.subject))
                 .font(AppFont.ui(20, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
                 .lineLimit(3)
