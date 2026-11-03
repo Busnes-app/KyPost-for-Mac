@@ -128,6 +128,9 @@ struct ComposeView: View {
                 }
             }
         }
+        // Read-only while a send or save is in flight: the window closes on
+        // success, so an edit made meanwhile would be lost unsaved.
+        .disabled(viewModel.isSending)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .background(theme.bg)
         // The dropdown is anchored from up here rather than overlaid on the
