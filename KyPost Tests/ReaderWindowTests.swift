@@ -147,6 +147,21 @@ private func mailClient(failing: Bool = false, requests: Box<Int>? = nil) -> HTT
         #expect(failing.errorMessage == nil)
     }
 
+    /// The server's attachment name is the sender's: the preview file takes
+    /// the same cleaning as a decrypted attachment's, so a bidi override
+    /// cannot disguise its extension and a leading dot cannot hide it.
+    @Test @MainActor func aPreviewFileNameIsCleaned() async throws {
+        let viewModel = try makeViewModel(client: mailClient())
+        await viewModel.load()
+        let email = try row(viewModel)
+        let hostile = EmailAttachment(index: 2, name: ".invoice\u{202E}fdp.command", mimeType: "application/pdf", size: 10)
+
+        let url = try await viewModel.downloadAttachment(hostile, of: email)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        #expect(url.lastPathComponent == "invoicefdp.command")
+    }
+
     @Test @MainActor func aFailedMarkReadIsSaidBothInTheReaderAndTheList() async throws {
         let viewModel = try makeViewModel(client: mailClient(failing: true))
         await viewModel.load()

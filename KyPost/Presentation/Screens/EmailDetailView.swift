@@ -422,7 +422,8 @@ struct EmailDetailView: View {
                                 Image(systemName: "paperclip")
                                     .font(.system(size: 11))
                             }
-                            Text(attachment.name)
+                            // Flattened, as the decrypted chips are.
+                            Text(displayHeaderText(attachment.name))
                                 .font(AppFont.ui(12, weight: .medium))
                                 .foregroundStyle(theme.inkStrong)
                                 .lineLimit(1)
@@ -548,7 +549,10 @@ struct EmailDetailView: View {
         downloadingIndex = attachment.index
         Task {
             do throws(ReaderFailure) {
-                quickLookURL = try await inboxViewModel.downloadAttachment(attachment, of: email)
+                let url = try await inboxViewModel.downloadAttachment(attachment, of: email)
+                // A lock that landed during the download wins: the preview
+                // can sit above the lock cover (see the lock handler).
+                if !isLocked { quickLookURL = url }
             } catch {
                 showReaderNotice(error.message)
             }
@@ -562,7 +566,10 @@ struct EmailDetailView: View {
         Task {
             do throws(ReaderFailure) {
                 let data = try await inboxViewModel.attachmentData(attachment, of: email)
-                attachmentExport = AttachmentDocument(name: attachment.name, data: data)
+                // As above: the save panel can sit above the lock cover too.
+                if !isLocked {
+                    attachmentExport = AttachmentDocument(name: safeAttachmentFileName(attachment.name), data: data)
+                }
             } catch {
                 showReaderNotice(error.message)
             }
@@ -784,7 +791,9 @@ struct EmailDetailView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(email.subject.isEmpty ? "(No subject)" : email.subject)
+            // Flattened like the To/Cc lines: a sender-chosen line break or
+            // bidi override must not forge a header line or reverse text.
+            Text(email.subject.isEmpty ? "(No subject)" : displayHeaderText(email.subject))
                 .font(AppFont.ui(20, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
                 .lineLimit(3)
@@ -793,10 +802,10 @@ struct EmailDetailView: View {
             HStack(spacing: 10) {
                 AvatarView(name: email.senderName.isEmpty ? email.senderEmail : email.senderName)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(email.senderName.isEmpty ? email.senderEmail : email.senderName)
+                    Text(displayHeaderText(email.senderName.isEmpty ? email.senderEmail : email.senderName))
                         .font(AppFont.ui(15, weight: .medium))
                         .foregroundStyle(theme.inkStrong)
-                    Text(email.senderEmail)
+                    Text(displayHeaderText(email.senderEmail))
                         .font(AppFont.ui(12))
                         .foregroundStyle(theme.secondaryInk)
                     recipientLines
@@ -809,9 +818,9 @@ struct EmailDetailView: View {
                 }
             }
 
-            if !email.keywords.isEmpty {
+            if !email.keywords.allSatisfy(isSystemKeyword) {
                 HStack(spacing: 6) {
-                    ForEach(email.keywords.sorted(), id: \.self) { keyword in
+                    ForEach(email.keywords.filter { !isSystemKeyword($0) }.sorted(), id: \.self) { keyword in
                         // The list row's chip: outlined, in ink.
                         Text(keyword)
                             .font(AppFont.ui(11, weight: .medium))
