@@ -141,6 +141,11 @@ struct OutgoingEmail: Sendable {
     /// answer a retry of a send whose response was lost without mailing it
     /// twice. Never in the JSON body; nil sends no header.
     var idempotencyKey: String?
+    /// The answered message (its relay id and mailbox), so the relay adds
+    /// `In-Reply-To`/`References` itself (KyPost-Server #352). Send only;
+    /// nil sends neither field.
+    var replyToMessageId: String?
+    var replyToMailbox: String?
 }
 
 /// A file attached to an outgoing email; sent base64-encoded in the

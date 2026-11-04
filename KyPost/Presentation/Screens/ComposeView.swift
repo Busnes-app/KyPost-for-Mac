@@ -184,6 +184,25 @@ struct ComposeView: View {
         } message: { pickup in
             Text(viewModel.pickupConfirmationMessage(for: pickup))
         }
+        // The relay refused to thread a reply and sent nothing (owner Q3 A,
+        // Android's wording). Re-sending is the user's call, never automatic.
+        // An alert for the reason the blank-subject one is.
+        .alert(
+            "Send as a new conversation?",
+            isPresented: Binding(
+                get: { viewModel.pendingUnthreaded != nil },
+                set: { if !$0 { viewModel.cancelUnthreadedSend() } }
+            ),
+            presenting: viewModel.pendingUnthreaded
+        ) { pending in
+            Button("Send anyway") {
+                Task { await viewModel.confirmUnthreadedSend(pending) }
+            }
+            Button("Cancel", role: .cancel) { viewModel.cancelUnthreadedSend() }
+                .keyboardShortcut(.defaultAction)
+        } message: { pending in
+            Text("The server could not link this reply to the message it answers, so nothing was sent.\n\n\(pending.reason)\n\nYou can send it anyway; it will start a new conversation for the recipients.")
+        }
         // Every Send (button, ⌘↩) goes through `send`, which raises this for a
         // blank subject. Add Subject is the default, so a reflexive Return
         // goes back to editing rather than out. An alert, not a confirmation
@@ -302,6 +321,7 @@ struct ComposeView: View {
             showFileImporter = false
             confirmingDiscard = false
             viewModel.cancelPickupFallback()
+            viewModel.cancelUnthreadedSend()
             viewModel.cancelSendWithoutSubject()
         }
         .tint(theme.accent)

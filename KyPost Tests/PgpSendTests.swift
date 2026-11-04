@@ -470,7 +470,8 @@ private func makeCompose(
     stub: ComposeStub,
     paired: Bool = true,
     enrolled: Bool = false,
-    draftOpener: VaultOpenOutcome = .opened(privateKey: Data("PRIVATE".utf8))
+    draftOpener: VaultOpenOutcome = .opened(privateKey: Data("PRIVATE".utf8)),
+    draft: ComposeDraft? = nil
 ) throws -> ComposeViewModel {
     let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
     let pairingStore = try makePairedStore(paired: paired)
@@ -495,6 +496,7 @@ private func makeCompose(
             client: PgpSendClient(httpClient: client),
             securePairingStore: pairingStore
         ),
+        draft: draft,
         isLocked: { false },
         isEnrolled: { enrolled },
         makeDraftSaver: { address in
@@ -1131,5 +1133,93 @@ extension ComposeEncryptedSendTests {
 
         await compose.saveDraft(fontTraits: noTraits)
         #expect(stub.drafts.value.count == 1)
+    }
+}
+
+/// Owner Q3 A: a reply names the message it answers, and a threading refusal
+/// (nothing sent) asks before re-sending without it.
+@Suite @MainActor struct ComposeReplyThreadingTests {
+    private func reply() -> ComposeDraft {
+        let email = Email(
+            serverId: "42", folder: "Archive", senderName: "Bob", senderEmail: "bob@example.com",
+            subject: "Hi", body: "hi", keywords: [], receivedAt: Date(), read: false, starred: false
+        )
+        return ComposeDraft.reply(to: email, ownAddresses: [])
+    }
+
+    private static let notFound = "the message being replied to was not found; nothing was sent"
+
+    @Test func aReplyCarriesTheReferenceAndANewMessageDoesNot() async throws {
+        let stub = ComposeStub()
+        let compose = try makeCompose(stub: stub, draft: reply())
+        await compose.send(fontTraits: noTraits)
+        let sent = try fields(try #require(stub.sends.value.first))
+        #expect(sent["replyToMessageId"] as? String == "42")
+        #expect(sent["replyToMailbox"] as? String == "Archive")
+
+        let fresh = ComposeStub()
+        let new = try makeCompose(stub: fresh)
+        new.toInput = "bob@example.com"
+        await new.send(fontTraits: noTraits)
+        #expect(fresh.sends.value.first?.contains("replyTo") == false)
+    }
+
+    @Test func aDraftSaveNeverCarriesTheReference() async throws {
+        let stub = ComposeStub()
+        let compose = try makeCompose(stub: stub, draft: reply())
+        await compose.loadPgpIdentityIfNeeded()
+        await compose.saveDraft(fontTraits: noTraits)
+        #expect(stub.drafts.value.count == 1)
+        #expect(stub.drafts.value.first?.contains("replyTo") == false)
+    }
+
+    @Test func aThreadingRefusalAsksAndOnlyConfirmResendsWithoutTheReference() async throws {
+        let stub = ComposeStub(sendResponses: [
+            (404, Self.notFound),
+            (200, #"{"ok":true,"sentSaved":true}"#),
+        ])
+        let compose = try makeCompose(stub: stub, draft: reply())
+        await compose.send(fontTraits: noTraits)
+
+        #expect(!compose.didSend)
+        #expect(!compose.sendOutcomeUnknown)
+        #expect(compose.errorMessage == nil)
+        let pending = try #require(compose.pendingUnthreaded)
+        #expect(pending.reason == Self.notFound)
+        #expect(stub.sends.value.count == 1)
+
+        compose.cancelUnthreadedSend()
+        await compose.confirmUnthreadedSend(pending)
+
+        #expect(stub.sends.value.count == 2)
+        var first = try fields(stub.sends.value[0])
+        #expect(first.removeValue(forKey: "replyToMessageId") as? String == "42")
+        #expect(first.removeValue(forKey: "replyToMailbox") as? String == "Archive")
+        #expect(NSDictionary(dictionary: first) == NSDictionary(dictionary: try fields(stub.sends.value[1])))
+        #expect(compose.didSend)
+    }
+
+    @Test func cancellingTheRefusalSendsNothingMore() async throws {
+        let stub = ComposeStub(sendResponses: [(400, "invalid replyToMessageId; refresh the mailbox")])
+        let compose = try makeCompose(stub: stub, draft: reply())
+        await compose.send(fontTraits: noTraits)
+        #expect(compose.pendingUnthreaded != nil)
+
+        compose.cancelUnthreadedSend()
+
+        #expect(compose.pendingUnthreaded == nil)
+        #expect(stub.sends.value.count == 1)
+        #expect(!compose.didSend)
+    }
+
+    /// Another 502 on a reply can follow a delivery: never offered a re-send.
+    @Test func anotherFailureOnAReplyIsNotOfferedAnUnthreadedResend() async throws {
+        let stub = ComposeStub(sendResponses: [(502, "SMTP said no after DATA")])
+        let compose = try makeCompose(stub: stub, draft: reply())
+        await compose.send(fontTraits: noTraits)
+
+        #expect(compose.pendingUnthreaded == nil)
+        #expect(compose.sendOutcomeUnknown)
+        #expect(stub.sends.value.count == 1)
     }
 }

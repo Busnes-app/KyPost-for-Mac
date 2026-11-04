@@ -238,6 +238,9 @@ enum MailSourceError: Error, Equatable {
     /// server has one-time links turned off, in which case there is nothing to
     /// offer the user.
     case keylessRecipients(addresses: [String], pickupFallbackAvailable: Bool)
+    /// The relay could not thread a reply (the answered message moved or is
+    /// gone) and refused it. **Nothing was delivered.** Carries its text.
+    case replyThreadingRefused(String)
 }
 
 /// User-facing result of a mail operation (spec §11 relay response mapping).
@@ -278,6 +281,9 @@ enum MailOutcome: Equatable, Sendable {
     /// retried on the user's behalf; compose says to check Sent first, and a
     /// deliberate retry reuses the same `Idempotency-Key`.
     case mayHaveBeenSent(String)
+    /// A reply the relay could not thread; nothing was sent. Compose asks
+    /// before re-sending it without threading, never on its own.
+    case replyThreadingRefused(String)
 
     /// A short reason for a user-facing sentence, or "" when there is none.
     var reason: String {
@@ -285,7 +291,7 @@ enum MailOutcome: Equatable, Sendable {
         case .success, .sentWithWarning: ""
         case .invalid(let message), .failure(let message),
              .notConfigured(let message), .upstreamFailure(let message),
-             .mayHaveBeenSent(let message):
+             .mayHaveBeenSent(let message), .replyThreadingRefused(let message):
             message
         case .unauthorized: "the server rejected this device's credentials"
         case .notPaired: "this device isn't paired"
@@ -334,6 +340,8 @@ enum MailOutcome: Equatable, Sendable {
                 ?? .failure(Self.message(for: .badRequest(body: body)))
         case MailSourceError.notConfigured(let message):
             .notConfigured(message)
+        case MailSourceError.replyThreadingRefused(let message):
+            .replyThreadingRefused(message)
         case MailSourceError.messageUnavailable(let message),
              MailSourceError.malformedResponse(let message):
             .failure(message)
@@ -367,7 +375,7 @@ enum MailOutcome: Equatable, Sendable {
         case .notPaired:
             String(localized: "Pair this device first.")
         case .invalid(let message), .failure(let message), .upstreamFailure(let message),
-             .mayHaveBeenSent(let message):
+             .mayHaveBeenSent(let message), .replyThreadingRefused(let message):
             message
         case .clientSideNeeded, .keylessRecipients:
             // Neither is reachable outside the send path.
