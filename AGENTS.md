@@ -372,6 +372,21 @@ Same protocol as KyPost for Android and Linux; change it in all three.
     linked card or more than half of them (cards already gone do not count),
     aborts on a failed Contacts read, and reports withheld deletes through
     `ContactSyncHealth.withheldCardDeletes` to `ContactSyncBanner`.
+- **Contacts across accounts: the user decides** (owner Q1, 2026-11-03).
+  `ContactCursorStore.account` records the `sub`+`srv` the contacts were
+  synced with (set by sync, and by `recordAccountIfUnknown` before an unpair
+  or an account replacement). `ContactSyncRepository.checkAccount` runs
+  before any request: on another account it always resets the cursor; with
+  contacts held it sends and pulls nothing (`awaitingAccountChoice`, not a
+  failure) and `ContactSyncBanner` asks "Bring your N contacts into …?".
+  Bring Them (`bringKeptContactsToPairedAccount`) resends every row as new
+  (the answer is the consent: synced rows and imports stamped for the old
+  server are marked made in KyPost; rows of unknown origin still never
+  upload) and drops the other account's uids, deletes, group ids and photo
+  refs. Remove Them and Remove Pairing's opt-in "Unpair and Remove Contacts"
+  (`removeContactsFromThisDevice`, warned with the unsynced count) clear the
+  rows, deletes, cursor, groups, photos and the cards KyPost created in
+  Apple Contacts. Re-pairing the same account changes nothing.
 - **Consent before contacts leave Apple Contacts** (`ContactSyncDisclosure`,
   Android #282). "Sync with Apple Contacts" is on only with the toggle **and**
   consent for the paired server (`ContactsSettingsStore.isSystemSyncOn`); an
@@ -805,7 +820,12 @@ old sentence edited out.
   (`WipeStateStore`), and either copy is believed. A Keychain marker with no
   defaults record (a deleted plist, or a reinstall — Keychain items survive
   both) resumes the wipe rather than blocking, so reinstalling stays the
-  recovery. An unreadable Keychain reads as no marker.
+  recovery on iOS. On macOS deleting the app keeps its container, so
+  `ManualRecoveryView`'s Try Again is the recovery there. An unreadable
+  Keychain reads as no marker.
+- **`deviceContactCards` needs Contacts access only for cards KyPost created.**
+  Links to the user's own cards (imported, adopted) are forgotten without it,
+  and a refused delete always keeps its link.
 - **The failed-unlock reset is this wipe** (`resetAfterFailedUnlock` →
   `performSecurityWipe`). Never give it a step list of its own.
 - **Order: in-memory plaintext, then local files, then network.** The
@@ -1017,7 +1037,13 @@ old sentence edited out.
 - **A pairing pins its own connection before anything is sent.** Pin
   expected = the link's `pin=`, else the pin stored for that host. A link pin
   differing from a stored one is refused (remove the pairing in Settings →
-  Connection first) — never swapped in. `RelayPairingConnection` (own
+  Connection first) — never swapped in — with one exception (owner Q2 A,
+  2026-11-04): a link for the account already paired (same `sub` and `srv`,
+  `linkRepinsStoredPin`) re-pins when the user confirms the confirm screen's
+  warning, "This server's certificate changed since you paired. Only continue
+  if you just opened this link from your own KyPost web page."; only that
+  Pair passes `allowingRepin`. No teardown: vault, mail and settings stay.
+  Another account, or a link without a pin, is still refused. `RelayPairingConnection` (own
   ephemeral session and delegate) probes; the probed hash must match the
   expected pin, or becomes the pin when there is none; no hash fails the
   pairing. The registration then rides that connection, held to that pin.

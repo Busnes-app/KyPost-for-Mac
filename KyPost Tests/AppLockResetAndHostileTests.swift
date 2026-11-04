@@ -176,6 +176,7 @@ private func scratchKeychain() -> KeychainStorage {
         "notifications.lastCursor", "contacts.lastCursor",
         "contacts.pendingDeletes", "contacts.pendingDeletes.since",
         "contacts.verifiedPgpKeys", "contacts.systemLinks",
+        "contacts.account",
     ]
 
     private func writeEverything(_ graph: SingletonGraph) {
@@ -184,6 +185,7 @@ private func scratchKeychain() -> KeychainStorage {
         graph.keywordSettingsStore.allTabVisible = false
         graph.notificationCursorStore.advance(to: 7)
         graph.contactCursorStore.advance(to: 9)
+        graph.contactCursorStore.account = "u1\nhttps://relay.example.com"
         graph.contactPendingDeletesStore.add("uid-1")
         graph.verifiedPgpKeyStore.remember(uid: "uid-2", key: "KEY")
         graph.systemContactsLinkStore.upsert(SystemContactLink(

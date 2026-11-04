@@ -430,6 +430,23 @@ private func makeSender(
         }
     }
 
+    /// Council pass 2: a send with no trustworthy answer read as "not sent",
+    /// so Send again mailed it twice.
+    @Test func noTrustworthyAnswerMayHaveBeenSent() async {
+        let transport = RecordingTransport()
+        transport.result = .failure(MailSendFailure(message: "timed out", kind: .outcomeUnknown))
+        let outcome = await makeSender(resolve: .success([usable("a@b.com")]), transport: transport)
+            .send(draft: ClientSendDraft(to: "a@b.com"))
+        #expect(outcome == .mayHaveBeenSent("timed out"))
+    }
+
+    @Test func aTimeoutOrA5xxFromTheRelayIsAnUnknownOutcome() async {
+        #expect(ClientEncryptedSendClient.kind(for: NetworkError.transport(description: "timed out")) == .outcomeUnknown)
+        #expect(ClientEncryptedSendClient.kind(for: NetworkError.server(statusCode: 502)) == .outcomeUnknown)
+        #expect(ClientEncryptedSendClient.kind(for: NetworkError.badRequest(body: "no")) == .other)
+        #expect(ClientEncryptedSendClient.kind(for: NetworkError.server(statusCode: 413)) == .other)
+    }
+
     private func relay(status: Int, json: String, captured: Box<URLRequest?>) -> ClientEncryptedSendClient {
         ClientEncryptedSendClient(
             httpClient: stubClient(status: status, json: json) { captured.value = $0 },

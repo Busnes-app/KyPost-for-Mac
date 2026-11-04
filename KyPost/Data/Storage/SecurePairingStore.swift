@@ -241,6 +241,20 @@ final class SecurePairingStore: @unchecked Sendable {
         )
     }
 
+    /// The stored pairing's account (`sub`, `srv`), read without the device
+    /// secret: unlike `loadPairing`, the credential gate's lock cannot make
+    /// it throw, so a locked app is never mistaken for another account.
+    func loadAccount() throws -> (sub: String, srv: String)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard
+            let sub = try keychain.string(forKey: Key.sub), !sub.isEmpty,
+            let srv = try keychain.string(forKey: Key.srv), !srv.isEmpty,
+            let pairingToken = try keychain.string(forKey: Key.pairingToken), !pairingToken.isEmpty
+        else { return nil }
+        return (sub, srv)
+    }
+
     /// Marks the stored pairing as torn down: `loadActivePairing` refuses it
     /// until another pairing is saved. A pairing to another account stores
     /// the new pairing only after the whole teardown has run, so the old one

@@ -60,6 +60,14 @@ nonisolated struct PendingPickup: Identifiable {
     var email: OutgoingEmail
 }
 
+/// A reply the relay refused because it could not thread it. Holds the
+/// refused request, so the re-send differs only by the dropped reference.
+nonisolated struct PendingUnthreaded: Identifiable {
+    let id = UUID()
+    var reason: String
+    var email: OutgoingEmail
+}
+
 /// Every compose on screen, so quitting the app (macOS ⌘Q,
 /// `AppDelegate.applicationShouldTerminate`) can ask about unsent messages the
 /// way closing one window does. `ComposeView` registers on appear and leaves
@@ -158,6 +166,14 @@ final class ComposeViewModel {
     /// corrected message after a refusal is not mistaken for the refused one.
     private(set) var idempotencyKey = UUID().uuidString.lowercased()
 
+    /// The answered message, sent so the relay threads the reply. Dropped
+    /// for good once the user agrees to send without threading.
+    private var replyToMessageId: String?
+    private var replyToMailbox: String?
+    /// Set when the relay refused to thread this reply; drives the "Send as
+    /// a new conversation?" alert. Nothing was sent.
+    private(set) var pendingUnthreaded: PendingUnthreaded?
+
     private var searchTask: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
     /// The draft this window opened with, for claiming a forward's files.
@@ -199,6 +215,8 @@ final class ComposeViewModel {
             cc = tokens(from: draft.cc)
             bcc = tokens(from: draft.bcc)
             subject = draft.subject
+            replyToMessageId = draft.replyToMessageId
+            replyToMailbox = draft.replyToMailbox
         }
         // Built from plain text: whatever the signature or a mailto body
         // contains is shown as typed, never parsed as markup.
@@ -330,6 +348,29 @@ final class ComposeViewModel {
     func cancelPickupFallback() {
         pendingPickup = nil
         keylessWarning = []
+    }
+
+    /// Confirmed sending a reply the relay could not thread: the refused
+    /// request again without the reference, as Android does. Only ever after
+    /// that refusal, which delivered nothing. Takes the value from the
+    /// alert's `presenting:` for the reason `confirmPickupFallback` does.
+    func confirmUnthreadedSend(_ pending: PendingUnthreaded) async {
+        guard !isSending, !isSent, !didSend, !sendOutcomeUnknown, !isLocked() else { return }
+        isSending = true
+        defer { isSending = false }
+        noticeMessage = nil
+        pendingUnthreaded = nil
+        replyToMessageId = nil
+        replyToMailbox = nil
+        var email = pending.email
+        email.replyToMessageId = nil
+        email.replyToMailbox = nil
+        email.idempotencyKey = idempotencyKey
+        await deliver(email)
+    }
+
+    func cancelUnthreadedSend() {
+        pendingUnthreaded = nil
     }
 
     /// Client-custody account: hand the message to webmail, where the browser
@@ -735,7 +776,9 @@ final class ComposeViewModel {
             },
             encrypt: encrypt,
             sign: sign,
-            idempotencyKey: idempotencyKey
+            idempotencyKey: idempotencyKey,
+            replyToMessageId: replyToMessageId,
+            replyToMailbox: replyToMailbox
         )
     }
 
@@ -747,6 +790,7 @@ final class ComposeViewModel {
         // This attempt's outcome is the only one that counts: an earlier
         // refusal must not outlive it and keep a stale dialog answerable.
         pendingPickup = nil
+        pendingUnthreaded = nil
 
         let outcome = await sendEmail(email)
         if case .mayHaveBeenSent = outcome {} else {
@@ -801,6 +845,9 @@ final class ComposeViewModel {
             errorMessage = message
         case .failure(let message):
             errorMessage = message
+        case .replyThreadingRefused(let reason):
+            pendingUnthreaded = PendingUnthreaded(reason: reason, email: email)
+            errorMessage = nil
         }
     }
 
@@ -874,6 +921,14 @@ final class ComposeViewModel {
             errorMessage = "Couldn't encrypt this message: \(message)"
         case .sendFailed(let message):
             errorMessage = "Couldn't send this message: \(message)"
+        case .mayHaveBeenSent(let detail):
+            // As on the plain path: Send stays off until the user has checked
+            // Sent and chosen Send Again.
+            sendOutcomeUnknown = true
+            errorMessage = """
+            This message may have been sent — the server didn't confirm it (\(detail)). \
+            Check your Sent folder before sending it again.
+            """
         // Both converted-account refusals mean the keys on this device are no
         // longer the account's current ones; each says why, and both name the
         // only remedy. Not retryable as-is.
@@ -1029,6 +1084,10 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
     /// message, not a quote, so no signature goes above it.
     var bodyIsExternal = false
     var kind: ComposeKind = .new
+    /// A reply's answered message (`Email.serverId` and its folder), so the
+    /// relay can thread it. Nil for anything that is not a reply.
+    var replyToMessageId: String?
+    var replyToMailbox: String?
 
     init(
         id: UUID = UUID(),
@@ -1064,6 +1123,8 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
         body = try container.decodeIfPresent(String.self, forKey: .body) ?? ""
         bodyIsExternal = try container.decodeIfPresent(Bool.self, forKey: .bodyIsExternal) ?? false
         kind = try container.decodeIfPresent(ComposeKind.self, forKey: .kind) ?? .new
+        replyToMessageId = try container.decodeIfPresent(String.self, forKey: .replyToMessageId)
+        replyToMailbox = try container.decodeIfPresent(String.self, forKey: .replyToMailbox)
     }
 
     /// The body compose opens with: the signature for this kind, if any,
@@ -1081,12 +1142,17 @@ struct ComposeDraft: Codable, Hashable, Identifiable, Sendable {
     /// Reply to the sender — or, on a message we sent (`ownAddresses` holds
     /// its sender), to whoever it went to, as Apple Mail does.
     static func reply(to email: Email, ownAddresses: [String]) -> ComposeDraft {
-        ComposeDraft(
+        var draft = ComposeDraft(
             to: replyRecipients(of: email, own: normalized(ownAddresses)).joined(separator: ", "),
             subject: prefixed("Re:", email.subject),
             body: quotedBody(of: email),
             kind: .reply
         )
+        if !email.serverId.isEmpty {
+            draft.replyToMessageId = email.serverId
+            draft.replyToMailbox = email.folder.isEmpty ? nil : email.folder
+        }
+        return draft
     }
 
     /// Reply as above, Cc'ing everyone else on the original To/Cc — minus

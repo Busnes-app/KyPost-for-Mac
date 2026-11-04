@@ -91,6 +91,45 @@ final class ContactsViewModel {
     /// than half of the linked cards at once.
     var withheldCardDeletes: Int { repository.health.withheldCardDeletes }
 
+    /// Contacts kept from the account this device was paired to before, while
+    /// the user has not said whether to bring them (owner Q1); nil otherwise.
+    var keptFromAnotherAccount: Int? { repository.health.keptFromAnotherAccount }
+    /// The paired server's host, for the question.
+    var pairedServerName: String { repository.pairedRelay?.name ?? "" }
+    /// Kept contact changes that never reached a server, counted when the
+    /// removal question opens (`prepareRemoveKept`).
+    private(set) var keptUnsynced = 0
+
+    func prepareRemoveKept() async {
+        keptUnsynced = await repository.unsyncedChangeCount()
+    }
+
+    /// "Bring them": they go up to the paired account with the next sync.
+    func bringKeptContacts() async {
+        do {
+            try await repository.bringKeptContactsToPairedAccount()
+        } catch {
+            statusMessage = "Couldn't bring the contacts: \(error.localizedDescription)"
+            return
+        }
+        await sync()
+    }
+
+    /// "Remove them": as Remove Pairing's option does.
+    func removeKeptContacts() async {
+        do {
+            try await repository.removeContactsFromThisDevice()
+        } catch let incomplete as ContactRemovalIncomplete {
+            await sync()
+            statusMessage = incomplete.message
+            return
+        } catch {
+            statusMessage = "Couldn't remove the contacts: \(error.localizedDescription)"
+            return
+        }
+        await sync()
+    }
+
     /// For callers that need contacts but aren't the contact list. On iOS
     /// nothing loads them until the Contacts tab is opened, so compose would
     /// otherwise autocomplete against an empty book on a fresh launch.
@@ -145,6 +184,10 @@ final class ContactsViewModel {
             await load()
         } catch ContactSyncError.notPaired {
             statusMessage = "Pair this device to sync contacts."
+        } catch ContactSyncError.awaitingAccountChoice {
+            // The banner asks; nothing failed.
+            statusMessage = nil
+            await load()
         } catch {
             statusMessage = "Sync failed: \(error.localizedDescription)"
         }

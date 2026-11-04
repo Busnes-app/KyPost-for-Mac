@@ -52,8 +52,10 @@ Commands and unlinked file paths below are relative to the repository root.
   not spend your attempts. A wipe that cannot finish says which parts it
   could not remove, keeps the app locked, retries at the next launch, and
   after three failed attempts (the first run and two retries) blocks the app
-  behind a "reinstall to clear this" screen rather than presenting a clean
-  first-run app over data that is still here. "Reset KyPost on This Device"
+  behind a recovery screen rather than presenting a clean first-run app over
+  data that is still here. That screen names what is left, says what to fix
+  (for cards in Contacts: allow Contacts access), and
+  offers Try Again, which runs the wipe once more. "Reset KyPost on This Device"
   on the lock screen is the same wipe.
 - **Hostile Location Protection** — keeps no mail, contacts, or attachments
   on the device. All data stays in memory and reloads from your server,
@@ -72,11 +74,13 @@ Commands and unlinked file paths below are relative to the repository root.
 - **Always on**: certificate pinning. Pairing pins the relay's key on the
   pairing's own connection, before any credential is sent: the link's `pin=`
   when it has one, otherwise the key that first handshake presents. A pairing
-  that cannot read the key fails. The app never re-pins silently afterward,
-  and a link cannot replace a stored pin. The pin is bound to its host and
-  fails closed: a key the app cannot hash, or a pin it cannot read from the
-  Keychain, refuses the connection. If the certificate changes, remove the
-  pairing in Settings → Connection and pair again. Relay responses are never
+  that cannot read the key fails. The app never re-pins silently afterward.
+  A link can replace a stored pin only for the account already paired, and
+  only after you confirm the warning that the server's certificate changed.
+  The pin is bound to its host and fails closed: a key the app cannot hash,
+  or a pin it cannot read from the Keychain, refuses the connection. If the
+  certificate is renewed, open a new pairing link from your KyPost web page
+  and confirm; your key, mail and settings stay. Relay responses are never
   cached on disk. The app also applies these protections. Sender HTML
   renders with JavaScript off and remote content blocked: subresource loading
   is off and a WebKit content rule list refuses every load the message makes

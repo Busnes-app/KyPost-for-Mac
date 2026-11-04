@@ -56,8 +56,8 @@ router, and `scenePhase == .active` makes it check for KyAuth's response.
 Protection turns on and at every launch while it is on (`PushLifecycle.onLaunch`).
 A `UserDefaults`-backed store that goes memory-only under the mode erases its
 persisted copy there; switching reads to memory does not remove it. Stores that
-describe the account (keyword settings, notification and contact cursors,
-pending contact deletes, verified keys, system-contact links) are built on
+describe the account (keyword settings, notification and contact cursors
+with the contacts' account record, pending contact deletes, verified keys, system-contact links) are built on
 `SingletonGraph.hostileMemoryDefaults` (`MemoryOnlyDefaults`) under the mode —
 the graph is rebuilt on every switch, so the choice is made once, at
 construction. A new account-describing store joins that list and the erase.
@@ -175,7 +175,9 @@ intact and the wipe landed a few hundred milliseconds later.
   notice stored there would live in), and rebuilds last — which is what closes
   the SwiftData file descriptors on the store the wipe unlinked.
 - A verdict of `.settled(.incomplete(_, willRetry: false))` blocks the whole
-  app behind `ManualRecoveryView`. Entry points that never present a window
+  app behind `ManualRecoveryView`, whose Try Again reruns
+  `performSecurityWipe` as a new episode. It is the only way out on macOS:
+  deleting the app leaves its container, and the markers, in place. Entry points that never present a window
   guard on `securityWipe.blockedByAbandonedWipe` themselves — currently
   `PushNotificationDispatcher.handleIncoming`, `presentLocally`,
   `presentMfaLocally`, `deliveredRemotePushes`, the KyIdentity sign-on

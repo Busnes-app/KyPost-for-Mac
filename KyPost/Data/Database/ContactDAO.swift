@@ -95,6 +95,36 @@ actor ContactDAO {
         try modelContext.save()
     }
 
+    func count() throws -> Int {
+        try modelContext.fetchCount(FetchDescriptor<ContactEntity>())
+    }
+
+    /// The user brought the contacts kept from another account into the
+    /// paired one (owner Q1): every row is sent again as new. Their uids
+    /// were the other server's. That answer is the consent for these rows,
+    /// synced ones and imports stamped for the other server alike, so they
+    /// are marked made in KyPost. Quarantined and legacy rows, whose origin
+    /// is unknown, still never upload.
+    func adoptForAnotherAccount() throws {
+        for entity in try modelContext.fetch(FetchDescriptor<ContactEntity>()) {
+            let unknownOrigin = entity.uid == nil
+                && (entity.importConsent == nil
+                    || entity.importConsent == Contact.quarantined
+                    || entity.importConsent == Contact.legacyImport)
+            if !unknownOrigin {
+                entity.importConsent = Contact.createdInKyPost
+            }
+            entity.uid = nil
+            entity.needsSync = true
+            // Group ids and the photo reference name the other server's
+            // objects, which this one does not have.
+            entity.groupIDs = []
+            entity.photoRef = nil
+            entity.avatarUrl = nil
+        }
+        try modelContext.save()
+    }
+
     /// Stamps the uid-less rows among `localIds` whose origin is unknown
     /// (no `importConsent`, or `Contact.quarantined`) with `stamp`.
     func stampImports(localIds: Set<UUID>, stamp: String) throws {

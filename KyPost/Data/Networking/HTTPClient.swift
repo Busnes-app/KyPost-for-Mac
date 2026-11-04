@@ -57,7 +57,7 @@ enum NetworkError: Error, Equatable, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .certificateMismatch:
-            String(localized: "The server's security certificate changed and no longer matches this pairing. If you rotated your server's certificate, remove the pairing in Settings → Connection and re-pair; otherwise the connection may be intercepted.")
+            String(localized: "The server's security certificate changed and no longer matches this pairing. If your server's certificate was renewed, open a new pairing link from your KyPost web page (Settings → Security → Devices) to confirm it; otherwise the connection may be intercepted.")
         case .pinUnreadable:
             String(localized: "KyPost couldn't read this server's certificate pin from the Keychain, so it didn't connect. Unlock this device and try again.")
         case .certificateRefused:
@@ -279,18 +279,23 @@ final class HTTPClient: Sendable {
 
     /// - Parameter timeout: this request's idle timeout; the session's
     ///   (60 s) when nil.
+    /// - Parameter refusal: reads a non-2xx status and its body before the
+    ///   usual mapping, for an endpoint whose refusals differ only by body
+    ///   text on a status that otherwise drops it (the reply-threading
+    ///   refusals on `/api/mail/send`). Nil keeps the usual error.
     func post<Response: Decodable>(
         _ type: Response.Type,
         url: URL,
         query: [URLQueryItem] = [],
         headers: [String: String] = [:],
         jsonBody: some Encodable,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        refusal: ((Int, Data) -> Error?)? = nil
     ) async throws -> Response {
-        try await send(
-            type, method: "POST", url: url, query: query, headers: headers,
-            jsonBody: jsonBody, timeout: timeout
+        let request = try jsonRequest(
+            method: "POST", url: url, query: query, headers: headers, jsonBody: jsonBody, timeout: timeout
         )
+        return try await decode(executeWithStatus(request, refusal: refusal).data)
     }
 
     func put<Response: Decodable>(
@@ -396,7 +401,8 @@ final class HTTPClient: Sendable {
 
     private func executeWithStatus(
         _ request: URLRequest,
-        streamingUpTo limit: Int? = nil
+        streamingUpTo limit: Int? = nil,
+        refusal: ((Int, Data) -> Error?)? = nil
     ) async throws -> (data: Data, status: Int) {
         let data: Data
         let response: URLResponse
@@ -413,6 +419,9 @@ final class HTTPClient: Sendable {
         }
         guard let http = response as? HTTPURLResponse else {
             throw NetworkError.transport(description: "Non-HTTP response")
+        }
+        if !(200..<300).contains(http.statusCode), let error = refusal?(http.statusCode, data) {
+            throw error
         }
         if let error = NetworkError.from(
             statusCode: http.statusCode,

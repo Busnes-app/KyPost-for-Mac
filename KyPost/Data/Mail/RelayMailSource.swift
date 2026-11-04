@@ -357,6 +357,9 @@ struct RelaySendRequest: Encodable, Equatable, Sendable {
     var from: String?
     /// An RSVP. Omitted on every other send.
     var calendarReply: RelayCalendarReplyDTO?
+    /// Reply threading, send only; omitted when nil.
+    var replyToMessageId: String?
+    var replyToMailbox: String?
 
     init(from email: OutgoingEmail) {
         to = email.to.joined(separator: ", ")
@@ -371,6 +374,8 @@ struct RelaySendRequest: Encodable, Equatable, Sendable {
         encrypt = email.encrypt ? true : nil
         sign = email.sign ? true : nil
         allowPickupFallback = email.encrypt && email.allowPickupFallback ? true : nil
+        replyToMessageId = email.replyToMessageId
+        replyToMailbox = email.replyToMessageId == nil ? nil : email.replyToMailbox
     }
 
     /// An RSVP: plain text, and never a PGP flag — the relay refuses
@@ -631,13 +636,17 @@ final class RelayMailSource: MailSource {
         if let key = email.idempotencyKey, !key.isEmpty {
             headers["Idempotency-Key"] = key
         }
+        let refusal: ((Int, Data) -> Error?)? = email.replyToMessageId == nil
+            ? nil
+            : { Self.replyThreadingRefusal(status: $0, body: $1) }
         do {
             let response = try await httpClient.post(
                 RelaySendResponse.self,
                 url: try endpoint("api/mail/send"),
                 headers: headers,
                 jsonBody: RelaySendRequest(from: email),
-                timeout: email.attachments.isEmpty ? nil : Self.sendWithAttachmentsTimeout
+                timeout: email.attachments.isEmpty ? nil : Self.sendWithAttachmentsTimeout,
+                refusal: refusal
             )
             return response.warning ?? ""
         } catch NetworkError.conflict(let body) {
@@ -654,6 +663,8 @@ final class RelayMailSource: MailSource {
         plain.encrypt = false
         plain.sign = false
         plain.allowPickupFallback = false
+        plain.replyToMessageId = nil
+        plain.replyToMailbox = nil
         // {"ok": true} only: a draft the user believes saved but is not would
         // be lost when the window closes.
         let response = try await httpClient.post(
@@ -678,6 +689,24 @@ final class RelayMailSource: MailSource {
             jsonBody: RelaySendRequest(calendarReply: draft)
         )
         return response.calendarReply == true
+    }
+
+    /// The relay's reply-threading refusals (KyPost-Server #352), all sent
+    /// before any delivery. Matched whole, as Android does: another 502 on
+    /// this endpoint can follow a delivery and quote SMTP text, so a looser
+    /// match could offer to re-send mail that already went out. A reworded
+    /// refusal only loses the offer.
+    static let replyThreadingRefusals: [Int: Set<String>] = [
+        400: ["invalid replyToMessageId; refresh the mailbox", "invalid replyToMailbox"],
+        404: ["the message being replied to was not found; nothing was sent"],
+        502: ["could not read the message being replied to; nothing was sent"],
+    ]
+
+    static func replyThreadingRefusal(status: Int, body: Data) -> Error? {
+        let text = String(decoding: body.prefix(NetworkError.maxConflictBodyBytes), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard replyThreadingRefusals[status]?.contains(text) == true else { return nil }
+        return MailSourceError.replyThreadingRefused(text)
     }
 
     /// Which PGP refusal a relay 409 body represents, or nil for an ordinary

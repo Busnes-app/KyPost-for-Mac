@@ -15,6 +15,22 @@ import os
 enum ContactSyncError: Error, Equatable {
     /// Contact sync uses relay auth; requires a stored pairing.
     case notPaired
+    /// Contacts kept from another account wait for the user's answer
+    /// (`ContactSyncHealth.keptFromAnotherAccount`). A state, not a failure.
+    case awaitingAccountChoice
+}
+
+/// `removeContactsFromThisDevice` cleared the contacts but not all of this.
+struct ContactRemovalIncomplete: Error, Equatable {
+    var leftovers: [String]
+    /// Cards KyPost created are still in Contacts; their links stay.
+    var cardsLeft = false
+
+    var message: String {
+        let removed = String(localized: "Contacts removed, but not: \(leftovers.joined(separator: ", ")).")
+        guard cardsLeft else { return removed }
+        return removed + " " + String(localized: "To remove the cards, allow KyPost to access Contacts, then use Remove Exported Contacts in Settings.")
+    }
 }
 
 struct ContactSyncSummary: Equatable, Sendable {
@@ -206,6 +222,9 @@ final class ContactSyncRepository {
             // Not paired is a state, not a failure: nothing was tried.
             await refreshPendingSummary()
             throw ContactSyncError.notPaired
+        } catch ContactSyncError.awaitingAccountChoice {
+            await refreshPendingSummary()
+            throw ContactSyncError.awaitingAccountChoice
         } catch is CancellationError {
             await refreshPendingSummary()
             throw CancellationError()
@@ -278,6 +297,7 @@ final class ContactSyncRepository {
         guard let pairing = try securePairingStore.loadPairing() else {
             throw ContactSyncError.notPaired
         }
+        try await checkAccount(of: pairing)
         let auth = RelayAuth(pairing: pairing)
         // Every request below goes to this relay, so imports are checked
         // against it, not whatever is paired by the time one is sent.
@@ -390,6 +410,110 @@ final class ContactSyncRepository {
             applied: applied,
             newCursor: cursorStore.lastCursor
         )
+    }
+
+    // MARK: - Change of account (owner Q1)
+
+    private static func accountKey(_ pairing: Pairing) -> String {
+        "\(pairing.sub)\n\(pairing.srv)"
+    }
+
+    /// Before any request: contacts synced with another account never reach
+    /// this one unasked. The cursor is always reset on a change of account
+    /// (it is a position in the other account's history). With contacts or
+    /// deletes still held, nothing is sent or pulled until the user answers
+    /// "Bring your N contacts into …?". Re-pairing the same account changes
+    /// nothing.
+    private func checkAccount(of pairing: Pairing) async throws {
+        let account = Self.accountKey(pairing)
+        if let owner = cursorStore.account, owner != account {
+            cursorStore.reset()
+            cursorStore.createsInFlight = false
+            let held = try await contactDAO.count()
+            if held > 0 {
+                health.recordKeptFromAnotherAccount(held)
+                throw ContactSyncError.awaitingAccountChoice
+            }
+            // Deletes of the other account's contacts mean nothing here.
+            pendingDeletesStore.clear()
+            verifiedKeyStore?.clear()
+        }
+        cursorStore.account = account
+        health.recordKeptFromAnotherAccount(nil)
+    }
+
+    /// Records the paired account as the contacts' owner when none is on
+    /// record yet (a build before this existed), so leaving it is noticed.
+    /// Run before an unpair or an account replacement clears the pairing.
+    func recordAccountIfUnknown() {
+        // Read without the device secret, which a locked gate withholds.
+        guard cursorStore.account == nil,
+              let account = (try? securePairingStore.loadAccount()) ?? nil
+        else { return }
+        cursorStore.account = "\(account.sub)\n\(account.srv)"
+    }
+
+    /// Yes: the kept contacts become the paired account's and go up as new
+    /// ones on the next sync, under the normal consent rules
+    /// (`ContactDAO.adoptForAnotherAccount`). The other account's deletes and
+    /// verified-key memory (keyed by its uids) are dropped.
+    func bringKeptContactsToPairedAccount() async throws {
+        guard let pairing = try securePairingStore.loadPairing() else {
+            throw ContactSyncError.notPaired
+        }
+        try await contactDAO.adoptForAnotherAccount()
+        pendingDeletesStore.clear()
+        verifiedKeyStore?.clear()
+        cursorStore.reset()
+        cursorStore.createsInFlight = false
+        cursorStore.account = Self.accountKey(pairing)
+        health.recordKeptFromAnotherAccount(nil)
+        await refreshPendingSummary()
+    }
+
+    /// No, or Remove Pairing's "remove contacts": this device's contacts,
+    /// their queued deletes, cursor, groups, photos, and the cards KyPost
+    /// created in Apple Contacts (`removeAllExported`; the user's own cards
+    /// stay). Whatever is paired now owns the empty book.
+    ///
+    /// Waits for a sync in flight, so its answer cannot refill the book.
+    /// Throws `ContactRemovalIncomplete` after clearing what it could when
+    /// cards KyPost created stay in Contacts (no access, or refused); their
+    /// links stay, so Settings' Remove Exported Contacts can finish later.
+    func removeContactsFromThisDevice() async throws {
+        _ = try? await inFlightSync?.value
+        _ = await systemContactsExporter?.removeAllExported()
+        try await contactDAO.clearAll()
+        var leftovers: [String] = []
+        do {
+            try await groupDAO?.clearAll()
+        } catch {
+            leftovers.append(String(localized: "contact groups"))
+        }
+        if photoCache?.removeAll() == false {
+            leftovers.append(String(localized: "contact photos"))
+        }
+        pendingDeletesStore.clear()
+        verifiedKeyStore?.clear()
+        cursorStore.reset()
+        cursorStore.createsInFlight = false
+        cursorStore.account = ((try? securePairingStore.loadPairing()) ?? nil).map(Self.accountKey)
+        health.recordKeptFromAnotherAccount(nil)
+        await refreshPendingSummary()
+        let cardsLeft = systemContactsExporter?.hasExportedContacts() == true
+        if cardsLeft {
+            leftovers.append(String(localized: "cards KyPost added to Contacts"))
+        }
+        guard leftovers.isEmpty else {
+            throw ContactRemovalIncomplete(leftovers: leftovers, cardsLeft: cardsLeft)
+        }
+    }
+
+    /// Every contact change this device holds that never reached a server,
+    /// sendable or not: what removing the contacts would lose.
+    func unsyncedChangeCount() async -> Int {
+        let rows = (try? await contactDAO.listPendingSync().count) ?? 0
+        return rows + pendingDeletesStore.all().count
     }
 
     /// The relay answers 413 above this many changes in one request

@@ -433,11 +433,18 @@ final class SystemContactsExporter {
         }
     }
 
-    /// Incremental hook for a single delete; only linked (app-created) cards.
+    /// Incremental hook for a single delete. A card the app only adopted
+    /// (`userOwned`) is the user's: the link is forgotten and the card kept,
+    /// as the full reconcile does.
     func exportDelete(localId: UUID) async {
         guard isSyncOn, isAuthorized else { return }
         await serialized {
             guard let link = self.linkStore.link(localId: localId) else { return Summary() }
+            if link.userOwned {
+                self.baselineStore.add(link.cnIdentifier)
+                self.linkStore.remove(localId: link.localId)
+                return Summary()
+            }
             var summary = Summary()
             await self.deleteLinked(link, summary: &summary)
             return summary
@@ -456,7 +463,9 @@ final class SystemContactsExporter {
     /// store returns without error.
     @discardableResult
     func removeAllExported() async -> Summary {
-        guard isAuthorized else { return Summary() }
+        // Forgetting a link to the user's own card needs no Contacts access;
+        // only deleting a card the app created does.
+        let authorized = isAuthorized
         let summary = await serialized {
             var summary = Summary()
             for link in self.linkStore.all() {
@@ -468,8 +477,8 @@ final class SystemContactsExporter {
                 if link.imported || link.userOwned {
                     self.baselineStore.add(link.cnIdentifier)
                     self.linkStore.remove(localId: link.localId)
-                } else {
-                    await self.deleteLinked(link, summary: &summary, keepingLinkOnFailure: true)
+                } else if authorized {
+                    await self.deleteLinked(link, summary: &summary)
                 }
             }
             return summary
@@ -700,21 +709,19 @@ final class SystemContactsExporter {
         }
     }
 
-    private func deleteLinked(
-        _ link: SystemContactLink,
-        summary: inout Summary,
-        keepingLinkOnFailure: Bool = false
-    ) async {
+    /// Forgets the link only once the card is gone. A refused delete keeps
+    /// it: the link is the only record that the card is still there, so a
+    /// later reconcile retries and a wipe reports it instead of claiming the
+    /// cards are gone. A card already gone is no refusal (the store returns).
+    private func deleteLinked(_ link: SystemContactLink, summary: inout Summary) async {
         do {
             try await store.delete(identifier: link.cnIdentifier)
             summary.deleted += 1
         } catch {
             summary.failed += 1
             Log.sync.error("System contacts delete failed: \(error.localizedDescription)")
-            if keepingLinkOnFailure { return }
+            return
         }
-        // The app contact is gone either way; a failed delete against this
-        // identifier would never succeed later, so drop the link too.
         linkStore.remove(localId: link.localId)
     }
 }

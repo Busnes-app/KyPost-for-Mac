@@ -333,7 +333,10 @@ final class SingletonGraph {
         // account left here, exactly as an unpair does. Weak: the graph owns
         // the service.
         service.onAccountReplaced = { [weak self] in
-            await self?.makeAccountTeardown().run() ?? false
+            // The kept contacts are the account being left's; the next sync
+            // asks before uploading them to the new one (owner Q1).
+            self?.contactSyncRepository.recordAccountIfUnknown()
+            return await self?.makeAccountTeardown().run() ?? false
         }
         return service
     }()

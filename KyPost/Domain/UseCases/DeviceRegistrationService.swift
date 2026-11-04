@@ -211,14 +211,36 @@ final class DeviceRegistrationService {
     /// certificate pin and delivery settings only if registration succeeds
     /// (spec §1 flow). Concurrent calls with the same tokens share one
     /// registration.
+    ///
+    /// `allowingRepin`: the user confirmed the re-pin warning for this link
+    /// (`linkRepinsStoredPin`). Only then may a link pin replace the stored
+    /// one, and only for the account already paired (owner Q2 A).
     func pair(
         params: PairingParams,
         deviceToken: String,
-        deviceId: String? = nil
+        deviceId: String? = nil,
+        allowingRepin: Bool = false
     ) async -> RegistrationOutcome {
-        await deduplicated(key: "pair|\(params.pt)|\(deviceToken)") {
-            await self.performPair(params: params, deviceToken: deviceToken, deviceId: deviceId)
+        await deduplicated(key: "pair|\(params.pt)|\(deviceToken)|\(allowingRepin)") {
+            await self.performPair(
+                params: params, deviceToken: deviceToken, deviceId: deviceId, allowingRepin: allowingRepin
+            )
         }
+    }
+
+    /// Whether pairing `params` would replace this device's pin for the
+    /// account it is already paired to: same `sub` and `srv`, a stored pin,
+    /// and a link pin that differs. The confirm screen then warns, and only
+    /// its confirmation passes `allowingRepin`. Any other pin conflict stays
+    /// refused.
+    func linkRepinsStoredPin(_ params: PairingParams) -> Bool {
+        guard let linkPin = params.pin,
+              let host = SecurePairingStore.host(ofServer: params.srv),
+              let pairing = try? securePairingStore.loadActivePairing(),
+              pairing.sub == params.sub, pairing.srv == params.srv,
+              let storedPin = try? securePairingStore.pinnedSpkiHash(forHost: host)
+        else { return false }
+        return linkPin != storedPin
     }
 
     /// Re-registration for safety (token refresh, app foreground, spec §3).
@@ -276,7 +298,10 @@ final class DeviceRegistrationService {
     /// connection already held to the pin the pairing will store:
     ///
     /// 1. A pin already stored for this host stays authoritative; a link pin
-    ///    that disagrees with it is refused, never swapped in.
+    ///    that disagrees with it is refused, never swapped in, unless the
+    ///    user confirmed the re-pin warning for the account already paired.
+    ///    The new pin then holds the connection exactly as a first pin does,
+    ///    and the registration's pairing token is what authenticates it.
     /// 2. A dedicated connection probes the relay. Its hash must match the
     ///    expected pin (the link's, else the stored one); with neither, the
     ///    probed hash becomes the pin (trust on first use). No hash, no
@@ -286,7 +311,8 @@ final class DeviceRegistrationService {
     private func performPair(
         params: PairingParams,
         deviceToken: String,
-        deviceId: String?
+        deviceId: String?,
+        allowingRepin: Bool
     ) async -> RegistrationOutcome {
         guard let srvURL = URL(string: params.srv),
               let host = SecurePairingStore.host(ofServer: params.srv)
@@ -302,8 +328,11 @@ final class DeviceRegistrationService {
             return .failure(String(localized: "KyPost couldn't read the certificate pin it holds for this server, so it didn't pair. Unlock this device and try again. Nothing was sent."))
         }
         if let linkPin = params.pin, let storedPin, linkPin != storedPin {
-            Log.app.error("Pairing link pin differs from the pin stored for this host; refusing.")
-            return .failure(Self.replacesStoredPinMessage(host: host))
+            guard allowingRepin, linkRepinsStoredPin(params) else {
+                Log.app.error("Pairing link pin differs from the pin stored for this host; refusing.")
+                return .failure(Self.replacesStoredPinMessage(host: host))
+            }
+            Log.app.notice("Re-pinning the paired account to the link's certificate key, as confirmed.")
         }
         let expectedPin = params.pin ?? storedPin
 
@@ -463,7 +492,7 @@ final class DeviceRegistrationService {
     }
 
     static func storedPinMismatchMessage(host: String) -> String {
-        String(localized: "\(host) presented a different certificate from the one this device pinned. If the server's certificate was replaced, remove the pairing in Settings → Connection first, then pair again. Otherwise the connection may be intercepted. Nothing was sent.")
+        String(localized: "\(host) presented a different certificate from the one this device pinned. If the server's certificate was renewed, open a new pairing link from your KyPost web page (Settings → Security → Devices); if it carries no certificate pin, remove the pairing in Settings → Connection first, then pair again. Otherwise the connection may be intercepted. Nothing was sent.")
     }
 
     /// Persists a successful registration. `pin` is the pin a pairing held
@@ -488,15 +517,25 @@ final class DeviceRegistrationService {
         //
         // Pairing another account over this one, without an unpair first,
         // replaces the account. An unreadable previous pairing counts as
-        // replaced: erasing a disposable cache is the safe direction.
-        let previous = Result { try securePairingStore.loadPairing() }
-        let previousPairing = try? previous.get()
-        let isSameAccount = previousPairing?.sub == params.sub && previousPairing?.srv == params.srv
+        // replaced: erasing a disposable cache is the safe direction. Read
+        // without the device secret, which the credential gate withholds
+        // while locked: a lock during a routine re-registration is not
+        // another account, and must not erase this one.
+        let previous = Result { try securePairingStore.loadAccount() }
+        let previousAccount = (try? previous.get()) ?? nil
+        let isSameAccount = previousAccount?.sub == params.sub && previousAccount?.srv == params.srv
+        // A re-registration speaks only for the account it started under. One
+        // that answers after another account was paired (or this one
+        // removed) stores nothing: it would erase that account and restore
+        // this one.
+        if attempt.pairing == nil, !isSameAccount {
+            return .failure(String(localized: "This device's pairing changed while it was refreshing, so nothing was saved."))
+        }
         let isRoutineReregistration = isSameAccount && pushSettingsStore.lastRegisteredAt != nil
         // The same account, paired before `lastRegisteredAt` existed.
         let isExistingPairingWithoutStamp = isSameAccount && pushSettingsStore.lastRegisteredAt == nil
         let replacesAccount: Bool = switch previous {
-        case .success(let pairing?): pairing.sub != params.sub || pairing.srv != params.srv
+        case .success(let account?): account.sub != params.sub || account.srv != params.srv
         case .success(nil): false
         case .failure: true
         }

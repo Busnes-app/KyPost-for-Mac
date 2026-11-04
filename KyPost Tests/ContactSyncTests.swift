@@ -1388,3 +1388,175 @@ private final class ResponseQueue: @unchecked Sendable {
         #expect(stored.needsSync, "the newer edit must stay queued for the next sync")
     }
 }
+
+
+// MARK: - Contacts across accounts (owner Q1)
+
+@MainActor
+@Suite struct ContactAccountChangeTests {
+    private struct Environment {
+        var repository: ContactSyncRepository
+        var dao: ContactDAO
+        var cursorStore: ContactCursorStore
+        var pendingDeletes: ContactPendingDeletesStore
+        var pairingStore: SecurePairingStore
+        var requests: Box<[URLRequest]>
+    }
+
+    private func makeEnvironment(json: String = #"{"cursor": 1}"#) throws -> Environment {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let pairingStore = try makePairedStore()
+        let db = try AppDatabase(inMemory: true)
+        let dao = ContactDAO(modelContainer: db.container)
+        let cursorStore = ContactCursorStore(defaults: defaults)
+        let pendingDeletes = ContactPendingDeletesStore(defaults: defaults)
+        let requests = Box<[URLRequest]>([])
+        let repository = ContactSyncRepository(
+            client: ContactSyncClient(httpClient: stubClient(json: json) { request in
+                requests.mutate { $0.append(request) }
+            }),
+            contactDAO: dao,
+            cursorStore: cursorStore,
+            pendingDeletesStore: pendingDeletes,
+            securePairingStore: pairingStore
+        )
+        return Environment(
+            repository: repository, dao: dao, cursorStore: cursorStore,
+            pendingDeletes: pendingDeletes, pairingStore: pairingStore, requests: requests
+        )
+    }
+
+    private func pairAnotherAccount(_ env: Environment, sub: String = "u2") throws {
+        try env.pairingStore.savePairing(Pairing(
+            sub: sub, deviceSecret: "s2", srv: server, registrationUrl: nil,
+            pairingToken: "pt-2", lastDeviceId: nil, pairedAt: Date()
+        ))
+    }
+
+    /// A's contacts, one synced and one created offline, are held when B is
+    /// paired: nothing is sent or pulled until the user answers, and the
+    /// cursor (a position in A's history) is gone.
+    @Test func anotherAccountAsksBeforeSendingAnything() async throws {
+        let env = try makeEnvironment()
+        try await env.repository.sync()
+        try await env.dao.upsert(contacts: [makeContact(uid: "a-1", name: "Synced")])
+        try await env.repository.saveContact(makeContact(name: "Offline", email: "o@example.com"))
+        env.cursorStore.advance(to: 7)
+        env.pendingDeletes.add("a-2")
+        try pairAnotherAccount(env)
+        env.requests.value = []
+
+        await #expect(throws: ContactSyncError.awaitingAccountChoice) {
+            try await env.repository.sync()
+        }
+
+        #expect(env.requests.value.isEmpty, "nothing reaches the new account unasked")
+        #expect(env.repository.health.keptFromAnotherAccount == 2)
+        #expect(env.cursorStore.lastCursor == 0)
+        #expect(env.repository.health.failures.count == 0, "a question, not a failure")
+    }
+
+    @Test func reSyncingTheSameAccountAsksNothing() async throws {
+        let env = try makeEnvironment()
+        try await env.repository.sync()
+        try await env.dao.upsert(contacts: [makeContact(uid: "a-1", name: "Synced")])
+
+        try await env.repository.sync()
+
+        #expect(env.repository.health.keptFromAnotherAccount == nil)
+    }
+
+    /// Bring them: each goes to B as a new contact, with A's uids and
+    /// deletes dropped.
+    @Test func bringingThemSendsThemAsNewContacts() async throws {
+        let env = try makeEnvironment()
+        try await env.repository.sync()
+        try await env.dao.upsert(contacts: [makeContact(uid: "a-1", name: "Synced", email: "s@example.com")])
+        env.pendingDeletes.add("a-2")
+        try pairAnotherAccount(env)
+        _ = try? await env.repository.sync()
+        env.requests.value = []
+
+        try await env.repository.bringKeptContactsToPairedAccount()
+        try await env.repository.sync()
+
+        #expect(env.repository.health.keptFromAnotherAccount == nil)
+        let push = try #require(env.requests.value.first { $0.httpMethod == "POST" })
+        let body = String(decoding: push.httpBody ?? Data(), as: UTF8.self)
+        #expect(body.contains("Synced"))
+        #expect(!body.contains("a-1"), "the other server's uid never reaches this one")
+        #expect(!body.contains("a-2"), "nor its deletes")
+    }
+
+    /// The answer is the consent: an import stamped for the old server goes
+    /// up too; a row of unknown origin still never does.
+    @Test func bringingThemSendsImportsButNeverUnknownOrigin() async throws {
+        let env = try makeEnvironment()
+        try await env.repository.sync()
+        var imported = makeContact(name: "Imported", email: "i@example.com", needsSync: true)
+        imported.importConsent = "old-relay-stamp"
+        var unknown = makeContact(name: "Unknown", email: "u@example.com", needsSync: true)
+        unknown.importConsent = Contact.quarantined
+        try await env.dao.upsert(contacts: [imported, unknown])
+        try pairAnotherAccount(env)
+        _ = try? await env.repository.sync()
+        env.requests.value = []
+
+        try await env.repository.bringKeptContactsToPairedAccount()
+        try await env.repository.sync()
+
+        let push = try #require(env.requests.value.first { $0.httpMethod == "POST" })
+        let body = String(decoding: push.httpBody ?? Data(), as: UTF8.self)
+        #expect(body.contains("Imported"))
+        #expect(!body.contains("Unknown"))
+    }
+
+    /// Remove them: the book is emptied and B's own contacts pull from 0.
+    @Test func removingThemEmptiesTheBookForTheNewAccount() async throws {
+        let env = try makeEnvironment()
+        try await env.repository.sync()
+        try await env.dao.upsert(contacts: [makeContact(uid: "a-1", name: "Synced")])
+        env.pendingDeletes.add("a-2")
+        try pairAnotherAccount(env)
+        _ = try? await env.repository.sync()
+        env.requests.value = []
+
+        try await env.repository.removeContactsFromThisDevice()
+        try await env.repository.sync()
+
+        #expect(try await env.dao.listAll().isEmpty)
+        #expect(env.pendingDeletes.all().isEmpty)
+        let pull = try #require(env.requests.value.first)
+        #expect(pull.httpMethod == "GET")
+        #expect(pull.url?.absoluteString.contains("since=0") == true)
+    }
+
+    /// An install from before the record existed adopts the paired account
+    /// rather than asking about its own contacts.
+    @Test func noRecordAdoptsThePairedAccount() async throws {
+        let env = try makeEnvironment()
+        try await env.dao.upsert(contacts: [makeContact(uid: "a-1", name: "Synced")])
+
+        try await env.repository.sync()
+
+        #expect(env.repository.health.keptFromAnotherAccount == nil)
+        #expect(env.cursorStore.account != nil)
+    }
+}
+
+/// Sol certification: an in-memory cache (the demo, Hostile Location
+/// Protection) never deletes the directory it would otherwise use.
+@Suite struct ContactPhotoCacheRemovalTests {
+    @Test func anInMemoryCacheRemovesNothingOnDisk() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "photos-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        #expect(ContactPhotoCache(directory: directory, inMemory: true).removeAll())
+        #expect(FileManager.default.fileExists(atPath: directory.path))
+
+        #expect(ContactPhotoCache(directory: directory).removeAll())
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
+    }
+}

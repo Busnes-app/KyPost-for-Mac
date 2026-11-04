@@ -668,6 +668,69 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == nil)
     }
 
+    /// Council pass 2: with the credential gate on, a lock while a routine
+    /// re-registration is out made the stored pairing unreadable, which was
+    /// taken for another account and erased this one (vault, pins, mail).
+    @Test func aLockDuringReregistrationIsNotAnAccountReplacement() async throws {
+        let gate = LockingSecretGate()
+        let env = try makeEnvironment(
+            client: stubClient(json: #"{"ok": true, "deviceId": "dev-8", "deviceSecret": "s-8"}"#) { _ in
+                gate.locked.mutate { $0 = true }
+            },
+            paired: true
+        )
+        env.pairingStore.secretGate = gate
+        let replaced = Box(false)
+        env.service.onAccountReplaced = { replaced.mutate { $0 = true }; return true }
+
+        let outcome = await env.service.reregisterIfPaired(deviceToken: "t2")
+
+        guard case .success = outcome else {
+            Issue.record("Expected success, got \(String(describing: outcome))")
+            return
+        }
+        #expect(!replaced.value, "a lock is not another account")
+        #expect(gate.written.value == "s-8")
+        #expect(try env.pairingStore.loadAccount()?.sub == "u1")
+    }
+
+    /// A re-registration that answers after another account was paired
+    /// stores nothing: it would erase that account and restore its own.
+    @Test func aReregistrationAnsweringAfterAnotherAccountPairedStoresNothing() async throws {
+        let (defaults, keychain) = scratchStores()
+        let pairingStore = SecurePairingStore(keychain: keychain)
+        try pairingStore.savePairing(makePairing())
+        let gate = HeldRequest()
+        let client = HTTPClient { request in
+            await gate.hold()
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"ok": true, "deviceId": "dev-1", "deviceSecret": "s-a"}"#.utf8), response)
+        }
+        let service = makeRegistrationService(
+            client: client, pairingStore: pairingStore, settings: PushSettingsStore(defaults: defaults)
+        )
+        let replaced = Box(false)
+        service.onAccountReplaced = { replaced.mutate { $0 = true }; return true }
+
+        let refresh = Task { await service.reregisterIfPaired(deviceToken: "t2") }
+        await gate.waitUntilHolding()
+        // Account B is paired while A's re-registration is on the wire.
+        try pairingStore.savePairing(Pairing(
+            sub: "u2", deviceSecret: "s2", srv: server, registrationUrl: nil,
+            pairingToken: "pt-2", lastDeviceId: "dev-2", pairedAt: Date()
+        ))
+        await gate.open()
+        let outcome = await refresh.value
+
+        guard case .failure = outcome else {
+            Issue.record("Expected a refusal, got \(String(describing: outcome))")
+            return
+        }
+        #expect(!replaced.value)
+        #expect(try pairingStore.loadPairing()?.sub == "u2")
+        #expect(try pairingStore.loadPairing()?.deviceSecret == "s2")
+    }
+
     @Test func reregistrationKeepsTheStoredPin() async throws {
         let env = try makeEnvironment(client: stubClient(json: #"{"ok": true, "deviceId": "dev-8"}"#), paired: true)
         try env.pairingStore.setPinnedSpkiHash("hash-first", forHost: relayHost)
@@ -757,6 +820,71 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         #expect(env.connections.opened.isEmpty, "refused before any connection")
         #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-old")
         #expect(try env.pairingStore.loadPairing()?.pairingToken == "pt")
+    }
+
+    /// Owner Q2 A: a certificate renewal that rotates the key is recovered
+    /// by opening a new link for the same account and confirming the
+    /// warning. The pin moves; nothing of the account is erased.
+    @Test func aConfirmedRepinForThePairedAccountPairsWithoutATeardown() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-9", "deviceSecret": "s-9"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true, observed: "hash-renewed")
+        try env.pairingStore.setPinnedSpkiHash("hash-old", forHost: relayHost)
+        let replaced = Box(false)
+        env.service.onAccountReplaced = { replaced.mutate { $0 = true }; return true }
+
+        var pinned = params
+        pinned.pin = "hash-renewed"
+        #expect(env.service.linkRepinsStoredPin(pinned))
+        let outcome = await env.service.pair(params: pinned, deviceToken: "t", allowingRepin: true)
+
+        guard case .success = outcome else {
+            Issue.record("Expected success, got \(outcome)")
+            return
+        }
+        #expect(env.connections.last?.initialPin == "hash-renewed")
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-renewed")
+        #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s-9")
+        #expect(!replaced.value, "a same-account re-pin must not run the account teardown")
+    }
+
+    /// The re-pin is the link's pin, held from the first handshake: a relay
+    /// presenting yet another key is still refused before anything is sent.
+    @Test func aConfirmedRepinStillHoldsTheConnectionToTheLinkPin() async throws {
+        let posts = Box<Int>(0)
+        let env = try makeEnvironment(client: stubClient { request in
+            if request.httpMethod == "POST" { posts.mutate { $0 += 1 } }
+        }, paired: true, observed: "hash-attacker")
+        try env.pairingStore.setPinnedSpkiHash("hash-old", forHost: relayHost)
+
+        var pinned = params
+        pinned.pin = "hash-renewed"
+        let outcome = await env.service.pair(params: pinned, deviceToken: "t", allowingRepin: true)
+
+        guard case .failure = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(posts.value == 0)
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-old")
+    }
+
+    /// Another account on the same host never re-pins, confirmed or not.
+    @Test func aRepinForAnotherAccountIsRefusedEvenWhenConfirmed() async throws {
+        let env = try makeEnvironment(client: stubClient(), paired: true, observed: "hash-renewed")
+        try env.pairingStore.setPinnedSpkiHash("hash-old", forHost: relayHost)
+
+        var other = PairingParams(sub: "u2", srv: server, pt: "pt-2")
+        other.pin = "hash-renewed"
+        #expect(!env.service.linkRepinsStoredPin(other))
+        let outcome = await env.service.pair(params: other, deviceToken: "t", allowingRepin: true)
+
+        guard case .failure = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(env.connections.opened.isEmpty, "refused before any connection")
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-old")
+        #expect(try env.pairingStore.loadPairing()?.sub == "u1")
     }
 
     @Test func aLinkPinMatchingTheStoredPinPairs() async throws {
@@ -1029,6 +1157,40 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         #expect(viewModel.state == .confirming(
             PendingPairingConfirmation(params: params, existingHost: URL(string: server)?.host)
         ))
+    }
+
+    /// The re-pin warning shows only for the paired account with a link pin
+    /// different from the stored one.
+    @Test func presentFlagsARepinOfThePairedAccount() throws {
+        let (defaults, keychain) = scratchStores()
+        let pairingStore = SecurePairingStore(keychain: keychain)
+        try pairingStore.savePairing(makePairing(), pinnedSpkiHash: "hash-old")
+        let viewModel = PushPairingViewModel(
+            registrationService: makeRegistrationService(
+                client: stubClient(),
+                pairingStore: pairingStore,
+                settings: PushSettingsStore(defaults: defaults)
+            ),
+            pushSettingsStore: PushSettingsStore(defaults: defaults),
+            securePairingStore: pairingStore
+        )
+        var renewed = params
+        renewed.pin = "hash-renewed"
+        viewModel.present(params: renewed)
+        guard case .confirming(let confirmation) = viewModel.state else {
+            Issue.record("Expected .confirming, got \(viewModel.state)")
+            return
+        }
+        #expect(confirmation.repinsCertificate)
+
+        var same = params
+        same.pin = "hash-old"
+        viewModel.present(params: same)
+        guard case .confirming(let unchanged) = viewModel.state else {
+            Issue.record("Expected .confirming, got \(viewModel.state)")
+            return
+        }
+        #expect(!unchanged.repinsCertificate)
     }
 
     @Test func pairFromPastedLinkAsksForConfirmationInsteadOfPairingImmediately() async throws {
@@ -1365,5 +1527,48 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
             matchDigits: "47"
         )
         #expect(outcome == .failure("That is not the number shown in the browser"))
+    }
+}
+
+/// A credential gate that withholds the secret once `locked` is set, as the
+/// app's does when the lock engages.
+final class LockingSecretGate: PairingSecretGate {
+    let locked = Box(false)
+    let written = Box<String?>(nil)
+
+    func read() throws -> String {
+        if locked.value { throw MailSourceError.credentialUnavailable }
+        return written.value ?? "s1"
+    }
+
+    func write(_ secret: String) throws { written.mutate { $0 = secret } }
+
+    func removeAll() -> [String] { [] }
+}
+
+/// Parks one request until the test opens it.
+private actor HeldRequest {
+    private var entered = false
+    private var opened = false
+    private var enteredWaiter: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func hold() async {
+        entered = true
+        enteredWaiter?.resume()
+        enteredWaiter = nil
+        guard !opened else { return }
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilHolding() async {
+        guard !entered else { return }
+        await withCheckedContinuation { enteredWaiter = $0 }
+    }
+
+    func open() {
+        opened = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
     }
 }

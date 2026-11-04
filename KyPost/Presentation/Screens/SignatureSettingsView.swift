@@ -5,7 +5,8 @@
 //  The mobile signature (`MailSignatureStore`): a Settings destination on
 //  iOS and a Settings pane on macOS. Kept on this device only; the web
 //  signature lives on the server and is never read here. Every change saves
-//  at once; a refused text is not saved and says why. Compose places the
+//  at once; a refused text saves nothing, says why, and holds the switches
+//  until it is fixed. Compose places the
 //  signature, never this screen.
 //
 
@@ -25,6 +26,9 @@ struct SignatureSettingsView: View {
             Section {
                 Toggle("Use a signature", isOn: $settings.isOn)
             }
+            // A refused text saves nothing (owner, Q4 B), so a switch moved
+            // now would show a state that is not stored.
+            .disabled(problem != nil)
             .listRowBackground(theme.panel)
 
             Section {
@@ -33,7 +37,7 @@ struct SignatureSettingsView: View {
                     .frame(minHeight: 120)
                     .accessibilityLabel("Signature text")
                 if let problem {
-                    StatusText(problem.message, kind: .danger, size: 12)
+                    StatusText(problem.message + " " + String(localized: "Nothing is saved, switches included, until the text is fixed."), kind: .danger, size: 12)
                 }
             } header: {
                 Text("Signature")
@@ -46,7 +50,7 @@ struct SignatureSettingsView: View {
                 Toggle("Add to replies", isOn: $settings.addToReplies)
                 Toggle("Add to forwards", isOn: $settings.addToForwards)
             }
-            .disabled(!settings.isOn)
+            .disabled(!settings.isOn || problem != nil)
             .listRowBackground(theme.panel)
         }
         .formStyle(.grouped)

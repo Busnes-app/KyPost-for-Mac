@@ -199,7 +199,9 @@ struct KyPostApp: App {
             // triggered at runtime by ten wrong PINs reaches this state without
             // the startup check ever having seen it, and the block must not wait
             // for a relaunch.
-            ManualRecoveryView(failedSteps: steps)
+            ManualRecoveryView(failedSteps: steps) {
+                await environment.performSecurityWipe()
+            }
         } else if environment.startupWipeVerdict == .pending {
             StartupGatePlaceholder()
         } else {

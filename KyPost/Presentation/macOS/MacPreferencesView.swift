@@ -32,7 +32,8 @@ struct MacPreferencesView: View {
         mailSignatureStore: SingletonGraph.shared.mailSignatureStore,
         pgpSendService: SingletonGraph.shared.pgpSendService,
         onUnpaired: { SingletonGraph.shared.inboxViewModel.forgetAccount() },
-        pairingDisplayOverride: SingletonGraph.shared.pairingDisplayOverride
+        pairingDisplayOverride: SingletonGraph.shared.pairingDisplayOverride,
+        contactSyncRepository: SingletonGraph.shared.contactSyncRepository
     )
 
     var body: some View {
@@ -119,7 +120,10 @@ private struct ConnectionPane: View {
                         Button("Paste Pairing Link…") { showPairingSheet = true }
                         Spacer()
                         Button("Remove Pairing", role: .destructive) {
-                            showUnpairConfirmation = true
+                            Task {
+                                await viewModel.prepareUnpair()
+                                showUnpairConfirmation = true
+                            }
                         }
                     } else {
                         // The native pairing screen, for the link the web
@@ -153,9 +157,12 @@ private struct ConnectionPane: View {
             Button("Unpair", role: .destructive) {
                 Task { await viewModel.unpair() }
             }
+            Button("Unpair and Remove Contacts", role: .destructive) {
+                Task { await viewModel.unpair(removingContacts: true) }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the device from your account's paired devices on the server and clears its local pairing and certificate pin. To pair again, open a new pairing link from KyPost on the web.")
+            Text("This removes the device from your account's paired devices on the server and clears its local pairing and certificate pin. To pair again, open a new pairing link from KyPost on the web.\n\n\(UnpairContactsNote.text(unsynced: viewModel.unsyncedContactChanges))")
         }
     }
 }

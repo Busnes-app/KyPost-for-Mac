@@ -221,7 +221,7 @@ Domain.
   root `fullScreenCover` cannot present over it:
   `ComposeView` overlays `UnlockView` on itself (navigation bar included) and
   blocks the swipe-down while locked. `ComposeViewModel` takes `isLocked` and
-  refuses send, pickup re-send, webmail hand-off and Save Draft while it is true, on both
+  refuses send, pickup and unthreaded re-sends, webmail hand-off and Save Draft while it is true, on both
   platforms. The lock also closes compose's own sheets and dialogs, which
   would otherwise sit above the cover.
 - **The signature is the mobile signature: on this device only**
@@ -234,7 +234,8 @@ Domain.
   follows the server's `config/signatures.go` text rules
   (`MailSignatureStore.problem`): at most 2000 Unicode scalars, no Cc control
   character except newline and tab, no bidi embedding/override/isolate
-  (U+202A–202E, U+2066–2069); a refused text saves nothing and says why.
+  (U+202A–202E, U+2066–2069); a refused text saves nothing, says why, and
+  disables the switches until it is fixed (owner Q4 B).
   Compose inserts it once at open (`ComposeDraft.initialBody`, by
   `ComposeDraft.kind`): web placement, typing line, blank line, signature,
   blank line, quote; no `-- `. Never into `.draft` (a saved or restored
@@ -540,6 +541,15 @@ Domain.
   (`PendingPickup.email`), flipping only `allowPickupFallback`. Rebuilding from
   live compose state risks a subtly different message; re-running the preflight
   wastes a round trip on a question the 409 already answered.
+- **A reply names the message it answers** (owner Q3 A, Android parity).
+  `ComposeDraft.reply`/`replyAll` carry `replyToMessageId`/`replyToMailbox`
+  (`Email.serverId`, `folder`) onto `/api/mail/send` only, never a draft save
+  or the client-encrypted path, and the relay adds the threading headers. Its
+  threading refusals (`RelayMailSource.replyThreadingRefusals`, matched whole:
+  another 502 can follow a delivery) sent nothing; compose shows "Send as a
+  new conversation?" (`pendingUnthreaded`), default Cancel, and only Send
+  anyway re-sends the refused `OutgoingEmail` without the reference, which
+  the window then drops for good.
 - **The preflight is a lower bound.** `/api/pgp/recipients/check` searches only
   the user's contacts, while the send path also runs WKD and keyserver
   discovery. Word it "no key on file", never "this will be sent in the clear".
@@ -554,7 +564,7 @@ Domain.
   `idempotencyKey`. Any definite answer mints a new key, so a corrected
   message is never the refused request's duplicate.
 - **Entry points own `isSending`, and claim it before their first `await`.**
-  `send`, `confirmPickupFallback`, `handOffToWebmail` and `saveDraft` set it
+  `send`, `confirmPickupFallback`, `confirmUnthreadedSend`, `handOffToWebmail` and `saveDraft` set it
   immediately after their `!isSending, !isSent, !didSend` guard; `deliver` and `handOff`
   never touch it (a nested `defer` would clear it early on the handoff path).
   With Encrypt on, the recipient preflight is a live round trip sitting right

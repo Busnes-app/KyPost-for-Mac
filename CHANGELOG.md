@@ -2,7 +2,39 @@
 
 ## Unreleased
 
+### Added
+
+- **Replies are threaded.** Reply and Reply All name the message they answer,
+  so recipients see them in the same conversation. If the server cannot link
+  a reply (the original moved or is gone), nothing is sent and KyPost asks
+  before sending it as a new conversation.
+- **A renewed server certificate no longer forces you to unpair.** Open a new
+  pairing link for the same account from your KyPost web page; KyPost warns
+  that the certificate changed and, once you confirm, keeps your key, mail and
+  settings.
+- **Contacts never move to another account unasked.** After pairing a
+  different account, KyPost asks "Bring your N contacts into …?" before
+  uploading anything. Remove Pairing offers "Unpair and Remove Contacts",
+  which warns about changes that have not synced.
+
 ### Fixed
+
+- **Locking the app while it refreshed its registration could erase the
+  account's key, pins, signature and mail** when "Require unlock for
+  notifications" was on. A late refresh can also no longer undo pairing a
+  different account.
+- **An on-device encrypted send with no answer from the server now says it
+  may have been sent**, instead of inviting a second send.
+- **A security wipe stuck on cards in Contacts can be retried** from the
+  recovery screen, which says what to fix. Before, the app stayed blocked for
+  good, and on a Mac reinstalling did not clear it.
+- **Deleting a contact no longer deletes the user's own Apple Contacts card**
+  that KyPost had only linked to, and a card whose delete is refused stays on
+  record for a later wipe.
+- **The reader shows an encrypted message's real subject** once it is
+  decrypted.
+- The signature switches are disabled while the signature text is refused,
+  since nothing is saved until the text is fixed.
 
 - **A message nested thousands of MIME levels deep no longer crashes the
   reader** when it is decrypted or verified. Parsing stops at 12 levels and

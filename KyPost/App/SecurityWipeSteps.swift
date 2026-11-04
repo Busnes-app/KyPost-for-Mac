@@ -77,12 +77,13 @@ enum SecurityWipeSteps {
         steps.append(WipeStep("deviceContactCards") {
             let exporter = graph.systemContactsExporter
             guard exporter.hasExportedContacts() else { return }
-            guard exporter.isAuthorized else {
-                throw WipeStepFailure("Contacts access is not granted, so exported cards cannot be removed")
-            }
+            // Links to the user's own cards go without Contacts access; only
+            // the cards KyPost created need it.
             let summary = await exporter.removeAllExported()
-            guard summary.failed == 0 else {
-                throw WipeStepFailure("\(summary.failed) exported contact cards could not be deleted")
+            guard !exporter.hasExportedContacts() else {
+                throw WipeStepFailure(exporter.isAuthorized
+                    ? "\(summary.failed) exported contact cards could not be deleted"
+                    : "Contacts access is not granted, so exported cards cannot be removed")
             }
         })
 
