@@ -165,7 +165,11 @@ extension CredentialGateService: PairingSecretGate {
 
     func write(_ secret: String) throws {
         try gatedStore.store(secret)
-        lockManager.cacheGatedSecret(secret)
+        // A re-registration can land after the lock engaged; the secret then
+        // waits behind user presence like any other, never in memory.
+        if !lockManager.isLocked {
+            lockManager.cacheGatedSecret(secret)
+        }
     }
 
     /// Unpair: the gated copy goes with the pairing.

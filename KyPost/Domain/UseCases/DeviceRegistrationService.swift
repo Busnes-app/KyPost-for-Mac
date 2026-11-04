@@ -517,15 +517,25 @@ final class DeviceRegistrationService {
         //
         // Pairing another account over this one, without an unpair first,
         // replaces the account. An unreadable previous pairing counts as
-        // replaced: erasing a disposable cache is the safe direction.
-        let previous = Result { try securePairingStore.loadPairing() }
-        let previousPairing = try? previous.get()
-        let isSameAccount = previousPairing?.sub == params.sub && previousPairing?.srv == params.srv
+        // replaced: erasing a disposable cache is the safe direction. Read
+        // without the device secret, which the credential gate withholds
+        // while locked: a lock during a routine re-registration is not
+        // another account, and must not erase this one.
+        let previous = Result { try securePairingStore.loadAccount() }
+        let previousAccount = (try? previous.get()) ?? nil
+        let isSameAccount = previousAccount?.sub == params.sub && previousAccount?.srv == params.srv
+        // A re-registration speaks only for the account it started under. One
+        // that answers after another account was paired (or this one
+        // removed) stores nothing: it would erase that account and restore
+        // this one.
+        if attempt.pairing == nil, !isSameAccount {
+            return .failure(String(localized: "This device's pairing changed while it was refreshing, so nothing was saved."))
+        }
         let isRoutineReregistration = isSameAccount && pushSettingsStore.lastRegisteredAt != nil
         // The same account, paired before `lastRegisteredAt` existed.
         let isExistingPairingWithoutStamp = isSameAccount && pushSettingsStore.lastRegisteredAt == nil
         let replacesAccount: Bool = switch previous {
-        case .success(let pairing?): pairing.sub != params.sub || pairing.srv != params.srv
+        case .success(let account?): account.sub != params.sub || account.srv != params.srv
         case .success(nil): false
         case .failure: true
         }
