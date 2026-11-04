@@ -146,7 +146,11 @@ struct PushPairingView: View {
                 .padding(12)
                 .frame(maxWidth: .infinity)
                 .background(theme.panel, in: RoundedRectangle(cornerRadius: Shape.field))
-            if let existingHost = confirmation.existingHost {
+            if confirmation.repinsCertificate {
+                // Owner wording (2026-11-04): a re-pin is never silent.
+                StatusText("This server's certificate changed since you paired. Only continue if you just opened this link from your own KyPost web page.", kind: .warning, size: 13)
+                    .multilineTextAlignment(.center)
+            } else if let existingHost = confirmation.existingHost {
                 StatusText("This replaces your current pairing with \(existingHost).", kind: .warning, size: 13)
                     .multilineTextAlignment(.center)
             }
@@ -154,7 +158,12 @@ struct PushPairingView: View {
                 Button("Cancel") { viewModel.reset() }
                     .buttonStyle(SecondaryButtonStyle())
                 Button("Pair") {
-                    Task { await viewModel.pair(params: confirmation.params) }
+                    Task {
+                        await viewModel.pair(
+                            params: confirmation.params,
+                            allowingRepin: confirmation.repinsCertificate
+                        )
+                    }
                 }
                 .buttonStyle(PrimaryButtonStyle())
             }

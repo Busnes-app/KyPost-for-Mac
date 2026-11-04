@@ -1017,7 +1017,13 @@ old sentence edited out.
 - **A pairing pins its own connection before anything is sent.** Pin
   expected = the link's `pin=`, else the pin stored for that host. A link pin
   differing from a stored one is refused (remove the pairing in Settings →
-  Connection first) — never swapped in. `RelayPairingConnection` (own
+  Connection first) — never swapped in — with one exception (owner Q2 A,
+  2026-11-04): a link for the account already paired (same `sub` and `srv`,
+  `linkRepinsStoredPin`) re-pins when the user confirms the confirm screen's
+  warning, "This server's certificate changed since you paired. Only continue
+  if you just opened this link from your own KyPost web page."; only that
+  Pair passes `allowingRepin`. No teardown: vault, mail and settings stay.
+  Another account, or a link without a pin, is still refused. `RelayPairingConnection` (own
   ephemeral session and delegate) probes; the probed hash must match the
   expected pin, or becomes the pin when there is none; no hash fails the
   pairing. The registration then rides that connection, held to that pin.

@@ -72,11 +72,13 @@ Commands and unlinked file paths below are relative to the repository root.
 - **Always on**: certificate pinning. Pairing pins the relay's key on the
   pairing's own connection, before any credential is sent: the link's `pin=`
   when it has one, otherwise the key that first handshake presents. A pairing
-  that cannot read the key fails. The app never re-pins silently afterward,
-  and a link cannot replace a stored pin. The pin is bound to its host and
-  fails closed: a key the app cannot hash, or a pin it cannot read from the
-  Keychain, refuses the connection. If the certificate changes, remove the
-  pairing in Settings → Connection and pair again. Relay responses are never
+  that cannot read the key fails. The app never re-pins silently afterward.
+  A link can replace a stored pin only for the account already paired, and
+  only after you confirm the warning that the server's certificate changed.
+  The pin is bound to its host and fails closed: a key the app cannot hash,
+  or a pin it cannot read from the Keychain, refuses the connection. If the
+  certificate is renewed, open a new pairing link from your KyPost web page
+  and confirm; your key, mail and settings stay. Relay responses are never
   cached on disk. The app also applies these protections. Sender HTML
   renders with JavaScript off and remote content blocked: subresource loading
   is off and a WebKit content rule list refuses every load the message makes

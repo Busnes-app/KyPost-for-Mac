@@ -36,6 +36,10 @@ enum PairingInstructions {
 struct PendingPairingConfirmation: Equatable, Sendable {
     let params: PairingParams
     let existingHost: String?
+    /// Pairing would re-pin the account already paired to a new certificate
+    /// key (`DeviceRegistrationService.linkRepinsStoredPin`). The screen
+    /// warns, and only Pair on that screen allows the re-pin.
+    var repinsCertificate = false
 }
 
 @Observable
@@ -87,7 +91,11 @@ final class PushPairingViewModel {
         // A new link replaces a pairing still registering or waiting.
         cancelPairing()
         notice = nil
-        state = .confirming(PendingPairingConfirmation(params: params, existingHost: currentPairedHost))
+        state = .confirming(PendingPairingConfirmation(
+            params: params,
+            existingHost: currentPairedHost,
+            repinsCertificate: registrationService.linkRepinsStoredPin(params)
+        ))
     }
 
     private var currentPairedHost: String? {
@@ -95,7 +103,7 @@ final class PushPairingViewModel {
         return URL(string: pairing.srv)?.host
     }
 
-    func pair(params: PairingParams) async {
+    func pair(params: PairingParams, allowingRepin: Bool = false) async {
         attempt += 1
         let attempt = attempt
         notice = nil
@@ -103,7 +111,9 @@ final class PushPairingViewModel {
         // Simulators never receive an APNs token; register with a placeholder
         // so pairing still completes (pull mode works without APNs).
         let token = pushSettingsStore.lastDeviceToken ?? "no-apns-token"
-        var outcome = await registrationService.pair(params: params, deviceToken: token)
+        var outcome = await registrationService.pair(
+            params: params, deviceToken: token, allowingRepin: allowingRepin
+        )
         if case .awaitingApproval(let approval) = outcome {
             guard attempt == self.attempt else { return }
             state = .awaitingApproval(approval)

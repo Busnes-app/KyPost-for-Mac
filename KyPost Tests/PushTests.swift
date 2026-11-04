@@ -759,6 +759,71 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         #expect(try env.pairingStore.loadPairing()?.pairingToken == "pt")
     }
 
+    /// Owner Q2 A: a certificate renewal that rotates the key is recovered
+    /// by opening a new link for the same account and confirming the
+    /// warning. The pin moves; nothing of the account is erased.
+    @Test func aConfirmedRepinForThePairedAccountPairsWithoutATeardown() async throws {
+        let json = #"{"ok": true, "deviceId": "dev-9", "deviceSecret": "s-9"}"#
+        let env = try makeEnvironment(client: stubClient(json: json), paired: true, observed: "hash-renewed")
+        try env.pairingStore.setPinnedSpkiHash("hash-old", forHost: relayHost)
+        let replaced = Box(false)
+        env.service.onAccountReplaced = { replaced.mutate { $0 = true }; return true }
+
+        var pinned = params
+        pinned.pin = "hash-renewed"
+        #expect(env.service.linkRepinsStoredPin(pinned))
+        let outcome = await env.service.pair(params: pinned, deviceToken: "t", allowingRepin: true)
+
+        guard case .success = outcome else {
+            Issue.record("Expected success, got \(outcome)")
+            return
+        }
+        #expect(env.connections.last?.initialPin == "hash-renewed")
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-renewed")
+        #expect(try env.pairingStore.loadPairing()?.deviceSecret == "s-9")
+        #expect(!replaced.value, "a same-account re-pin must not run the account teardown")
+    }
+
+    /// The re-pin is the link's pin, held from the first handshake: a relay
+    /// presenting yet another key is still refused before anything is sent.
+    @Test func aConfirmedRepinStillHoldsTheConnectionToTheLinkPin() async throws {
+        let posts = Box<Int>(0)
+        let env = try makeEnvironment(client: stubClient { request in
+            if request.httpMethod == "POST" { posts.mutate { $0 += 1 } }
+        }, paired: true, observed: "hash-attacker")
+        try env.pairingStore.setPinnedSpkiHash("hash-old", forHost: relayHost)
+
+        var pinned = params
+        pinned.pin = "hash-renewed"
+        let outcome = await env.service.pair(params: pinned, deviceToken: "t", allowingRepin: true)
+
+        guard case .failure = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(posts.value == 0)
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-old")
+    }
+
+    /// Another account on the same host never re-pins, confirmed or not.
+    @Test func aRepinForAnotherAccountIsRefusedEvenWhenConfirmed() async throws {
+        let env = try makeEnvironment(client: stubClient(), paired: true, observed: "hash-renewed")
+        try env.pairingStore.setPinnedSpkiHash("hash-old", forHost: relayHost)
+
+        var other = PairingParams(sub: "u2", srv: server, pt: "pt-2")
+        other.pin = "hash-renewed"
+        #expect(!env.service.linkRepinsStoredPin(other))
+        let outcome = await env.service.pair(params: other, deviceToken: "t", allowingRepin: true)
+
+        guard case .failure = outcome else {
+            Issue.record("expected a refusal, got \(outcome)")
+            return
+        }
+        #expect(env.connections.opened.isEmpty, "refused before any connection")
+        #expect(try env.pairingStore.pinnedSpkiHash(forHost: relayHost) == "hash-old")
+        #expect(try env.pairingStore.loadPairing()?.sub == "u1")
+    }
+
     @Test func aLinkPinMatchingTheStoredPinPairs() async throws {
         let json = #"{"ok": true, "deviceId": "dev-9", "deviceSecret": "s-9"}"#
         let env = try makeEnvironment(client: stubClient(json: json), paired: true, observed: "hash-same")
@@ -1029,6 +1094,40 @@ private func makePairing(lastDeviceId: String? = "dev-1", deviceSecret: String =
         #expect(viewModel.state == .confirming(
             PendingPairingConfirmation(params: params, existingHost: URL(string: server)?.host)
         ))
+    }
+
+    /// The re-pin warning shows only for the paired account with a link pin
+    /// different from the stored one.
+    @Test func presentFlagsARepinOfThePairedAccount() throws {
+        let (defaults, keychain) = scratchStores()
+        let pairingStore = SecurePairingStore(keychain: keychain)
+        try pairingStore.savePairing(makePairing(), pinnedSpkiHash: "hash-old")
+        let viewModel = PushPairingViewModel(
+            registrationService: makeRegistrationService(
+                client: stubClient(),
+                pairingStore: pairingStore,
+                settings: PushSettingsStore(defaults: defaults)
+            ),
+            pushSettingsStore: PushSettingsStore(defaults: defaults),
+            securePairingStore: pairingStore
+        )
+        var renewed = params
+        renewed.pin = "hash-renewed"
+        viewModel.present(params: renewed)
+        guard case .confirming(let confirmation) = viewModel.state else {
+            Issue.record("Expected .confirming, got \(viewModel.state)")
+            return
+        }
+        #expect(confirmation.repinsCertificate)
+
+        var same = params
+        same.pin = "hash-old"
+        viewModel.present(params: same)
+        guard case .confirming(let unchanged) = viewModel.state else {
+            Issue.record("Expected .confirming, got \(viewModel.state)")
+            return
+        }
+        #expect(!unchanged.repinsCertificate)
     }
 
     @Test func pairFromPastedLinkAsksForConfirmationInsteadOfPairingImmediately() async throws {
