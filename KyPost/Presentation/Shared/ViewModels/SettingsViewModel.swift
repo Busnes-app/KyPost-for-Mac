@@ -101,6 +101,12 @@ final class SettingsViewModel {
     private let pairingDisplayOverride: PairingDisplay?
     /// `AccountTeardown.legacyHTTPCache`.
     private let legacyHTTPCache: URLCache
+    /// For Remove Pairing's optional "remove contacts" (owner Q1). Nil in
+    /// tests that do not exercise it.
+    private let contactSyncRepository: ContactSyncRepository?
+    /// Contact changes not yet synced, counted when the unpair question
+    /// opens (`prepareUnpair`), so it can warn before they are removed.
+    private(set) var unsyncedContactChanges = 0
 
     init(
         securePairingStore: SecurePairingStore,
@@ -122,7 +128,8 @@ final class SettingsViewModel {
         pgpSendService: PgpSendService? = nil,
         onUnpaired: (() -> Void)? = nil,
         pairingDisplayOverride: PairingDisplay? = nil,
-        legacyHTTPCache: URLCache = .shared
+        legacyHTTPCache: URLCache = .shared,
+        contactSyncRepository: ContactSyncRepository? = nil
     ) {
         self.securePairingStore = securePairingStore
         self.pushSettingsStore = pushSettingsStore
@@ -144,6 +151,7 @@ final class SettingsViewModel {
         self.onUnpaired = onUnpaired
         self.pairingDisplayOverride = pairingDisplayOverride
         self.legacyHTTPCache = legacyHTTPCache
+        self.contactSyncRepository = contactSyncRepository
         systemNotificationsEnabled = pushSettingsStore.systemNotificationsEnabled
         exportContactsToSystem = contactsSettingsStore.isSystemSyncOn(
             for: Self.contactSyncRelay(securePairingStore, override: pairingDisplayOverride)
@@ -200,7 +208,15 @@ final class SettingsViewModel {
         return await appLockManager.confirmWithDeviceAuth(reason: reason)
     }
 
-    func unpair() async {
+    /// Counts what "remove contacts" would lose, for the unpair question.
+    func prepareUnpair() async {
+        unsyncedContactChanges = await contactSyncRepository?.pendingSummary().count ?? 0
+    }
+
+    /// - Parameter removingContacts: the user chose to remove this device's
+    ///   contacts too (owner Q1: optional, never the default). Otherwise they
+    ///   stay, and pairing another account asks before uploading them.
+    func unpair(removingContacts: Bool = false) async {
         // Clearing the pairing also clears the pinned SPKI hash, so the next
         // pairing re-arms trust on whatever certificate is presented. That is
         // as destructive as turning the lock off, and is gated the same way.
@@ -208,6 +224,9 @@ final class SettingsViewModel {
             return
         }
         _ = await deregisterDeviceUseCase()
+        // Kept contacts must stay known as this account's, so another
+        // account is asked before they are uploaded to it.
+        contactSyncRepository?.recordAccountIfUnknown()
         // A sign-on still in flight would otherwise re-pair right after this.
         AppEnvironment.postSessionReset()
         // A desktop session token an older build stored goes with it.
@@ -226,7 +245,11 @@ final class SettingsViewModel {
             forgetInbox: onUnpaired,
             legacyHTTPCache: legacyHTTPCache
         ).run()
-        statusMessage = pairingCleared && tornDown
+        var contactsRemoved = true
+        if removingContacts, let contactSyncRepository {
+            contactsRemoved = (try? await contactSyncRepository.removeContactsFromThisDevice()) != nil
+        }
+        statusMessage = pairingCleared && tornDown && contactsRemoved
             ? "Pairing removed"
             : "Pairing removed, but some of this account's data could not be erased from this device."
     }

@@ -372,6 +372,20 @@ Same protocol as KyPost for Android and Linux; change it in all three.
     linked card or more than half of them (cards already gone do not count),
     aborts on a failed Contacts read, and reports withheld deletes through
     `ContactSyncHealth.withheldCardDeletes` to `ContactSyncBanner`.
+- **Contacts across accounts: the user decides** (owner Q1, 2026-11-03).
+  `ContactCursorStore.account` records the `sub`+`srv` the contacts were
+  synced with (set by sync, and by `recordAccountIfUnknown` before an unpair
+  or an account replacement). `ContactSyncRepository.checkAccount` runs
+  before any request: on another account it always resets the cursor; with
+  contacts held it sends and pulls nothing (`awaitingAccountChoice`, not a
+  failure) and `ContactSyncBanner` asks "Bring your N contacts into …?".
+  Bring Them (`bringKeptContactsToPairedAccount`) resends every row as new
+  (synced rows marked made in KyPost; unsynced imports keep their consent
+  stamp) and drops the other account's uids, deletes, group ids and photo
+  refs. Remove Them and Remove Pairing's opt-in "Unpair and Remove Contacts"
+  (`removeContactsFromThisDevice`, warned with the unsynced count) clear the
+  rows, deletes, cursor, groups, photos and the cards KyPost created in
+  Apple Contacts. Re-pairing the same account changes nothing.
 - **Consent before contacts leave Apple Contacts** (`ContactSyncDisclosure`,
   Android #282). "Sync with Apple Contacts" is on only with the toggle **and**
   consent for the paired server (`ContactsSettingsStore.isSystemSyncOn`); an

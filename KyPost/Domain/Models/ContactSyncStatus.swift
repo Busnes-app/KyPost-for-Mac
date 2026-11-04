@@ -77,6 +77,15 @@ final class ContactSyncHealth {
     /// (`SystemContactsExporter.performReconcile`). Zero when none were held.
     private(set) var withheldCardDeletes = 0
 
+    /// Contacts kept from another account than the paired one, while the
+    /// user has not said whether to bring them (owner Q1). Sync sends and
+    /// pulls nothing meanwhile. Nil when there is nothing to ask.
+    private(set) var keptFromAnotherAccount: Int?
+
+    func recordKeptFromAnotherAccount(_ count: Int?) {
+        keptFromAnotherAccount = count
+    }
+
     func recordWithheldCardDeletes(_ count: Int) {
         withheldCardDeletes = count
     }

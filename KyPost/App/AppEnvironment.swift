@@ -227,7 +227,9 @@ final class AppEnvironment {
         let defaults = graph.userDefaults
         KeywordSettingsStore(defaults: defaults).clear()
         NotificationCursorStore(defaults: defaults).reset()
-        ContactCursorStore(defaults: defaults).reset()
+        let contactCursor = ContactCursorStore(defaults: defaults)
+        contactCursor.reset()
+        contactCursor.account = nil
         ContactPendingDeletesStore(defaults: defaults).clear()
         VerifiedPgpKeyStore(defaults: defaults).clear()
         // The record of which Contacts cards this app created. Once it is

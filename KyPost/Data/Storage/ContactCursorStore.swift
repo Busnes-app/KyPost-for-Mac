@@ -37,6 +37,16 @@ final class ContactCursorStore {
         defaults.removeObject(forKey: Self.key)
     }
 
+    private static let accountKey = "contacts.account"
+
+    /// The account (`sub` and `srv`) the contacts on this device were synced
+    /// with, nil before any sync recorded one. A paired account that differs
+    /// is a change of account (`ContactSyncRepository.performSync`).
+    var account: String? {
+        get { defaults.string(forKey: Self.accountKey) }
+        set { defaults.set(newValue, forKey: Self.accountKey) }
+    }
+
     private static let createsInFlightKey = "contacts.createsInFlight"
 
     /// Set while a push carrying creates has not been answered. A create the

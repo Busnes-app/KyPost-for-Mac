@@ -56,8 +56,8 @@ router, and `scenePhase == .active` makes it check for KyAuth's response.
 Protection turns on and at every launch while it is on (`PushLifecycle.onLaunch`).
 A `UserDefaults`-backed store that goes memory-only under the mode erases its
 persisted copy there; switching reads to memory does not remove it. Stores that
-describe the account (keyword settings, notification and contact cursors,
-pending contact deletes, verified keys, system-contact links) are built on
+describe the account (keyword settings, notification and contact cursors
+with the contacts' account record, pending contact deletes, verified keys, system-contact links) are built on
 `SingletonGraph.hostileMemoryDefaults` (`MemoryOnlyDefaults`) under the mode —
 the graph is rebuilt on every switch, so the choice is made once, at
 construction. A new account-describing store joins that list and the erase.

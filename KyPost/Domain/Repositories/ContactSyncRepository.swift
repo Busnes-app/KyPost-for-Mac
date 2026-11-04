@@ -15,6 +15,9 @@ import os
 enum ContactSyncError: Error, Equatable {
     /// Contact sync uses relay auth; requires a stored pairing.
     case notPaired
+    /// Contacts kept from another account wait for the user's answer
+    /// (`ContactSyncHealth.keptFromAnotherAccount`). A state, not a failure.
+    case awaitingAccountChoice
 }
 
 struct ContactSyncSummary: Equatable, Sendable {
@@ -206,6 +209,9 @@ final class ContactSyncRepository {
             // Not paired is a state, not a failure: nothing was tried.
             await refreshPendingSummary()
             throw ContactSyncError.notPaired
+        } catch ContactSyncError.awaitingAccountChoice {
+            await refreshPendingSummary()
+            throw ContactSyncError.awaitingAccountChoice
         } catch is CancellationError {
             await refreshPendingSummary()
             throw CancellationError()
@@ -278,6 +284,7 @@ final class ContactSyncRepository {
         guard let pairing = try securePairingStore.loadPairing() else {
             throw ContactSyncError.notPaired
         }
+        try await checkAccount(of: pairing)
         let auth = RelayAuth(pairing: pairing)
         // Every request below goes to this relay, so imports are checked
         // against it, not whatever is paired by the time one is sent.
@@ -346,8 +353,11 @@ final class ContactSyncRepository {
         let deleted = response.deleted ?? []
 
         var applied = 0
+        // A contact deleted here while its delete waits to go out is not
+        // brought back by the same answer (see `assignUids`).
+        let deletedHere = Set(pendingDeletesStore.all())
         for dto in changed {
-            guard let uid = dto.uid, !uid.isEmpty else { continue }
+            guard let uid = dto.uid, !uid.isEmpty, !deletedHere.contains(uid) else { continue }
             try await applyServerContact(uid: uid, dto: dto, syncStart: syncStart)
             applied += 1
         }
@@ -390,6 +400,82 @@ final class ContactSyncRepository {
             applied: applied,
             newCursor: cursorStore.lastCursor
         )
+    }
+
+    // MARK: - Change of account (owner Q1)
+
+    private static func accountKey(_ pairing: Pairing) -> String {
+        "\(pairing.sub)\n\(pairing.srv)"
+    }
+
+    /// Before any request: contacts synced with another account never reach
+    /// this one unasked. The cursor is always reset on a change of account
+    /// (it is a position in the other account's history). With contacts or
+    /// deletes still held, nothing is sent or pulled until the user answers
+    /// "Bring your N contacts into …?". Re-pairing the same account changes
+    /// nothing.
+    private func checkAccount(of pairing: Pairing) async throws {
+        let account = Self.accountKey(pairing)
+        if let owner = cursorStore.account, owner != account {
+            cursorStore.reset()
+            cursorStore.createsInFlight = false
+            let held = try await contactDAO.count()
+            if held > 0 {
+                health.recordKeptFromAnotherAccount(held)
+                throw ContactSyncError.awaitingAccountChoice
+            }
+            // Deletes of the other account's contacts mean nothing here.
+            pendingDeletesStore.clear()
+            verifiedKeyStore?.clear()
+        }
+        cursorStore.account = account
+        health.recordKeptFromAnotherAccount(nil)
+    }
+
+    /// Records the paired account as the contacts' owner when none is on
+    /// record yet (a build before this existed), so leaving it is noticed.
+    /// Run before an unpair or an account replacement clears the pairing.
+    func recordAccountIfUnknown() {
+        guard cursorStore.account == nil,
+              let pairing = (try? securePairingStore.loadPairing()) ?? nil
+        else { return }
+        cursorStore.account = Self.accountKey(pairing)
+    }
+
+    /// Yes: the kept contacts become the paired account's and go up as new
+    /// ones on the next sync, under the normal consent rules
+    /// (`ContactDAO.adoptForAnotherAccount`). The other account's deletes and
+    /// verified-key memory (keyed by its uids) are dropped.
+    func bringKeptContactsToPairedAccount() async throws {
+        guard let pairing = try securePairingStore.loadPairing() else {
+            throw ContactSyncError.notPaired
+        }
+        try await contactDAO.adoptForAnotherAccount()
+        pendingDeletesStore.clear()
+        verifiedKeyStore?.clear()
+        cursorStore.reset()
+        cursorStore.createsInFlight = false
+        cursorStore.account = Self.accountKey(pairing)
+        health.recordKeptFromAnotherAccount(nil)
+        await refreshPendingSummary()
+    }
+
+    /// No, or Remove Pairing's "remove contacts": this device's contacts,
+    /// their queued deletes, cursor, groups, photos, and the cards KyPost
+    /// created in Apple Contacts (`removeAllExported`; the user's own cards
+    /// stay). Whatever is paired now owns the empty book.
+    func removeContactsFromThisDevice() async throws {
+        _ = await systemContactsExporter?.removeAllExported()
+        try await contactDAO.clearAll()
+        try? await groupDAO?.clearAll()
+        photoCache?.removeAll()
+        pendingDeletesStore.clear()
+        verifiedKeyStore?.clear()
+        cursorStore.reset()
+        cursorStore.createsInFlight = false
+        cursorStore.account = ((try? securePairingStore.loadPairing()) ?? nil).map(Self.accountKey)
+        health.recordKeptFromAnotherAccount(nil)
+        await refreshPendingSummary()
     }
 
     /// The relay answers 413 above this many changes in one request
@@ -493,6 +579,16 @@ final class ContactSyncRepository {
             uniquingKeysWith: { first, _ in first }
         )
         for assignment in assignments {
+            // Deleted here while its create was on the wire: the server has
+            // it now, so the delete goes out as a tombstone instead of the
+            // answer recreating it.
+            guard try await contactDAO.hasRow(localId: assignment.localId) else {
+                // Never a uid this device holds: that is another contact.
+                if try await !contactDAO.hasRow(uid: assignment.uid) {
+                    pendingDeletesStore.add(assignment.uid)
+                }
+                continue
+            }
             try await contactDAO.assignUid(
                 localId: assignment.localId,
                 uid: assignment.uid,

@@ -69,6 +69,11 @@ final class ContactPhotoCache: Sendable {
         try FileManager.default.removeItem(at: target)
     }
 
+    /// Removes every cached photo (removing this device's contacts).
+    func removeAll() {
+        try? Self.deleteAll(directory: directory)
+    }
+
     /// photoRef is a server-generated "<sha256>.<ext>" filename, but never
     /// trust it as a path: anything that isn't a plain filename is rejected.
     private func fileURL(for photoRef: String) -> URL? {

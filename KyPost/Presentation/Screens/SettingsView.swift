@@ -30,7 +30,8 @@ struct SettingsView: View {
         mailSignatureStore: SingletonGraph.shared.mailSignatureStore,
         pgpSendService: SingletonGraph.shared.pgpSendService,
         onUnpaired: { SingletonGraph.shared.inboxViewModel.forgetAccount() },
-        pairingDisplayOverride: SingletonGraph.shared.pairingDisplayOverride
+        pairingDisplayOverride: SingletonGraph.shared.pairingDisplayOverride,
+        contactSyncRepository: SingletonGraph.shared.contactSyncRepository
     )
     @State private var showPairingSheet = false
     @State private var showUnpairConfirmation = false
@@ -60,7 +61,12 @@ struct SettingsView: View {
                     .buttonStyle(SecondaryButtonStyle())
                     Button("Re-pair Device") { showPairingSheet = true }
                         .buttonStyle(SecondaryButtonStyle())
-                    Button("Remove Pairing") { showUnpairConfirmation = true }
+                    Button("Remove Pairing") {
+                        Task {
+                            await viewModel.prepareUnpair()
+                            showUnpairConfirmation = true
+                        }
+                    }
                         .buttonStyle(DangerButtonStyle())
                 } else {
                     HStack {
@@ -208,9 +214,12 @@ struct SettingsView: View {
             Button("Unpair", role: .destructive) {
                 Task { await viewModel.unpair() }
             }
+            Button("Unpair and Remove Contacts", role: .destructive) {
+                Task { await viewModel.unpair(removingContacts: true) }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the device from your account's paired devices on the server and clears its local pairing. You'll need to scan a new QR code or pass a new link to pair again.")
+            Text("This removes the device from your account's paired devices on the server and clears its local pairing. You'll need to scan a new QR code or pass a new link to pair again.\n\n\(UnpairContactsNote.text(unsynced: viewModel.unsyncedContactChanges))")
         }
     }
 }

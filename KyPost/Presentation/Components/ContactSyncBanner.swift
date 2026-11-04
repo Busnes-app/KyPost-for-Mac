@@ -13,9 +13,13 @@ struct ContactSyncBanner: View {
     @Environment(\.theme) private var theme
 
     let viewModel: ContactsViewModel
+    @State private var confirmingRemoveKept = false
 
     var body: some View {
         VStack(spacing: 0) {
+            if let kept = viewModel.keptFromAnotherAccount {
+                keptContactsQuestion(kept)
+            }
             TimelineView(.periodic(from: .now, by: 60)) { context in
                 content(viewModel.syncStatus(now: context.date))
             }
@@ -71,6 +75,43 @@ struct ContactSyncBanner: View {
         }
     }
 
+    /// Owner Q1: contacts kept from the previous account go to a different
+    /// account only if the user says so; nothing is sent until then.
+    private func keptContactsQuestion(_ kept: Int) -> some View {
+        banner(icon: "person.2.badge.gearshape", tint: theme.accent) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Bring your ^[\(kept) contact](inflect: true) into \(viewModel.pairedServerName)?")
+                    .font(AppFont.ui(13, weight: .semibold))
+                    .foregroundStyle(theme.inkStrong)
+                Text("They are from the account this device was paired to before. Nothing is uploaded until you choose.")
+                    .font(AppFont.ui(12))
+                    .foregroundStyle(theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button("Bring Them") {
+                        Task { await viewModel.bringKeptContacts() }
+                    }
+                    Button("Remove Them", role: .destructive) { confirmingRemoveKept = true }
+                }
+                .disabled(viewModel.isSyncing)
+            }
+        }
+        .confirmationDialog(
+            "Remove ^[\(kept) contact](inflect: true) from this device?",
+            isPresented: $confirmingRemoveKept,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Contacts", role: .destructive) {
+                Task { await viewModel.removeKeptContacts() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(viewModel.keptUnsynced > 0
+                ? "^[\(viewModel.keptUnsynced) change](inflect: true) never reached your previous account and will be lost. The cards KyPost added to Contacts are removed too."
+                : "The cards KyPost added to Contacts are removed too. They stay on your previous account's server.")
+        }
+    }
+
     private func banner<Content: View>(
         icon: String,
         tint: Color,
@@ -91,5 +132,15 @@ struct ContactSyncBanner: View {
             Rectangle().fill(theme.line).frame(height: 0.5)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Remove Pairing's note on contacts (owner Q1): kept unless the user picks
+/// "Unpair and Remove Contacts", with a warning when that would lose changes.
+enum UnpairContactsNote {
+    static func text(unsynced: Int) -> String {
+        let kept = String(localized: "Your contacts stay on this device unless you choose Unpair and Remove Contacts, which also deletes the cards KyPost added to Contacts.")
+        guard unsynced > 0 else { return kept }
+        return kept + " " + String(localized: "\(unsynced) contact changes haven't synced yet and would be lost.")
     }
 }

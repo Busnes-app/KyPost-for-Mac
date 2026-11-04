@@ -95,6 +95,35 @@ actor ContactDAO {
         try modelContext.save()
     }
 
+    func count() throws -> Int {
+        try modelContext.fetchCount(FetchDescriptor<ContactEntity>())
+    }
+
+    /// The user brought the contacts kept from another account into the
+    /// paired one (owner Q1): every row is sent again as new. Their uids
+    /// were the other server's. A row that had synced is the address
+    /// book's own, so it is marked made in KyPost; a row that never synced
+    /// keeps its origin, so imports still need consent for this server.
+    func adoptForAnotherAccount() throws {
+        for entity in try modelContext.fetch(FetchDescriptor<ContactEntity>()) {
+            if entity.uid != nil {
+                entity.importConsent = Contact.createdInKyPost
+            }
+            entity.uid = nil
+            entity.needsSync = true
+            // Group ids and the photo reference name the other server's
+            // objects, which this one does not have.
+            entity.groupIDs = []
+            entity.photoRef = nil
+            entity.avatarUrl = nil
+        }
+        try modelContext.save()
+    }
+
+    /// Whether a row with this localId, or this uid, is stored.
+    func hasRow(localId: UUID) throws -> Bool { try fetchEntity(localId: localId) != nil }
+    func hasRow(uid: String) throws -> Bool { try fetchEntity(uid: uid) != nil }
+
     /// Stamps the uid-less rows among `localIds` whose origin is unknown
     /// (no `importConsent`, or `Contact.quarantined`) with `stamp`.
     func stampImports(localIds: Set<UUID>, stamp: String) throws {
