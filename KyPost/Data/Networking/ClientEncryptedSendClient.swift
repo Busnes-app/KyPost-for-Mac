@@ -75,11 +75,15 @@ final class ClientEncryptedSendClient: ClientEncryptedTransport {
         )
 
         do {
+            // The relay answers only after SMTP accepted every delivery, so a
+            // large ciphertext can sit silent past the session's 60 s, as on
+            // the plain path with attachments.
             let response = try await httpClient.post(
                 RelaySendResponse.self,
                 url: base.appending(path: "api/mail/send-pgp"),
                 headers: auth.headerFields,
-                jsonBody: request
+                jsonBody: request,
+                timeout: RelayMailSource.sendWithAttachmentsTimeout
             )
             return .success(ClientSendResult(
                 sentSaved: response.sentSaved ?? false,
@@ -93,6 +97,7 @@ final class ClientEncryptedSendClient: ClientEncryptedTransport {
     /// `reenrollmentRequired` is checked first: it is the more specific of the
     /// two, and the server never sets both.
     static func kind(for error: Error) -> MailSendFailure.Kind {
+        if MailOutcome.sendOutcomeUnknown(error) { return .outcomeUnknown }
         guard case let NetworkError.conflict(body) = error,
               let parsed = try? JSONDecoder().decode(GenerationConflictBody.self, from: Data(body.utf8))
         else { return .other }

@@ -921,6 +921,14 @@ final class ComposeViewModel {
             errorMessage = "Couldn't encrypt this message: \(message)"
         case .sendFailed(let message):
             errorMessage = "Couldn't send this message: \(message)"
+        case .mayHaveBeenSent(let detail):
+            // As on the plain path: Send stays off until the user has checked
+            // Sent and chosen Send Again.
+            sendOutcomeUnknown = true
+            errorMessage = """
+            This message may have been sent — the server didn't confirm it (\(detail)). \
+            Check your Sent folder before sending it again.
+            """
         // Both converted-account refusals mean the keys on this device are no
         // longer the account's current ones; each says why, and both name the
         // only remedy. Not retryable as-is.

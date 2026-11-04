@@ -85,6 +85,9 @@ nonisolated struct MailSendFailure: Equatable, Sendable, Error {
         /// 409 `pgpStateChanged`: the account's key material moved since this
         /// device's keys were delivered.
         case pgpStateChanged
+        /// No trustworthy answer (timeout, dropped connection, 5xx): the
+        /// relay may already have delivered it (`MailOutcome.sendOutcomeUnknown`).
+        case outcomeUnknown
     }
 
     var message: String
@@ -131,6 +134,10 @@ nonisolated enum ClientSendOutcome: Equatable, Sendable {
     case resolveFailed(String)
     case encryptFailed(String)
     case sendFailed(String)
+    /// No trustworthy answer: the message may have gone out. Compose says to
+    /// check Sent and never offers a plain Send again (see
+    /// `MailOutcome.mayHaveBeenSent`).
+    case mayHaveBeenSent(String)
     /// The relay refused: this device holds key material from before the
     /// account's current generation. Set up encryption on this device again.
     case reenrollmentRequired
@@ -376,6 +383,7 @@ nonisolated struct ClientEncryptedSender: Sendable {
             case .reenrollmentRequired: return .reenrollmentRequired
             case .pgpStateChanged: return .pgpStateChanged
             case .other: return .sendFailed(failure.message)
+            case .outcomeUnknown: return .mayHaveBeenSent(failure.message)
             }
         }
     }
