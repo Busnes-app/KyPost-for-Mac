@@ -230,8 +230,6 @@ final class AppEnvironment {
         let contactCursor = ContactCursorStore(defaults: defaults)
         contactCursor.reset()
         contactCursor.account = nil
-        // Also drops the deleted creates it keeps (names, addresses).
-        contactCursor.createsInFlight = false
         ContactPendingDeletesStore(defaults: defaults).clear()
         VerifiedPgpKeyStore(defaults: defaults).clear()
         // The record of which Contacts cards this app created. Once it is

@@ -125,10 +125,6 @@ actor ContactDAO {
         try modelContext.save()
     }
 
-    /// Whether a row with this localId, or this uid, is stored.
-    func hasRow(localId: UUID) throws -> Bool { try fetchEntity(localId: localId) != nil }
-    func hasRow(uid: String) throws -> Bool { try fetchEntity(uid: uid) != nil }
-
     /// Stamps the uid-less rows among `localIds` whose origin is unknown
     /// (no `importConsent`, or `Contact.quarantined`) with `stamp`.
     func stampImports(localIds: Set<UUID>, stamp: String) throws {

@@ -47,68 +47,6 @@ final class ContactCursorStore {
         set { defaults.set(newValue, forKey: Self.accountKey) }
     }
 
-    private static let deletedCreatesKey = "contacts.deletedCreates"
-
-    /// Creates deleted here while `createsInFlight` was set: the relay may
-    /// hold them already, with no uid here to send a delete for. Kept until
-    /// that push is accounted for, so reconciliation can find their uids and
-    /// queue the deletes. Only the fields reconciliation matches on.
-    var deletedCreates: [Contact] {
-        get {
-            guard let data = defaults.data(forKey: Self.deletedCreatesKey),
-                  let stored = try? JSONDecoder().decode([DeletedCreate].self, from: data)
-            else { return [] }
-            return stored.map(\.contact)
-        }
-        set {
-            if newValue.isEmpty {
-                defaults.removeObject(forKey: Self.deletedCreatesKey)
-            } else {
-                defaults.set(try? JSONEncoder().encode(newValue.map(DeletedCreate.init)), forKey: Self.deletedCreatesKey)
-            }
-        }
-    }
-
-    private struct DeletedCreate: Codable {
-        var localId: UUID
-        var name: String
-        var org: String
-        var emails: [String]
-        var phones: [String]
-
-        init(_ contact: Contact) {
-            localId = contact.localId
-            name = contact.name
-            org = contact.org
-            emails = contact.emails.map(\.value)
-            phones = contact.phones.map(\.value)
-        }
-
-        var contact: Contact {
-            var contact = Contact(localId: localId, uid: nil, name: name, avatarUrl: nil, createdAt: Date(), updatedAt: Date())
-            contact.org = org
-            contact.emails = emails.map { ContactLabeledValue(label: nil, value: $0) }
-            contact.phones = phones.map { ContactLabeledValue(label: nil, value: $0) }
-            return contact
-        }
-    }
-
-    private static let submittedCreatesKey = "contacts.submittedCreates"
-
-    /// The localIds of creates the unanswered push actually sent. Only these
-    /// can be on the relay without a uid here, so only their deletion is
-    /// remembered in `deletedCreates`.
-    var submittedCreates: Set<UUID> {
-        get { Set((defaults.stringArray(forKey: Self.submittedCreatesKey) ?? []).compactMap(UUID.init)) }
-        set {
-            if newValue.isEmpty {
-                defaults.removeObject(forKey: Self.submittedCreatesKey)
-            } else {
-                defaults.set(newValue.map(\.uuidString), forKey: Self.submittedCreatesKey)
-            }
-        }
-    }
-
     private static let createsInFlightKey = "contacts.createsInFlight"
 
     /// Set while a push carrying creates has not been answered. A create the
@@ -118,17 +56,7 @@ final class ContactCursorStore {
     /// server already has (`ContactSyncRepository.reconcileUnansweredCreates`).
     var createsInFlight: Bool {
         get { defaults.bool(forKey: Self.createsInFlightKey) }
-        set {
-            if newValue {
-                defaults.set(true, forKey: Self.createsInFlightKey)
-            } else {
-                defaults.removeObject(forKey: Self.createsInFlightKey)
-                // Accounted for: nothing deleted meanwhile can still be on
-                // the relay unknown to this device.
-                deletedCreates = []
-                submittedCreates = []
-            }
-        }
+        set { defaults.set(newValue, forKey: Self.createsInFlightKey) }
     }
 }
 

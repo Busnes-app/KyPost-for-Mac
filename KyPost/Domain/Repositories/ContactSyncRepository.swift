@@ -186,12 +186,7 @@ final class ContactSyncRepository {
             pendingDeletesStore.add(uid)
             verifiedKeyStore?.forget(uid: uid)
         } else {
-            // Never reached the server, unless a push carrying it is still
-            // unanswered: then reconciliation must still find it
-            // (`ContactCursorStore.deletedCreates`).
-            if cursorStore.createsInFlight, cursorStore.submittedCreates.contains(contact.localId) {
-                cursorStore.deletedCreates += [contact]
-            }
+            // Never reached the server; deleting locally is enough.
             try await contactDAO.deleteLocal(localId: contact.localId)
         }
         await systemContactsExporter?.exportDelete(localId: contact.localId)
@@ -371,11 +366,8 @@ final class ContactSyncRepository {
         let deleted = response.deleted ?? []
 
         var applied = 0
-        // A contact deleted here while its delete waits to go out is not
-        // brought back by the same answer (see `assignUids`).
-        let deletedHere = Set(pendingDeletesStore.all())
         for dto in changed {
-            guard let uid = dto.uid, !uid.isEmpty, !deletedHere.contains(uid) else { continue }
+            guard let uid = dto.uid, !uid.isEmpty else { continue }
             try await applyServerContact(uid: uid, dto: dto, syncStart: syncStart)
             applied += 1
         }
@@ -570,10 +562,7 @@ final class ContactSyncRepository {
         // Set before the request and cleared only once every page answered:
         // a timeout or a dropped connection after the relay committed a page
         // leaves its creates on the server with no uid here.
-        // Never cleared here: a reconcile still owed (its pull got `tooOld`)
-        // keeps the flag, and the deleted creates it carries, until the
-        // re-pull from 0 has reconciled them.
-        if !pendingCreates.isEmpty { cursorStore.createsInFlight = true }
+        cursorStore.createsInFlight = !pendingCreates.isEmpty
         var withheld = Set<UUID>()
 
         for start in stride(from: 0, to: changes.count, by: Self.maxChangesPerPush) {
@@ -587,10 +576,6 @@ final class ContactSyncRepository {
                     return change.dto
                 }
             guard !page.isEmpty else { continue }
-            for case .contact(let contact) in changes[start..<min(start + Self.maxChangesPerPush, changes.count)]
-            where contact.uid == nil && !withheld.contains(contact.localId) {
-                cursorStore.submittedCreates.insert(contact.localId)
-            }
             let response = try await client.push(
                 serverUrl: serverUrl,
                 auth: auth,
@@ -632,16 +617,6 @@ final class ContactSyncRepository {
             uniquingKeysWith: { first, _ in first }
         )
         for assignment in assignments {
-            // Deleted here while its create was on the wire: the server has
-            // it now, so the delete goes out as a tombstone instead of the
-            // answer recreating it.
-            guard try await contactDAO.hasRow(localId: assignment.localId) else {
-                // Never a uid this device holds: that is another contact.
-                if try await !contactDAO.hasRow(uid: assignment.uid) {
-                    pendingDeletesStore.add(assignment.uid)
-                }
-                continue
-            }
             try await contactDAO.assignUid(
                 localId: assignment.localId,
                 uid: assignment.uid,
@@ -664,16 +639,9 @@ final class ContactSyncRepository {
         auth: RelayAuth,
         since cursor: Int
     ) async throws {
-        // Creates deleted while that push was out count too: `assignUids`
-        // queues the delete of any the relay turns out to hold. For this one
-        // reconcile only, and they never hold `createsInFlight` open: matched
-        // by content, a deleted create kept longer could claim a contact
-        // added later elsewhere.
-        let deleted = cursorStore.deletedCreates
-        let deletedIds = Set(deleted.map(\.localId))
         var creates = try await pendingUploads(to: relay).filter {
             $0.uid == nil && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        } + deleted
+        }
         guard !creates.isEmpty else {
             cursorStore.createsInFlight = false
             return
@@ -681,8 +649,6 @@ final class ContactSyncRepository {
         let response = try await client.pull(serverUrl: serverUrl, auth: auth, since: cursor)
         guard response.tooOld != true else { return }
         try await assignUids(to: &creates, from: response.changed ?? [])
-        cursorStore.deletedCreates = []
-        creates.removeAll { deletedIds.contains($0.localId) }
         // Every create is accounted for: no push may follow to clear it.
         if creates.isEmpty { cursorStore.createsInFlight = false }
     }
