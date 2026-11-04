@@ -210,7 +210,7 @@ final class SettingsViewModel {
 
     /// Counts what "remove contacts" would lose, for the unpair question.
     func prepareUnpair() async {
-        unsyncedContactChanges = await contactSyncRepository?.pendingSummary().count ?? 0
+        unsyncedContactChanges = await contactSyncRepository?.unsyncedChangeCount() ?? 0
     }
 
     /// - Parameter removingContacts: the user chose to remove this device's
@@ -245,13 +245,22 @@ final class SettingsViewModel {
             forgetInbox: onUnpaired,
             legacyHTTPCache: legacyHTTPCache
         ).run()
-        var contactsRemoved = true
+        var contactsNote: String?
         if removingContacts, let contactSyncRepository {
-            contactsRemoved = (try? await contactSyncRepository.removeContactsFromThisDevice()) != nil
+            do {
+                try await contactSyncRepository.removeContactsFromThisDevice()
+            } catch let incomplete as ContactRemovalIncomplete {
+                contactsNote = incomplete.message
+            } catch {
+                contactsNote = "Contacts could not be removed: \(error.localizedDescription)"
+            }
         }
-        statusMessage = pairingCleared && tornDown && contactsRemoved
-            ? "Pairing removed"
-            : "Pairing removed, but some of this account's data could not be erased from this device."
+        statusMessage = [
+            pairingCleared && tornDown
+                ? "Pairing removed"
+                : "Pairing removed, but some of this account's data could not be erased from this device.",
+            contactsNote,
+        ].compactMap { $0 }.joined(separator: " ")
     }
 
     func testConnection() async {

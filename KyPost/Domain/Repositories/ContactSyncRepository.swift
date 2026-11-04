@@ -20,6 +20,15 @@ enum ContactSyncError: Error, Equatable {
     case awaitingAccountChoice
 }
 
+/// `removeContactsFromThisDevice` cleared the contacts but not all of this.
+struct ContactRemovalIncomplete: Error, Equatable {
+    var leftovers: [String]
+
+    var message: String {
+        String(localized: "Contacts removed, but not: \(leftovers.joined(separator: ", ")). To remove the cards, allow KyPost to access Contacts, then use Remove Exported Contacts in Settings.")
+    }
+}
+
 struct ContactSyncSummary: Equatable, Sendable {
     var pushed: Int
     var applied: Int
@@ -173,7 +182,12 @@ final class ContactSyncRepository {
             pendingDeletesStore.add(uid)
             verifiedKeyStore?.forget(uid: uid)
         } else {
-            // Never reached the server; deleting locally is enough.
+            // Never reached the server, unless a push carrying it is still
+            // unanswered: then reconciliation must still find it
+            // (`ContactCursorStore.deletedCreates`).
+            if cursorStore.createsInFlight {
+                cursorStore.deletedCreates += [contact]
+            }
             try await contactDAO.deleteLocal(localId: contact.localId)
         }
         await systemContactsExporter?.exportDelete(localId: contact.localId)
@@ -436,10 +450,11 @@ final class ContactSyncRepository {
     /// record yet (a build before this existed), so leaving it is noticed.
     /// Run before an unpair or an account replacement clears the pairing.
     func recordAccountIfUnknown() {
+        // Read without the device secret, which a locked gate withholds.
         guard cursorStore.account == nil,
-              let pairing = (try? securePairingStore.loadPairing()) ?? nil
+              let account = (try? securePairingStore.loadAccount()) ?? nil
         else { return }
-        cursorStore.account = Self.accountKey(pairing)
+        cursorStore.account = "\(account.sub)\n\(account.srv)"
     }
 
     /// Yes: the kept contacts become the paired account's and go up as new
@@ -464,11 +479,24 @@ final class ContactSyncRepository {
     /// their queued deletes, cursor, groups, photos, and the cards KyPost
     /// created in Apple Contacts (`removeAllExported`; the user's own cards
     /// stay). Whatever is paired now owns the empty book.
+    ///
+    /// Waits for a sync in flight, so its answer cannot refill the book.
+    /// Throws `ContactRemovalIncomplete` after clearing what it could when
+    /// cards KyPost created stay in Contacts (no access, or refused); their
+    /// links stay, so Settings' Remove Exported Contacts can finish later.
     func removeContactsFromThisDevice() async throws {
+        _ = try? await inFlightSync?.value
         _ = await systemContactsExporter?.removeAllExported()
         try await contactDAO.clearAll()
-        try? await groupDAO?.clearAll()
-        photoCache?.removeAll()
+        var leftovers: [String] = []
+        do {
+            try await groupDAO?.clearAll()
+        } catch {
+            leftovers.append(String(localized: "contact groups"))
+        }
+        if photoCache?.removeAll() == false {
+            leftovers.append(String(localized: "contact photos"))
+        }
         pendingDeletesStore.clear()
         verifiedKeyStore?.clear()
         cursorStore.reset()
@@ -476,6 +504,17 @@ final class ContactSyncRepository {
         cursorStore.account = ((try? securePairingStore.loadPairing()) ?? nil).map(Self.accountKey)
         health.recordKeptFromAnotherAccount(nil)
         await refreshPendingSummary()
+        if systemContactsExporter?.hasExportedContacts() == true {
+            leftovers.append(String(localized: "cards KyPost added to Contacts"))
+        }
+        guard leftovers.isEmpty else { throw ContactRemovalIncomplete(leftovers: leftovers) }
+    }
+
+    /// Every contact change this device holds that never reached a server,
+    /// sendable or not: what removing the contacts would lose.
+    func unsyncedChangeCount() async -> Int {
+        let rows = (try? await contactDAO.listPendingSync().count) ?? 0
+        return rows + pendingDeletesStore.all().count
     }
 
     /// The relay answers 413 above this many changes in one request
@@ -611,9 +650,16 @@ final class ContactSyncRepository {
         auth: RelayAuth,
         since cursor: Int
     ) async throws {
+        // Creates deleted while that push was out count too: `assignUids`
+        // queues the delete of any the relay turns out to hold. For this one
+        // reconcile only, and they never hold `createsInFlight` open: matched
+        // by content, a deleted create kept longer could claim a contact
+        // added later elsewhere.
+        let deleted = cursorStore.deletedCreates
+        let deletedIds = Set(deleted.map(\.localId))
         var creates = try await pendingUploads(to: relay).filter {
             $0.uid == nil && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
+        } + deleted
         guard !creates.isEmpty else {
             cursorStore.createsInFlight = false
             return
@@ -621,6 +667,8 @@ final class ContactSyncRepository {
         let response = try await client.pull(serverUrl: serverUrl, auth: auth, since: cursor)
         guard response.tooOld != true else { return }
         try await assignUids(to: &creates, from: response.changed ?? [])
+        cursorStore.deletedCreates = []
+        creates.removeAll { deletedIds.contains($0.localId) }
         // Every create is accounted for: no push may follow to clear it.
         if creates.isEmpty { cursorStore.createsInFlight = false }
     }

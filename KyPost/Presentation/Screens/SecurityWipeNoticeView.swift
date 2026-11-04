@@ -49,7 +49,7 @@ struct ManualRecoveryView: View {
             if failedSteps.contains("deviceContactCards") {
                 // The one step the user can fix: the cards are in their own
                 // Contacts, outside this app.
-                Text("To remove the cards KyPost added to Contacts, allow KyPost to access Contacts in System Settings → Privacy & Security → Contacts, or delete those cards in Contacts yourself, then Try Again.")
+                Text(Self.contactsAdvice)
                     .font(AppFont.ui(13))
                     .foregroundStyle(theme.inkStrong)
                     .multilineTextAlignment(.center)
@@ -77,6 +77,14 @@ struct ManualRecoveryView: View {
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.bg)
+    }
+
+    private static var contactsAdvice: String {
+#if os(macOS)
+        String(localized: "To remove the cards KyPost added to Contacts, allow KyPost to access Contacts in System Settings → Privacy & Security → Contacts, then Try Again. KyPost needs that access to remove them, or to confirm they are gone.")
+#else
+        String(localized: "To remove the cards KyPost added to Contacts, allow KyPost to access Contacts in Settings → Privacy & Security → Contacts, then Try Again. KyPost needs that access to remove them, or to confirm they are gone.")
+#endif
     }
 
     private static var explanation: String {

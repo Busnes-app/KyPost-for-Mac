@@ -91,7 +91,12 @@ struct ContactSyncBanner: View {
                     Button("Bring Them") {
                         Task { await viewModel.bringKeptContacts() }
                     }
-                    Button("Remove Them", role: .destructive) { confirmingRemoveKept = true }
+                    Button("Remove Them", role: .destructive) {
+                        Task {
+                            await viewModel.prepareRemoveKept()
+                            confirmingRemoveKept = true
+                        }
+                    }
                 }
                 .disabled(viewModel.isSyncing)
             }

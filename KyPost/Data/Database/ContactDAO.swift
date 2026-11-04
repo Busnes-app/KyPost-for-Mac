@@ -101,12 +101,17 @@ actor ContactDAO {
 
     /// The user brought the contacts kept from another account into the
     /// paired one (owner Q1): every row is sent again as new. Their uids
-    /// were the other server's. A row that had synced is the address
-    /// book's own, so it is marked made in KyPost; a row that never synced
-    /// keeps its origin, so imports still need consent for this server.
+    /// were the other server's. That answer is the consent for these rows,
+    /// synced ones and imports stamped for the other server alike, so they
+    /// are marked made in KyPost. Quarantined and legacy rows, whose origin
+    /// is unknown, still never upload.
     func adoptForAnotherAccount() throws {
         for entity in try modelContext.fetch(FetchDescriptor<ContactEntity>()) {
-            if entity.uid != nil {
+            let unknownOrigin = entity.uid == nil
+                && (entity.importConsent == nil
+                    || entity.importConsent == Contact.quarantined
+                    || entity.importConsent == Contact.legacyImport)
+            if !unknownOrigin {
                 entity.importConsent = Contact.createdInKyPost
             }
             entity.uid = nil

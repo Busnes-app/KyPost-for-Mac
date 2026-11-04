@@ -662,6 +662,63 @@ private func makeDTO(
         #expect(env.pendingDeletes.all() == ["srv-ada"])
     }
 
+    /// Sol certification: the same, when the push's answer is lost. The
+    /// next sync's reconcile still finds the uid and sends the delete.
+    @Test func aCreateDeletedDuringAPushWhoseAnswerIsLostIsDeletedOnTheServerToo() async throws {
+        let gate = ParkedPush()
+        let posts = Box<[String]>([])
+        let ada = #"{ "uid": "srv-ada", "rev": 1, "fn": "Ada", "emails": [{ "value": "ada@example.com" }] }"#
+        let client = HTTPClient { request in
+            var status = 200
+            var json = #"{"cursor": 1, "changed": [\#(ada)]}"#
+            if request.httpMethod == "POST" {
+                let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+                let first = posts.value.isEmpty
+                posts.mutate { $0.append(body) }
+                if first {
+                    await gate.hold()
+                    status = 502 // committed, but the answer never arrives
+                } else {
+                    json = #"{"cursor": 2}"#
+                }
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+            return (Data(json.utf8), response)
+        }
+        let env = try makeEnvironment(client: client)
+        try await env.repository.saveContact(makeContact(name: "Ada", email: "ada@example.com"))
+        let created = try #require(try await env.dao.listAll().first)
+
+        let sync = Task { try await env.repository.sync() }
+        await gate.waitUntilHolding()
+        try await env.repository.deleteContact(created)
+        await gate.open()
+        _ = try? await sync.value
+
+        try await env.repository.sync()
+
+        #expect(try await env.dao.listAll().isEmpty)
+        let resend = try #require(posts.value.last)
+        #expect(posts.value.count == 2)
+        #expect(resend.contains(#""uid":"srv-ada""#))
+        #expect(resend.contains(#""deleted":true"#))
+    }
+
+    /// Opus certification: a deleted create the reconcile does not find is
+    /// dropped after that one reconcile; it never holds the flag open for a
+    /// later, unrelated contact to match.
+    @Test func anUnmatchedDeletedCreateIsForgottenAfterOneReconcile() async throws {
+        let env = try makeEnvironment(client: stubClient(json: #"{"cursor": 1, "changed": []}"#))
+        env.cursorStore.createsInFlight = true
+        env.cursorStore.deletedCreates = [makeContact(name: "Alex", email: "alex@example.com")]
+
+        try await env.repository.sync()
+
+        #expect(env.cursorStore.deletedCreates.isEmpty)
+        #expect(!env.cursorStore.createsInFlight)
+        #expect(env.pendingDeletes.all().isEmpty)
+    }
+
     @Test func unsyncedLocalDeleteLeavesNoTombstone() async throws {
         let env = try makeEnvironment(client: stubClient(json: #"{"cursor": 1}"#))
         let contact = makeContact(name: "Draft Person", needsSync: true)
@@ -1546,6 +1603,29 @@ private actor ParkedPush {
         #expect(!body.contains("a-2"), "nor its deletes")
     }
 
+    /// The answer is the consent: an import stamped for the old server goes
+    /// up too; a row of unknown origin still never does.
+    @Test func bringingThemSendsImportsButNeverUnknownOrigin() async throws {
+        let env = try makeEnvironment()
+        try await env.repository.sync()
+        var imported = makeContact(name: "Imported", email: "i@example.com", needsSync: true)
+        imported.importConsent = "old-relay-stamp"
+        var unknown = makeContact(name: "Unknown", email: "u@example.com", needsSync: true)
+        unknown.importConsent = Contact.quarantined
+        try await env.dao.upsert(contacts: [imported, unknown])
+        try pairAnotherAccount(env)
+        _ = try? await env.repository.sync()
+        env.requests.value = []
+
+        try await env.repository.bringKeptContactsToPairedAccount()
+        try await env.repository.sync()
+
+        let push = try #require(env.requests.value.first { $0.httpMethod == "POST" })
+        let body = String(decoding: push.httpBody ?? Data(), as: UTF8.self)
+        #expect(body.contains("Imported"))
+        #expect(!body.contains("Unknown"))
+    }
+
     /// Remove them: the book is emptied and B's own contacts pull from 0.
     @Test func removingThemEmptiesTheBookForTheNewAccount() async throws {
         let env = try makeEnvironment()
@@ -1576,5 +1656,22 @@ private actor ParkedPush {
 
         #expect(env.repository.health.keptFromAnotherAccount == nil)
         #expect(env.cursorStore.account != nil)
+    }
+}
+
+/// Sol certification: an in-memory cache (the demo, Hostile Location
+/// Protection) never deletes the directory it would otherwise use.
+@Suite struct ContactPhotoCacheRemovalTests {
+    @Test func anInMemoryCacheRemovesNothingOnDisk() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "photos-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        #expect(ContactPhotoCache(directory: directory, inMemory: true).removeAll())
+        #expect(FileManager.default.fileExists(atPath: directory.path))
+
+        #expect(ContactPhotoCache(directory: directory).removeAll())
+        #expect(!FileManager.default.fileExists(atPath: directory.path))
     }
 }

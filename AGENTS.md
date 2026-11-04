@@ -380,8 +380,9 @@ Same protocol as KyPost for Android and Linux; change it in all three.
   contacts held it sends and pulls nothing (`awaitingAccountChoice`, not a
   failure) and `ContactSyncBanner` asks "Bring your N contacts into …?".
   Bring Them (`bringKeptContactsToPairedAccount`) resends every row as new
-  (synced rows marked made in KyPost; unsynced imports keep their consent
-  stamp) and drops the other account's uids, deletes, group ids and photo
+  (the answer is the consent: synced rows and imports stamped for the old
+  server are marked made in KyPost; rows of unknown origin still never
+  upload) and drops the other account's uids, deletes, group ids and photo
   refs. Remove Them and Remove Pairing's opt-in "Unpair and Remove Contacts"
   (`removeContactsFromThisDevice`, warned with the unsynced count) clear the
   rows, deletes, cursor, groups, photos and the cards KyPost created in

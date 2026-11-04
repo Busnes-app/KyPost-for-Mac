@@ -54,7 +54,7 @@ Commands and unlinked file paths below are relative to the repository root.
   after three failed attempts (the first run and two retries) blocks the app
   behind a recovery screen rather than presenting a clean first-run app over
   data that is still here. That screen names what is left, says what to fix
-  (for cards in Contacts: allow Contacts access, or delete them yourself), and
+  (for cards in Contacts: allow Contacts access), and
   offers Try Again, which runs the wipe once more. "Reset KyPost on This Device"
   on the lock screen is the same wipe.
 - **Hostile Location Protection** — keeps no mail, contacts, or attachments

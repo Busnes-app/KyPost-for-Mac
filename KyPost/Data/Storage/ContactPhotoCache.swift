@@ -70,8 +70,12 @@ final class ContactPhotoCache: Sendable {
     }
 
     /// Removes every cached photo (removing this device's contacts).
-    func removeAll() {
-        try? Self.deleteAll(directory: directory)
+    @discardableResult
+    func removeAll() -> Bool {
+        // In memory (Hostile Location Protection, the demo) nothing here was
+        // ever written, and the directory may be the real one.
+        guard !inMemory else { return true }
+        return (try? Self.deleteAll(directory: directory)) != nil
     }
 
     /// photoRef is a server-generated "<sha256>.<ext>" filename, but never

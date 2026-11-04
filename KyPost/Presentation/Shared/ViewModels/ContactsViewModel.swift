@@ -96,8 +96,13 @@ final class ContactsViewModel {
     var keptFromAnotherAccount: Int? { repository.health.keptFromAnotherAccount }
     /// The paired server's host, for the question.
     var pairedServerName: String { repository.pairedRelay?.name ?? "" }
-    /// Kept contacts not yet sent to the account they came from.
-    var keptUnsynced: Int { repository.health.pending.count }
+    /// Kept contact changes that never reached a server, counted when the
+    /// removal question opens (`prepareRemoveKept`).
+    private(set) var keptUnsynced = 0
+
+    func prepareRemoveKept() async {
+        keptUnsynced = await repository.unsyncedChangeCount()
+    }
 
     /// "Bring them": they go up to the paired account with the next sync.
     func bringKeptContacts() async {
@@ -114,6 +119,10 @@ final class ContactsViewModel {
     func removeKeptContacts() async {
         do {
             try await repository.removeContactsFromThisDevice()
+        } catch let incomplete as ContactRemovalIncomplete {
+            await sync()
+            statusMessage = incomplete.message
+            return
         } catch {
             statusMessage = "Couldn't remove the contacts: \(error.localizedDescription)"
             return
