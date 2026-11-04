@@ -719,6 +719,60 @@ private func makeDTO(
         #expect(env.pendingDeletes.all().isEmpty)
     }
 
+    /// Certification round 2: a reconcile whose pull got `tooOld`, then an
+    /// edit-only push, cleared the deleted create before the re-pull could
+    /// reconcile it, and the re-pull brought it back.
+    @Test func aDeletedCreateSurvivesATooOldReconcileUntilTheRepull() async throws {
+        let posts = Box<[String]>([])
+        let changed = """
+        {"cursor": 3, "changed": [
+          { "uid": "srv-ada", "rev": 1, "fn": "Ada", "emails": [{ "value": "ada@example.com" }] },
+          { "uid": "srv-bob", "rev": 2, "fn": "Bob" }
+        ]}
+        """
+        let client = HTTPClient { request in
+            var json = changed
+            if request.httpMethod == "POST" {
+                let first = posts.value.isEmpty
+                posts.mutate { $0.append(String(decoding: request.httpBody ?? Data(), as: UTF8.self)) }
+                json = first ? #"{"cursor": 0, "tooOld": true}"# : #"{"cursor": 4}"#
+            } else if request.url?.absoluteString.contains("since=5") == true {
+                json = #"{"cursor": 0, "tooOld": true}"#
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(json.utf8), response)
+        }
+        let env = try makeEnvironment(client: client)
+        try await env.dao.upsert(contacts: [makeContact(uid: "srv-bob", name: "Bob B.", needsSync: true)])
+        env.cursorStore.advance(to: 5)
+        let ada = makeContact(name: "Ada", email: "ada@example.com")
+        env.cursorStore.createsInFlight = true
+        env.cursorStore.submittedCreates = [ada.localId]
+        env.cursorStore.deletedCreates = [ada]
+
+        try await env.repository.sync()
+
+        #expect(try await env.dao.listAll().map(\.name) == ["Bob B."])
+        let last = try #require(posts.value.last)
+        #expect(last.contains(#""uid":"srv-ada""#))
+        #expect(last.contains(#""deleted":true"#))
+    }
+
+    /// Certification round 2: only a create the unanswered push actually
+    /// sent is remembered; deleting any other unsent contact meanwhile is
+    /// not, so reconciliation can never claim a server contact for it.
+    @Test func deletingACreateThePushDidNotSendRemembersNothing() async throws {
+        let env = try makeEnvironment(client: stubClient())
+        let other = makeContact(name: "Held", email: "held@example.com", needsSync: true)
+        try await env.dao.upsert(contacts: [other])
+        env.cursorStore.createsInFlight = true
+        env.cursorStore.submittedCreates = [UUID()]
+
+        try await env.repository.deleteContact(other)
+
+        #expect(env.cursorStore.deletedCreates.isEmpty)
+    }
+
     @Test func unsyncedLocalDeleteLeavesNoTombstone() async throws {
         let env = try makeEnvironment(client: stubClient(json: #"{"cursor": 1}"#))
         let contact = makeContact(name: "Draft Person", needsSync: true)

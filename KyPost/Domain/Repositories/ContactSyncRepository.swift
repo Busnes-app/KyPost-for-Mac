@@ -23,9 +23,13 @@ enum ContactSyncError: Error, Equatable {
 /// `removeContactsFromThisDevice` cleared the contacts but not all of this.
 struct ContactRemovalIncomplete: Error, Equatable {
     var leftovers: [String]
+    /// Cards KyPost created are still in Contacts; their links stay.
+    var cardsLeft = false
 
     var message: String {
-        String(localized: "Contacts removed, but not: \(leftovers.joined(separator: ", ")). To remove the cards, allow KyPost to access Contacts, then use Remove Exported Contacts in Settings.")
+        let removed = String(localized: "Contacts removed, but not: \(leftovers.joined(separator: ", ")).")
+        guard cardsLeft else { return removed }
+        return removed + " " + String(localized: "To remove the cards, allow KyPost to access Contacts, then use Remove Exported Contacts in Settings.")
     }
 }
 
@@ -185,7 +189,7 @@ final class ContactSyncRepository {
             // Never reached the server, unless a push carrying it is still
             // unanswered: then reconciliation must still find it
             // (`ContactCursorStore.deletedCreates`).
-            if cursorStore.createsInFlight {
+            if cursorStore.createsInFlight, cursorStore.submittedCreates.contains(contact.localId) {
                 cursorStore.deletedCreates += [contact]
             }
             try await contactDAO.deleteLocal(localId: contact.localId)
@@ -504,10 +508,13 @@ final class ContactSyncRepository {
         cursorStore.account = ((try? securePairingStore.loadPairing()) ?? nil).map(Self.accountKey)
         health.recordKeptFromAnotherAccount(nil)
         await refreshPendingSummary()
-        if systemContactsExporter?.hasExportedContacts() == true {
+        let cardsLeft = systemContactsExporter?.hasExportedContacts() == true
+        if cardsLeft {
             leftovers.append(String(localized: "cards KyPost added to Contacts"))
         }
-        guard leftovers.isEmpty else { throw ContactRemovalIncomplete(leftovers: leftovers) }
+        guard leftovers.isEmpty else {
+            throw ContactRemovalIncomplete(leftovers: leftovers, cardsLeft: cardsLeft)
+        }
     }
 
     /// Every contact change this device holds that never reached a server,
@@ -563,7 +570,10 @@ final class ContactSyncRepository {
         // Set before the request and cleared only once every page answered:
         // a timeout or a dropped connection after the relay committed a page
         // leaves its creates on the server with no uid here.
-        cursorStore.createsInFlight = !pendingCreates.isEmpty
+        // Never cleared here: a reconcile still owed (its pull got `tooOld`)
+        // keeps the flag, and the deleted creates it carries, until the
+        // re-pull from 0 has reconciled them.
+        if !pendingCreates.isEmpty { cursorStore.createsInFlight = true }
         var withheld = Set<UUID>()
 
         for start in stride(from: 0, to: changes.count, by: Self.maxChangesPerPush) {
@@ -577,6 +587,10 @@ final class ContactSyncRepository {
                     return change.dto
                 }
             guard !page.isEmpty else { continue }
+            for case .contact(let contact) in changes[start..<min(start + Self.maxChangesPerPush, changes.count)]
+            where contact.uid == nil && !withheld.contains(contact.localId) {
+                cursorStore.submittedCreates.insert(contact.localId)
+            }
             let response = try await client.push(
                 serverUrl: serverUrl,
                 auth: auth,

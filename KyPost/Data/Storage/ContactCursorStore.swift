@@ -93,6 +93,22 @@ final class ContactCursorStore {
         }
     }
 
+    private static let submittedCreatesKey = "contacts.submittedCreates"
+
+    /// The localIds of creates the unanswered push actually sent. Only these
+    /// can be on the relay without a uid here, so only their deletion is
+    /// remembered in `deletedCreates`.
+    var submittedCreates: Set<UUID> {
+        get { Set((defaults.stringArray(forKey: Self.submittedCreatesKey) ?? []).compactMap(UUID.init)) }
+        set {
+            if newValue.isEmpty {
+                defaults.removeObject(forKey: Self.submittedCreatesKey)
+            } else {
+                defaults.set(newValue.map(\.uuidString), forKey: Self.submittedCreatesKey)
+            }
+        }
+    }
+
     private static let createsInFlightKey = "contacts.createsInFlight"
 
     /// Set while a push carrying creates has not been answered. A create the
@@ -103,10 +119,15 @@ final class ContactCursorStore {
     var createsInFlight: Bool {
         get { defaults.bool(forKey: Self.createsInFlightKey) }
         set {
-            defaults.set(newValue, forKey: Self.createsInFlightKey)
-            // Accounted for: nothing deleted meanwhile can still be on the
-            // relay unknown to this device.
-            if !newValue { deletedCreates = [] }
+            if newValue {
+                defaults.set(true, forKey: Self.createsInFlightKey)
+            } else {
+                defaults.removeObject(forKey: Self.createsInFlightKey)
+                // Accounted for: nothing deleted meanwhile can still be on
+                // the relay unknown to this device.
+                deletedCreates = []
+                submittedCreates = []
+            }
         }
     }
 }

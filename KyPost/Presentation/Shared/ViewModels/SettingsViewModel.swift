@@ -255,12 +255,11 @@ final class SettingsViewModel {
                 contactsNote = "Contacts could not be removed: \(error.localizedDescription)"
             }
         }
-        statusMessage = [
-            pairingCleared && tornDown
-                ? "Pairing removed"
-                : "Pairing removed, but some of this account's data could not be erased from this device.",
-            contactsNote,
-        ].compactMap { $0 }.joined(separator: " ")
+        let pairingNote = pairingCleared && tornDown
+            ? "Pairing removed"
+            : "Pairing removed, but some of this account's data could not be erased from this device."
+        statusMessage = contactsNote.map { "\(pairingNote.hasSuffix(".") ? pairingNote : pairingNote + ".") \($0)" }
+            ?? pairingNote
     }
 
     func testConnection() async {
