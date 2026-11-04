@@ -805,7 +805,12 @@ old sentence edited out.
   (`WipeStateStore`), and either copy is believed. A Keychain marker with no
   defaults record (a deleted plist, or a reinstall — Keychain items survive
   both) resumes the wipe rather than blocking, so reinstalling stays the
-  recovery. An unreadable Keychain reads as no marker.
+  recovery on iOS. On macOS deleting the app keeps its container, so
+  `ManualRecoveryView`'s Try Again is the recovery there. An unreadable
+  Keychain reads as no marker.
+- **`deviceContactCards` needs Contacts access only for cards KyPost created.**
+  Links to the user's own cards (imported, adopted) are forgotten without it,
+  and a refused delete always keeps its link.
 - **The failed-unlock reset is this wipe** (`resetAfterFailedUnlock` →
   `performSecurityWipe`). Never give it a step list of its own.
 - **Order: in-memory plaintext, then local files, then network.** The

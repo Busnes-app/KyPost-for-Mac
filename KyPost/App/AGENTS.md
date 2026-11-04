@@ -175,7 +175,9 @@ intact and the wipe landed a few hundred milliseconds later.
   notice stored there would live in), and rebuilds last — which is what closes
   the SwiftData file descriptors on the store the wipe unlinked.
 - A verdict of `.settled(.incomplete(_, willRetry: false))` blocks the whole
-  app behind `ManualRecoveryView`. Entry points that never present a window
+  app behind `ManualRecoveryView`, whose Try Again reruns
+  `performSecurityWipe` as a new episode. It is the only way out on macOS:
+  deleting the app leaves its container, and the markers, in place. Entry points that never present a window
   guard on `securityWipe.blockedByAbandonedWipe` themselves — currently
   `PushNotificationDispatcher.handleIncoming`, `presentLocally`,
   `presentMfaLocally`, `deliveredRemotePushes`, the KyIdentity sign-on

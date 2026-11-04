@@ -52,8 +52,10 @@ Commands and unlinked file paths below are relative to the repository root.
   not spend your attempts. A wipe that cannot finish says which parts it
   could not remove, keeps the app locked, retries at the next launch, and
   after three failed attempts (the first run and two retries) blocks the app
-  behind a "reinstall to clear this" screen rather than presenting a clean
-  first-run app over data that is still here. "Reset KyPost on This Device"
+  behind a recovery screen rather than presenting a clean first-run app over
+  data that is still here. That screen names what is left, says what to fix
+  (for cards in Contacts: allow Contacts access, or delete them yourself), and
+  offers Try Again, which runs the wipe once more. "Reset KyPost on This Device"
   on the lock screen is the same wipe.
 - **Hostile Location Protection** — keeps no mail, contacts, or attachments
   on the device. All data stays in memory and reloads from your server,

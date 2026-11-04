@@ -26,6 +26,12 @@ struct ManualRecoveryView: View {
     @Environment(\.theme) private var theme
 
     let failedSteps: [String]
+    /// Runs the wipe again as a new episode (`WipeStateStore.begin` gives an
+    /// abandoned one a fresh budget). The only way out on macOS, where
+    /// deleting the app leaves its container, and these markers, behind.
+    let tryAgain: () async -> Void
+
+    @State private var isRetrying = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -35,15 +41,20 @@ struct ManualRecoveryView: View {
             Text("Manual recovery required")
                 .font(AppFont.ui(17, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
-            Text("""
-                KyPost erased what it could from this device and could not finish. \
-                Some data may still be here, so the app will not open. \
-                Delete KyPost and install it again to clear it.
-                """)
+            Text(Self.explanation)
                 .font(AppFont.ui(13))
                 .foregroundStyle(theme.secondaryInk)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
+            if failedSteps.contains("deviceContactCards") {
+                // The one step the user can fix: the cards are in their own
+                // Contacts, outside this app.
+                Text("To remove the cards KyPost added to Contacts, allow KyPost to access Contacts in System Settings → Privacy & Security → Contacts, or delete those cards in Contacts yourself, then Try Again.")
+                    .font(AppFont.ui(13))
+                    .foregroundStyle(theme.inkStrong)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
             if !failedSteps.isEmpty {
                 // Named, not summarised. The user cannot act on "some steps",
                 // and support cannot either.
@@ -53,10 +64,29 @@ struct ManualRecoveryView: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
             }
+            Button(isRetrying ? "Erasing…" : "Try Again") {
+                isRetrying = true
+                Task {
+                    await tryAgain()
+                    isRetrying = false
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(isRetrying)
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.bg)
+    }
+
+    private static var explanation: String {
+#if os(macOS)
+        // Deleting the app from Applications leaves its container, and the
+        // wipe's markers in it, so reinstalling alone changes nothing here.
+        String(localized: "KyPost erased what it could from this Mac and could not finish. Some data may still be here, so the app will not open. Fix what is listed below, then Try Again. If it still cannot finish, quit KyPost, delete it and the folder ~/Library/Containers/org.kysecurity.mail, then install it again.")
+#else
+        String(localized: "KyPost erased what it could from this device and could not finish. Some data may still be here, so the app will not open. Try Again, or delete KyPost and install it again to clear it.")
+#endif
     }
 }
 

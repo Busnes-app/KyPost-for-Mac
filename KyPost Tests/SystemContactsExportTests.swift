@@ -795,6 +795,38 @@ private func makeCard(
         #expect(env.mock.cards[identifier]?.phoneNumbers.count == phonesBefore)
     }
 
+    /// Council pass 2: deleting the contact in KyPost deleted the adopted
+    /// card, which is the user's. Like the reconcile, forget the link only.
+    @Test func deletingTheContactOfAnAdoptedCardKeepsTheCard() async throws {
+        let env = try makeEnvironment()
+        try await env.mock.add(makeCard()) // Grace Hopper, grace@example.com
+        let contact = makeContact(name: "Grace Hopper", email: "grace@example.com")
+        try await env.dao.upsert(contacts: [contact])
+        await env.exporter.reconcileAll()
+        let identifier = try #require(env.linkStore.all().first?.cnIdentifier)
+
+        await env.exporter.exportDelete(localId: contact.localId)
+
+        #expect(env.mock.cards[identifier] != nil)
+        #expect(env.linkStore.all().isEmpty)
+    }
+
+    /// Council pass 2: a refused single delete dropped its link, so the
+    /// card stayed in Contacts with no record a wipe could find.
+    @Test func aRefusedSingleDeleteKeepsItsLink() async throws {
+        let env = try makeEnvironment()
+        let contact = makeContact()
+        try await env.dao.upsert(contacts: [contact])
+        await env.exporter.reconcileAll()
+        let card = try #require(env.linkStore.all().first?.cnIdentifier)
+        env.mock.failingIdentifiers = [card]
+
+        await env.exporter.exportDelete(localId: contact.localId)
+
+        #expect(env.linkStore.all().map(\.cnIdentifier) == [card])
+        #expect(env.exporter.hasExportedContacts())
+    }
+
     @Test func anAdoptedCardIsNotDeletedWhenItsContactGoesAway() async throws {
         let env = try makeEnvironment()
         try await env.mock.add(makeCard())
@@ -1002,6 +1034,29 @@ private func makeCard(
         #expect(env.mock.cards.isEmpty)
         #expect(env.linkStore.all().isEmpty)
         #expect(!env.exporter.hasExportedContacts())
+    }
+
+    /// Council pass 2: without Contacts access, a wipe failed on links to
+    /// the user's own cards, which need no access to forget. Only the cards
+    /// KyPost created stay on record.
+    @Test func removeAllExportedWithoutAccessForgetsOnlyTheUsersOwnCards() async throws {
+        let env = try makeEnvironment()
+        try await env.mock.add(makeCard()) // Grace Hopper, adopted
+        try await env.dao.upsert(contacts: [
+            makeContact(name: "Grace Hopper", email: "grace@example.com"),
+            makeContact(name: "Alpha One", email: "alpha@example.com"),
+        ])
+        await env.exporter.reconcileAll()
+        #expect(env.linkStore.all().count == 2)
+        env.mock.authorizationStatus = .denied
+
+        let summary = await env.exporter.removeAllExported()
+
+        #expect(summary.deleted == 0)
+        let left = env.linkStore.all()
+        #expect(left.count == 1)
+        #expect(left.first?.userOwned == false)
+        #expect(env.mock.cards.count == 2)
     }
 
     /// A refused delete keeps its link: a resumed wipe reads the links to
