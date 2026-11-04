@@ -234,7 +234,8 @@ Domain.
   follows the server's `config/signatures.go` text rules
   (`MailSignatureStore.problem`): at most 2000 Unicode scalars, no Cc control
   character except newline and tab, no bidi embedding/override/isolate
-  (U+202A–202E, U+2066–2069); a refused text saves nothing and says why.
+  (U+202A–202E, U+2066–2069); a refused text saves nothing, says why, and
+  disables the switches until it is fixed (owner Q4 B).
   Compose inserts it once at open (`ComposeDraft.initialBody`, by
   `ComposeDraft.kind`): web placement, typing line, blank line, signature,
   blank line, quote; no `-- `. Never into `.draft` (a saved or restored
