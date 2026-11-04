@@ -798,7 +798,10 @@ struct EmailDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             // Flattened like the To/Cc lines: a sender-chosen line break or
             // bidi override must not forge a header line or reverse text.
-            Text(displayHeaderText(email.subject).isEmpty ? "(No subject)" : displayHeaderText(email.subject))
+            // A decrypted message's real subject rides inside the ciphertext;
+            // the outer one is a placeholder (`outerPlaceholderSubject`).
+            let subject = displayHeaderText(encryptedRead?.body?.protectedSubject ?? email.subject)
+            Text(subject.isEmpty ? "(No subject)" : subject)
                 .font(AppFont.ui(20, weight: .semibold))
                 .foregroundStyle(theme.inkStrong)
                 .lineLimit(3)
