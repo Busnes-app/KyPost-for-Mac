@@ -78,6 +78,16 @@ Default section order:
 ## Testing
 
 - Run: `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`.
+- **Fuzzing is `Fuzz/`, a Linux-only SwiftPM package** run by
+  `.github/workflows/fuzz.yml` for 60 s on every PR (swift.org toolchain in a
+  digest-pinned `swift` image; Xcode ships no libFuzzer for Swift). Its
+  target compiles the app's `PgpMimeReader.swift` and `DecryptedBody.swift`
+  through symlinks, so both must stay Foundation-only; that is why
+  `DecryptedBody` is not in `PgpPayload.swift`. Locally, in that image:
+  `swift build -c release --product FuzzPgpMimeReader -Xswiftc
+  -sanitize=fuzzer,address -Xswiftc -parse-as-library` in `Fuzz/`, then run
+  `.build/release/FuzzPgpMimeReader <scratch-dir> Corpus/PgpMimeReader`. A
+  crashing input stays in `Fuzz/Corpus/PgpMimeReader` as a seed with its fix.
 - Code scanning is `.github/workflows/codeql.yml`: Swift from unsigned arm64
   iOS Simulator and macOS builds (both, for the `#if os()` code), plus Actions.
   Swift runs on push to `main`, weekly and by hand, not on pull requests.
@@ -177,6 +187,9 @@ a crypto path acceptable.
   `-X=runtime.godebugDefault=asyncpreemptoff=1` to its `-ldflags`, fails if
   that line stops matching, and checks every slice carries the value after
   the build (see the GODEBUG note under Testing). Keep it on any rebuild.
+  The release also carries `KyPost-gopenpgp-<version>.intoto.jsonl`, a
+  keyless build-provenance attestation of the zip, checked with
+  `gh attestation verify` before it is published.
 - Track plain `vX.Y.Z` tags. `vX.Y.Z-proton` builds against Proton's
   go-crypto fork and swaps in Proton's own default profile.
 - **The build is not bit-reproducible.** Two runs of the same pinned tag
@@ -1340,8 +1353,10 @@ an event only when asked and syncs no calendar.
   The same tag exports it with Developer ID (`ExportOptions-macOS.plist`,
   `method developer-id`), checks the signer and a production
   `aps-environment`, packs `KyPost-<version>.dmg`, signs, notarises with the
-  same API key, staples, and attaches it and its `.sha256` to the tag's
-  release, before the iOS upload. Two more secrets:
+  same API key, staples, and attaches it, its `.sha256` and the
+  build-provenance bundle covering both (`KyPost-<tag>.intoto.jsonl`, from
+  `actions/attest-build-provenance`, keyless) to the tag's release, before
+  the iOS upload. Two more secrets:
   `DEVELOPER_ID_CERTIFICATE` (.p12, base64) and
   `DEVELOPER_ID_CERTIFICATE_PASSWORD`. Cloud signing cannot do Developer ID,
   so that identity is a secret. A re-run never replaces a published disk

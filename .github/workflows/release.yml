@@ -102,6 +102,9 @@ jobs:
     permissions:
       # Write: the job creates the GitHub Release the Mac disk image is attached to.
       contents: write
+      # Build-provenance attestation of the disk image (keyless, OIDC).
+      id-token: write
+      attestations: write
     # Secrets live on a protected environment so a tag pushed by anyone with
     # write access cannot silently reach App Store Connect.
     environment: release
@@ -346,9 +349,40 @@ jobs:
           (cd "$RUNNER_TEMP" && shasum -a 256 "KyPost-${version}.dmg" > "KyPost-${version}.dmg.sha256")
           echo "DMG=$dmg" >> "$GITHUB_ENV"
 
+      # SLSA build provenance for the disk image and its checksum file,
+      # signed keylessly with this run's identity, published beside them as
+      # `KyPost-<tag>.intoto.jsonl`. Part of the Mac release, so like the
+      # steps above it may fail without holding back the iOS upload.
+      - name: Attest build provenance
+        id: mac_attest
+        if: steps.mac_package.outcome == 'success'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ env.DMG }}
+            ${{ env.DMG }}.sha256
+
+      - name: Check the provenance bundle
+        id: mac_provenance
+        if: steps.mac_attest.outcome == 'success'
+        continue-on-error: true
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.mac_attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          provenance="$RUNNER_TEMP/KyPost-${TAG}.intoto.jsonl"
+          cp "$BUNDLE" "$provenance"
+          for subject in "$DMG" "$DMG.sha256"; do
+            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY" --bundle "$provenance"
+          done
+          echo "PROVENANCE=$provenance" >> "$GITHUB_ENV"
+
       - name: Publish the GitHub Release
         id: mac_publish
-        if: steps.mac_package.outcome == 'success'
+        if: steps.mac_provenance.outcome == 'success'
         continue-on-error: true
         env:
           TAG: ${{ github.ref_name }}
@@ -366,7 +400,7 @@ jobs:
             echo "::notice::${name} is already published on ${TAG}; leaving it as it is."
             exit 0
           fi
-          gh release upload "$TAG" "$DMG" "$DMG.sha256"
+          gh release upload "$TAG" "$DMG" "$DMG.sha256" "$PROVENANCE"
 
       # Export and upload are one step: ExportOptions carries
       # destination=upload, so there is no intermediate artifact for a later

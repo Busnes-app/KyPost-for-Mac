@@ -1,0 +1,12 @@
+Content-Type: multipart/alternative;
+ boundary="b"
+
+--b
+Content-Type: text/plain
+
+the plain one
+--b
+Content-Type: text/html; charset=utf-8
+
+<b>the html one</b>
+--b--

@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Releases carry build provenance.** The Mac disk image and the GopenPGP
+  framework are published with a `.intoto.jsonl` attestation naming the
+  workflow run that built them, checkable with `gh attestation verify`
+  (see `docs/VERIFYING-RELEASES.md`).
 - **Replies are threaded.** Reply and Reply All name the message they answer,
   so recipients see them in the same conversation. If the server cannot link
   a reply (the original moved or is gone), nothing is sent and KyPost asks
