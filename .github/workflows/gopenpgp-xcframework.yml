@@ -53,6 +53,9 @@ jobs:
     runs-on: macos-15
     permissions:
       contents: write
+      # Build-provenance attestation (keyless, through GitHub's OIDC token).
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout this repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -204,6 +207,31 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # SLSA build provenance for the zip, signed keylessly with this run's
+      # identity. The bundle is published beside the zip as
+      # `KyPost-gopenpgp-<version>.intoto.jsonl`, so it outlives the run log:
+      #   gh attestation verify gopenpgp.xcframework.zip \
+      #     --repo Busnes-app/KyPost-for-Mac --bundle KyPost-gopenpgp-<version>.intoto.jsonl
+      - name: Attest build provenance
+        if: steps.state.outputs.publish == 'true'
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: gopenpgp.xcframework.zip
+
+      - name: Check the provenance bundle
+        if: steps.state.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          VERSION: ${{ steps.pin.outputs.version }}
+        run: |
+          set -euo pipefail
+          PROVENANCE="$GITHUB_WORKSPACE/KyPost-gopenpgp-$VERSION.intoto.jsonl"
+          cp "$BUNDLE" "$PROVENANCE"
+          gh attestation verify "$GITHUB_WORKSPACE/gopenpgp.xcframework.zip" \
+            --repo "$GITHUB_REPOSITORY" --bundle "$PROVENANCE"
+
       - name: Publish
         if: steps.state.outputs.publish == 'true'
         working-directory: kypost
@@ -249,6 +277,7 @@ jobs:
           # deletes the old release earlier in this job. By here the tag is
           # known not to exist.
           gh release create "$TAG" "$ASSET" \
+            "$GITHUB_WORKSPACE/KyPost-gopenpgp-$VERSION.intoto.jsonl" \
             --title "GopenPGP $VERSION (XCFramework)" \
             --latest=false \
             --notes-file "$RUNNER_TEMP/notes.md"

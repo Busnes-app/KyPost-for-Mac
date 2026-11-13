@@ -58,9 +58,24 @@ is on `main`.
 
 - **The log will expire.** This repository keeps Actions logs for 90 days, so the v3.5.2
   log goes around 2027-01-12. After that only the release notes link the binary to its
-  build. There is no build-provenance attestation that would outlive the log
+  build. v3.5.2 has no build-provenance attestation that would outlive the log
   (`gh attestation verify gopenpgp.xcframework.zip --repo Busnes-app/KyPost-for-Mac`
   answers 404).
+
+**3. Build provenance (untested: no release has been built with it yet).** GopenPGP
+releases built after v3.5.2 also carry `KyPost-gopenpgp-<version>.intoto.jsonl`, a SLSA
+provenance attestation of the zip signed keylessly (Sigstore) with the workflow run's
+identity. It names the repository, workflow, commit and run that built the zip:
+
+```bash
+v=<version>
+gh release download gopenpgp-$v -R Busnes-app/KyPost-for-Mac
+gh attestation verify gopenpgp.xcframework.zip --repo Busnes-app/KyPost-for-Mac \
+  --bundle KyPost-gopenpgp-$v.intoto.jsonl
+```
+
+It says which run built the bytes, not that the bytes match the source: the build is
+still not reproducible.
 - **The log needs a GitHub sign-in.** Anonymous log downloads are refused (HTTP 403).
   The commands were run only as the repository's admin.
 - **You cannot rebuild it to the same bytes.** Two builds of the same tag produced
@@ -96,7 +111,16 @@ codesign --verify --deep --strict -vv /Volumes/KyPost*/KyPost.app
 codesign -dvv /Volumes/KyPost*/KyPost.app 2>&1 | grep -E '^(Authority|TeamIdentifier)='
 ```
 
-Expect `TeamIdentifier=TATYN4X57D` and a `Developer ID Application` authority. The `.sha256`
+Expect `TeamIdentifier=TATYN4X57D` and a `Developer ID Application` authority.
+The release also carries `KyPost-v$v.intoto.jsonl`, build provenance for the disk image
+and its `.sha256`:
+
+```bash
+gh release download v$v -R Busnes-app/KyPost-for-Mac -p "KyPost-v$v.intoto.jsonl"
+gh attestation verify "KyPost-$v.dmg" --repo Busnes-app/KyPost-for-Mac \
+  --bundle "KyPost-v$v.intoto.jsonl"
+```
+ The `.sha256`
 file sits beside the disk image on the same release page, so it catches a damaged download,
 not a swapped one. The Developer ID signature and notarisation are what tie the app to
 the team.
