@@ -56,6 +56,10 @@ nonisolated struct CalendarEvent: Equatable, Sendable, CustomStringConvertible {
     /// An iTIP REPLY needs a UID, an organizer, a readable SEQUENCE, and a
     /// RECURRENCE-ID that could be restated if there is one.
     var canReply = false
+    /// DTSTAMP, UTC by definition; nil when absent or not a UTC time.
+    var stamp: Date? = nil
+    /// The first CONFERENCE property, only as an `https:` URL (RFC 7986 §5.11).
+    var conference: URL? = nil
 
     /// A time of day with neither `Z` nor a TZID: RFC 5545 floating, read in
     /// the viewer's zone. An all-day date and an unresolved TZID are not this.
@@ -86,20 +90,21 @@ nonisolated struct CalendarInvite: Equatable, Sendable {
     /// `listedMethod` is the relay's `calendarMethod` for the part
     /// (KyPost-Server #353). A relay without it predates `calendarReply`
     /// (#354), ignores the field, and would deliver the RSVP as plain mail —
-    /// so it gets no buttons at all.
+    /// so it gets no buttons at all. `/api/calendar/rsvp` reads only a
+    /// listed REQUEST (KyPost-Server docs/NATIVE-RSVP.md).
     func offersRsvp(listedMethod: String) -> Bool {
-        method == "REQUEST" && primary.canReply && !listedMethod.isEmpty
+        method == "REQUEST" && primary.canReply && listedMethod == "REQUEST"
     }
+
+    /// The meeting link to offer, never for a cancelled event.
+    var joinURL: URL? { isCancelled ? nil : primary.conference }
 }
 
 /// The listed part to download, or nil. A `text/calendar` part (the iMIP body
 /// part) beats the `.ics` file Google attaches beside it; both hold the same
 /// event.
 nonisolated func inviteAttachment(_ listing: [EmailAttachment]) -> EmailAttachment? {
-    func type(_ item: EmailAttachment) -> String {
-        item.mimeType.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
-            .first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
-    }
+    let type = attachmentMediaType
     let candidate = listing.first { type($0) == "text/calendar" }
         ?? listing.first {
             type($0) == "application/ics"
@@ -107,6 +112,12 @@ nonisolated func inviteAttachment(_ listing: [EmailAttachment]) -> EmailAttachme
         }
     guard let candidate, (1...CalendarInviteLimits.maxInviteBytes).contains(candidate.size) else { return nil }
     return candidate
+}
+
+/// A listed part's bare, lowercased media type.
+nonisolated func attachmentMediaType(_ item: EmailAttachment) -> String {
+    item.mimeType.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+        .first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
 }
 
 /// Parses an invite, or nil for anything it cannot vouch for.
@@ -208,9 +219,11 @@ nonisolated func rsvpDraft(
     )
 }
 
-/// One answerable revision: a raised SEQUENCE is a new invite to answer.
+/// One answerable revision: a raised SEQUENCE, or the same SEQUENCE with a
+/// later DTSTAMP, is a new invite to answer.
 nonisolated func rsvpKey(_ event: CalendarEvent) -> String {
-    [event.uid, event.recurrenceId ?? "", String(event.sequence)].joined(separator: "\u{0}")
+    [event.uid, event.recurrenceId ?? "", String(event.sequence), event.stamp.map { String(Int($0.timeIntervalSince1970)) } ?? ""]
+        .joined(separator: "\u{0}")
 }
 
 // MARK: - Parsing
@@ -362,6 +375,13 @@ private nonisolated enum ICS {
             0
         }
         let rrule = props["RRULE"]?.value.trimmingCharacters(in: .whitespaces) ?? ""
+        // DTSTAMP is UTC by definition (RFC 5545 §3.8.7.2).
+        let stamp = props["DTSTAMP"].flatMap { line -> Date? in
+            guard line.value.trimmingCharacters(in: .whitespaces).hasSuffix("Z"),
+                  let parsed = time(line, localZone: localZone, windowsZone: windowsZone), !parsed.allDay
+            else { return nil }
+            return parsed.at
+        }
 
         return (
             CalendarEvent(
@@ -380,10 +400,27 @@ private nonisolated enum ICS {
                 attendees: attendees,
                 recurrenceId: recurrenceId,
                 canReply: !uid.isEmpty && !organizer.isEmpty && sequence != nil
-                    && (recurrence == nil || recurrenceId != nil)
+                    && (recurrence == nil || recurrenceId != nil),
+                stamp: stamp,
+                conference: conferenceURL(props["CONFERENCE"])
             ),
             recurrence != nil
         )
+    }
+
+    /// `https:` with a host and no credentials, printable ASCII only (so a
+    /// look-alike host cannot hide in it), at most 2048 bytes. Anything else
+    /// is no link.
+    static func conferenceURL(_ line: ContentLine?) -> URL? {
+        guard let value = line?.value.trimmingCharacters(in: .whitespaces),
+              (1...2048).contains(value.utf8.count),
+              value.unicodeScalars.allSatisfy({ (0x21...0x7E).contains($0.value) }),
+              let parts = URLComponents(string: value),
+              parts.scheme?.lowercased() == "https",
+              let host = parts.host, !host.isEmpty,
+              parts.user == nil, parts.password == nil
+        else { return nil }
+        return parts.url
     }
 
     /// The REPLY carries no VTIMEZONE, so a TZID cannot be copied: a date

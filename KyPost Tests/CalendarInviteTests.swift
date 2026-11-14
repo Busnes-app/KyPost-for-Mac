@@ -650,6 +650,8 @@ private func expectRelayAccepts(_ ics: String) {
         addresses: [String]? = ["me@example.com"],
         sent: Box<[CalendarReplyDraft]> = Box([]),
         outcome: (RsvpResult, String)? = (.sent, ""),
+        calendarAnswer: KyCalendarAnswer? = .byMail(noEvent: false),
+        calendarRequests: Box<[RelayCalendarRsvpRequest]> = Box([]),
         calendar: FakeCalendarStore? = nil,
         locked: Box<Bool> = Box(false)
     ) -> InviteCardModel {
@@ -663,15 +665,24 @@ private func expectRelayAccepts(_ ics: String) {
                 sent.value.append(draft)
                 return outcome.map { (result: $0.0, reason: $0.1) }
             },
+            answerOnCalendar: { request, _ in
+                calendarRequests.value.append(request)
+                return calendarAnswer
+            },
             now: { now },
             calendarStore: { calendar },
             isLocked: { locked.value }
         )
     }
 
-    private func load(_ model: InviteCardModel, method: String = "REQUEST") async {
-        let data = invite(request)
-        await model.load(listing: listing(method: method)) { _ in data }
+    private let source = InviteSource(messageId: "n1:42", folder: "")
+
+    /// `method` is the relay's listed one; `ics` the invite's own METHOD.
+    private func load(
+        _ model: InviteCardModel, method: String = "REQUEST", ics icsMethod: String = "REQUEST", _ event: [String] = request
+    ) async {
+        let data = invite(method: icsMethod, event)
+        await model.load(listing: listing(method: method), source: source) { _ in data }
     }
 
     @Test func aConfirmedRsvpSendsOnceAndLandsInTheTracker() async throws {
@@ -683,7 +694,7 @@ private func expectRelayAccepts(_ ics: String) {
 
         await subject.requestRsvp(.accepted, senderEmail: "boss@example.com")
         let pending = try #require(subject.pendingRsvp)
-        #expect(pending.message.contains("unencrypted and unsigned"))
+        #expect(pending.message.hasPrefix("KyCalendar is not in use for this mailbox, so your answer goes to boss@example.com as an unencrypted, unsigned email."))
         #expect(!pending.message.contains("not the sender"))
         // A second tap while the first is pending offers nothing.
         #expect(!subject.canAnswer)
@@ -874,9 +885,168 @@ private func expectRelayAccepts(_ ics: String) {
     @Test func aCancelledInviteOffersNoAdd() async {
         let subject = model(tracker: RsvpTracker(center: NotificationCenter()))
         let data = invite(method: "CANCEL", request)
-        await subject.load(listing: listing(method: "CANCEL")) { _ in data }
+        await subject.load(listing: listing(method: "CANCEL"), source: source) { _ in data }
         await subject.requestAdd(hostileLocationProtection: true)
         #expect(subject.pendingHandoff == nil)
+    }
+
+    // MARK: KyCalendar first (KyPost-Server docs/NATIVE-RSVP.md)
+
+    /// Answered in KyCalendar: no prompt, no mail, the revision is done.
+    @Test func kyCalendarAnswersFirstAndNoMailGoesOut() async throws {
+        let sent = Box<[CalendarReplyDraft]>([])
+        let requests = Box<[RelayCalendarRsvpRequest]>([])
+        let subject = model(
+            tracker: RsvpTracker(center: NotificationCenter()), sent: sent,
+            calendarAnswer: .answered, calendarRequests: requests
+        )
+        await load(subject)
+        await subject.requestRsvp(.tentative, senderEmail: "boss@example.com")
+        #expect(requests.value == [RelayCalendarRsvpRequest(messageId: "n1:42", mailbox: "", index: 0, partstat: "TENTATIVE")])
+        #expect(subject.pendingRsvp == nil)
+        #expect(sent.value.isEmpty)
+        #expect(subject.rsvpMessage == "Answered through KyCalendar.")
+        #expect(!subject.canAnswer)
+    }
+
+    /// `kycalendar_off` and `no_event` fall back to mail, each saying why,
+    /// and only after the confirmation.
+    @Test(arguments: [
+        (false, "KyCalendar is not in use for this mailbox, so your answer goes to boss@example.com as an unencrypted, unsigned email."),
+        (true, "KyCalendar has no event for this invitation, so your answer goes to boss@example.com as an unencrypted, unsigned email."),
+    ])
+    func kyCalendarOffOrNoEventMailsAfterTheConfirmation(_ noEvent: Bool, _ lead: String) async throws {
+        let sent = Box<[CalendarReplyDraft]>([])
+        let subject = model(tracker: RsvpTracker(center: NotificationCenter()), sent: sent, calendarAnswer: .byMail(noEvent: noEvent))
+        await load(subject)
+        await subject.requestRsvp(.accepted, senderEmail: "boss@example.com")
+        let pending = try #require(subject.pendingRsvp)
+        #expect(pending.message.hasPrefix(lead))
+        #expect(sent.value.isEmpty)
+        await subject.confirmRsvp(pending)?.value
+        #expect(sent.value.count == 1)
+        #expect(sent.value.first?.ics.contains("ATTENDEE;PARTSTAT=ACCEPTED:mailto:me@example.com") == true)
+    }
+
+    /// Every other answer is shown and re-arms the buttons; nothing is mailed.
+    @Test func anyOtherFailureIsShownAndNeverMailed() async throws {
+        let sent = Box<[CalendarReplyDraft]>([])
+        let subject = model(
+            tracker: RsvpTracker(center: NotificationCenter()), sent: sent,
+            calendarAnswer: .failed("You are not invited to this event.")
+        )
+        await load(subject)
+        await subject.requestRsvp(.declined, senderEmail: "boss@example.com")
+        #expect(subject.pendingRsvp == nil)
+        #expect(sent.value.isEmpty)
+        #expect(subject.rsvpMessage == "You are not invited to this event.")
+        #expect(subject.canAnswer)
+    }
+
+    /// `conflict`: say so, offer Reload, and the reload reads the invite again.
+    @Test func aConflictOffersReloadAndReadsTheInviteAgain() async throws {
+        let sent = Box<[CalendarReplyDraft]>([])
+        let subject = model(tracker: RsvpTracker(center: NotificationCenter()), sent: sent, calendarAnswer: .conflict)
+        let fetches = Box(0)
+        let data = invite(request)
+        await subject.load(listing: listing(), source: source) { _ in
+            fetches.value += 1
+            return data
+        }
+        await subject.requestRsvp(.accepted, senderEmail: "boss@example.com")
+        #expect(subject.needsReload)
+        #expect(subject.rsvpMessage?.contains("changed since this invitation") == true)
+        #expect(sent.value.isEmpty)
+        #expect(subject.canAnswer)
+        await subject.reload()
+        #expect(fetches.value == 2)
+        #expect(!subject.needsReload)
+    }
+
+    /// The pairing went away during the call: nothing is said or mailed.
+    @Test func aReplacedPairingDuringTheCallDoesNothing() async {
+        let sent = Box<[CalendarReplyDraft]>([])
+        let subject = model(tracker: RsvpTracker(center: NotificationCenter()), sent: sent, calendarAnswer: nil)
+        await load(subject)
+        await subject.requestRsvp(.accepted, senderEmail: "boss@example.com")
+        #expect(subject.pendingRsvp == nil)
+        #expect(sent.value.isEmpty)
+        #expect(subject.rsvpMessage == nil)
+        #expect(subject.canAnswer)
+    }
+
+    /// The relay reads only a listed `text/calendar` REQUEST part.
+    @Test func onlyAListedTextCalendarRequestOffersAnswers() async {
+        let subject = model(tracker: RsvpTracker(center: NotificationCenter()))
+        let data = invite(request)
+        await subject.load(
+            listing: [EmailAttachment(index: 3, name: "invite.ics", mimeType: "application/ics", size: 900, calendarMethod: "REQUEST")],
+            source: source
+        ) { _ in data }
+        #expect(subject.invite != nil)
+        #expect(!subject.offersRsvp)
+    }
+
+    /// An update to an answered event says what changed and asks again.
+    @Test func anUpdateToAnAnsweredInviteSaysWhatChangedAndAsksAgain() async throws {
+        let tracker = RsvpTracker(center: NotificationCenter())
+        let first = model(tracker: tracker, calendarAnswer: .answered)
+        await load(first)
+        await first.requestRsvp(.accepted, senderEmail: "boss@example.com")
+
+        // The same revision again: answered, no buttons.
+        let again = model(tracker: tracker)
+        await load(again)
+        #expect(again.prior == .same(.accepted))
+        #expect(!again.canAnswer)
+
+        let moved = request.map {
+            $0.hasPrefix("SEQUENCE") ? "SEQUENCE:5" : $0.hasPrefix("DTSTART") ? "DTSTART:20261013T100000Z" : $0
+        } + ["LOCATION:Room 2"]
+        let update = model(tracker: tracker)
+        await load(update, moved)
+        #expect(update.prior == .newer(.accepted, changed: [.time, .place]))
+        #expect(update.canAnswer)
+        let notices = inviteNotices(try #require(update.invite), senderEmail: "boss@example.com", phishing: false, prior: update.prior)
+        #expect(notices.contains("Changed since you answered: time and place. You had accepted; answer again."))
+        #expect(!notices.contains("This invite was updated. Check your calendar."))
+    }
+
+    /// The same SEQUENCE with a later DTSTAMP is newer too.
+    @Test func aLaterStampAtTheSameSequenceIsNewer() async throws {
+        let tracker = RsvpTracker(center: NotificationCenter())
+        let first = model(tracker: tracker, calendarAnswer: .answered)
+        await load(first, request + ["DTSTAMP:20261001T080000Z"])
+        await first.requestRsvp(.declined, senderEmail: "boss@example.com")
+        let later = model(tracker: tracker)
+        await load(later, request + ["DTSTAMP:20261002T080000Z", "SUMMARY:ignored, first wins"])
+        #expect(later.prior == .newer(.declined, changed: []))
+        #expect(later.canAnswer)
+    }
+
+    /// A wipe or unpair forgets what was answered.
+    @Test func theAnswerMemoryEndsWithTheSession() async {
+        let center = NotificationCenter()
+        let tracker = RsvpTracker(center: center)
+        let first = model(tracker: tracker, calendarAnswer: .answered)
+        await load(first)
+        await first.requestRsvp(.accepted, senderEmail: "boss@example.com")
+        center.post(name: .kyPostSessionReset, object: nil)
+        let after = model(tracker: tracker)
+        await load(after)
+        #expect(after.prior == .unanswered)
+    }
+
+    /// A CANCEL shows "Cancelled": no answers, no Add, no Join.
+    @Test func aCancellationOffersNoAnswerAndNoJoin() async throws {
+        let subject = model(tracker: RsvpTracker(center: NotificationCenter()))
+        await load(subject, method: "CANCEL", ics: "CANCEL", request + ["CONFERENCE;VALUE=URI:https://meet.example.com/r/1"])
+        let parsed = try #require(subject.invite)
+        #expect(parsed.isCancelled)
+        #expect(!subject.offersRsvp)
+        #expect(!parsed.offersAdd)
+        #expect(parsed.primary.conference != nil)
+        #expect(parsed.joinURL == nil)
     }
 }
 
@@ -1066,5 +1236,138 @@ final class FakeCalendarStore: CalendarStoring {
     func saveToDefaultCalendar(_ configure: (EKEvent) -> Void) throws -> String? {
         saves += 1
         return "Home"
+    }
+}
+
+// MARK: - KyCalendar first (KyPost-Server docs/NATIVE-RSVP.md)
+
+/// NATIVE-RSVP.md table 1, row by row: (status, body, what the card does).
+nonisolated let kyCalendarAnswerTable: [(Int, String, KyCalendarAnswer)] = [
+    (200, #"{"outcome":"answered"}"#, .answered),
+    (200, #"{"outcome":"duplicate"}"#, .failed(KyCalendarAnswer.notConfirmed)),
+    (200, "not json", .failed(KyCalendarAnswer.notConfirmed)),
+    (409, #"{"error":"KyCalendar is off","code":"kycalendar_off"}"#, .byMail(noEvent: false)),
+    (404, #"{"error":"no event","code":"no_event"}"#, .byMail(noEvent: true)),
+    (409, #"{"error":"changed","code":"conflict"}"#, .conflict),
+    (400, #"{"error":"bad request","code":"bad_request"}"#, .failed("bad request")),
+    (400, #"{"error":"bad partstat","code":"bad_partstat"}"#, .failed("bad partstat")),
+    (404, #"{"error":"message not found","code":"not_found"}"#, .failed("message not found")),
+    (422, #"{"error":"not an invitation","code":"not_invitation"}"#, .failed("not an invitation")),
+    (422, #"{"error":"not invited","code":"not_invited"}"#, .failed("not invited")),
+    (502, #"{"error":"KyCalendar unavailable","code":"kycalendar_unavailable"}"#, .failed("KyCalendar unavailable")),
+    (507, #"{"error":"quota","code":"quota"}"#, .failed("quota")),
+    // A fallback code counts only on its documented status.
+    (404, #"{"error":"x","code":"kycalendar_off"}"#, .failed("x")),
+    (409, #"{"error":"x","code":"no_event"}"#, .failed("x")),
+    // No usable code, or no text: the generic sentence, never mail.
+    (409, #"{"error":"x","code":"Kycalendar_Off"}"#, .failed(KyCalendarAnswer.unreachable)),
+    (502, "Bad Gateway", .failed(KyCalendarAnswer.unreachable)),
+    (401, "", .failed(KyCalendarAnswer.unreachable)),
+    (429, #"{"error":"","code":"rate_limited"}"#, .failed(KyCalendarAnswer.unreachable)),
+]
+
+@Suite struct KyCalendarRsvpRelayTests {
+    private let auth = RelayAuth(deviceId: "d1", deviceSecret: "s1")
+    private let body = RelayCalendarRsvpRequest(messageId: "n1:42", mailbox: "Work", index: 2, partstat: "ACCEPTED")
+
+    /// Device-authenticated, no mailbox header (the primary), and the four
+    /// documented fields only: never ics, never a recurrenceId.
+    @Test func theRequestIsTheDocumentedOneAndCarriesNoIcs() async throws {
+        let seen = Box<URLRequest?>(nil)
+        let client = stubClient(json: #"{"outcome":"answered"}"#) { seen.value = $0 }
+        let source = RelayMailSource(httpClient: client, serverUrl: server, auth: auth)
+        #expect(await source.answerThroughKyCalendar(body) == .answered)
+        let request = try #require(seen.value)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.absoluteString == "\(server)/api/calendar/rsvp")
+        #expect(request.value(forHTTPHeaderField: "X-Kypost-Device-Id") == "d1")
+        #expect(request.value(forHTTPHeaderField: "X-Kypost-Device-Secret") == "s1")
+        #expect(request.value(forHTTPHeaderField: "X-KyPost-Mailbox") == nil)
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        let httpBody = try #require(request.httpBody)
+        let json = try #require(JSONSerialization.jsonObject(with: httpBody) as? [String: Any])
+        #expect(Set(json.keys) == ["messageId", "mailbox", "index", "partstat"])
+        #expect(json["messageId"] as? String == "n1:42")
+        #expect(json["mailbox"] as? String == "Work")
+        #expect(json["index"] as? Int == 2)
+        #expect(json["partstat"] as? String == "ACCEPTED")
+    }
+
+    @Test(arguments: kyCalendarAnswerTable)
+    func eachAnswerMapsAsDocumented(_ status: Int, _ json: String, _ expected: KyCalendarAnswer) async {
+        let source = RelayMailSource(httpClient: stubClient(status: status, json: json), serverUrl: server, auth: auth)
+        #expect(await source.answerThroughKyCalendar(body) == expected)
+    }
+
+    @Test func aNetworkErrorIsShownNotMailed() async {
+        let client = HTTPClient { _ in throw URLError(.notConnectedToInternet) }
+        let source = RelayMailSource(httpClient: client, serverUrl: server, auth: auth)
+        #expect(await source.answerThroughKyCalendar(body) == .failed(KyCalendarAnswer.unreachable))
+    }
+
+    /// The server's text is shown as text: bidi and control characters go,
+    /// and it is bounded.
+    @Test func theServerTextIsStrippedAndBounded() throws {
+        let hostile = #"{"error":"not‮ invited\u0007"# + String(repeating: "x", count: 1_000) + #"","code":"not_invited"}"#
+        let refusal = try #require(RelayCodedRefusal.parse(status: 422, body: Data(hostile.utf8)))
+        #expect(refusal.message.hasPrefix("not invited"))
+        #expect(refusal.message.unicodeScalars.count <= 300)
+        #expect(RelayCodedRefusal.parse(status: 422, body: Data(#"{"error":"x","code":""}"#.utf8)) == nil)
+        #expect(RelayCodedRefusal.parse(status: 422, body: Data(#"{"error":"x","code":"a-b"}"#.utf8)) == nil)
+        let long = #"{"error":"x","code":""# + String(repeating: "a", count: 65) + #""}"#
+        #expect(RelayCodedRefusal.parse(status: 422, body: Data(long.utf8)) == nil)
+    }
+
+    /// The mail fallback: every 4xx is a refusal before anything went out.
+    @Test func everyFourHundredIsARefusalForTheMailFallback() {
+        #expect(rsvpRefusedBeforeSending(NetworkError.server(statusCode: 404)))
+        #expect(rsvpRefusedBeforeSending(NetworkError.server(statusCode: 422)))
+        #expect(!rsvpRefusedBeforeSending(NetworkError.server(statusCode: 500)))
+    }
+}
+
+@Suite struct InviteCardStateTests {
+    private func conference(_ line: String) -> URL? {
+        parse(invite(request + [line]), zone: utc)?.primary.conference
+    }
+
+    @Test func anHttpsConferenceIsTheJoinLink() throws {
+        let url = try #require(conference("CONFERENCE;VALUE=URI;FEATURE=VIDEO;LABEL=KyMessages:https://chat.example/#/room/!abc:example"))
+        #expect(url.host() == "chat.example")
+        let meeting = try requestInvite(request + ["CONFERENCE;VALUE=URI:https://meet.example.com/r/1"])
+        #expect(meeting.joinURL == URL(string: "https://meet.example.com/r/1"))
+    }
+
+    @Test(arguments: [
+        "CONFERENCE;VALUE=URI:http://meet.example.com/r/1",
+        "CONFERENCE;VALUE=URI:javascript:alert(1)",
+        "CONFERENCE;VALUE=URI:tel:+15551234",
+        "CONFERENCE;VALUE=URI:https://user:pw@meet.example.com/r/1",
+        "CONFERENCE;VALUE=URI:https:///r/1",
+        "CONFERENCE;VALUE=URI:https://meet.ex\u{0430}mple.com/r/1",
+        "CONFERENCE;VALUE=URI:https://meet.example.com/a b",
+        "CONFERENCE;VALUE=URI:https://meet.example.com/" + String(repeating: "a", count: 2_048),
+    ])
+    func otherConferenceValuesAreIgnored(_ line: String) {
+        #expect(conference(line) == nil)
+    }
+
+    /// Only the first CONFERENCE counts, as on the web card.
+    @Test func theFirstConferenceWins() {
+        #expect(conference("CONFERENCE;VALUE=URI:http://a.example\r\nCONFERENCE;VALUE=URI:https://b.example") == nil)
+    }
+
+    @Test func aCancellationIsNeverAnsweredOrJoined() throws {
+        let cancelled = try requestInvite(request + ["CONFERENCE;VALUE=URI:https://meet.example.com/r/1"], method: "CANCEL")
+        #expect(cancelled.isCancelled)
+        #expect(!cancelled.offersRsvp(listedMethod: "CANCEL"))
+        #expect(!cancelled.offersRsvp(listedMethod: "REQUEST"))
+        #expect(cancelled.joinURL == nil)
+    }
+
+    @Test func theChangedListReadsAsASentence() {
+        #expect(inviteChangedText([]) == "This invitation was updated since you answered.")
+        #expect(inviteChangedText([.title]) == "Changed since you answered: title.")
+        #expect(inviteChangedText([.time, .place, .title]) == "Changed since you answered: time, place and title.")
     }
 }

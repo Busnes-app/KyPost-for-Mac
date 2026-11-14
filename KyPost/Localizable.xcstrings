@@ -1,6 +1,57 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Answered through KyCalendar." : {
+
+    },
+    "The event changed since this invitation. Reload it and answer again." : {
+
+    },
+    "KyCalendar could not be reached; try again." : {
+
+    },
+    "KyCalendar did not confirm the answer; try again." : {
+
+    },
+    "KyCalendar has no event for this invitation, so your answer goes to %@ as an unencrypted, unsigned email." : {
+
+    },
+    "KyCalendar is not in use for this mailbox, so your answer goes to %@ as an unencrypted, unsigned email." : {
+
+    },
+    "You answer \"%@\" as %@. The organizer's calendar can't read an encrypted reply. The reply carries your answer, your address and the event's ID." : {
+
+    },
+    "This invitation was updated since you answered." : {
+
+    },
+    "Changed since you answered: %@." : {
+
+    },
+    "You had %@; answer again." : {
+
+    },
+    "accepted" : {
+
+    },
+    "answered maybe" : {
+
+    },
+    "declined" : {
+
+    },
+    "You %@." : {
+
+    },
+    "Cancelled" : {
+
+    },
+    "Join meeting (%@)" : {
+
+    },
+    "Reload invitation" : {
+
+    },
     "This key couldn't be verified in person: their code doesn't carry a fingerprint from their own device. You can save it, but it won't be marked as verified." : {
 
     },
@@ -92,9 +143,6 @@
 
     },
     "Repeats" : {
-
-    },
-    "Reply \"%@\" to %@ as %@.\\n\\nRSVPs are always sent unencrypted and unsigned, because the organizer's calendar can't read an encrypted reply. The reply carries your answer, your address and the event's ID." : {
 
     },
     "" : {

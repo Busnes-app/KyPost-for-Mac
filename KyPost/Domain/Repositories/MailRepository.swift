@@ -473,24 +473,41 @@ final class MailRepository {
         _ draft: CalendarReplyDraft,
         as account: MailAccountBinding
     ) async -> (result: RsvpResult, reason: String)? {
-        let pairing: Pairing?
+        let source: RelayMailSource
         do {
-            pairing = try securePairingStore.loadPairing()
+            guard let bound = try relaySource(boundTo: account) else { return nil }
+            source = bound
         } catch {
             // The credential is behind the lock: nothing was sent.
             return (.refused, MailOutcome.from(error).reason)
         }
-        guard let pairing, MailAccountBinding(pairing) == account else { return nil }
-        let source = RelayMailSource(
-            httpClient: httpClient,
-            serverUrl: pairing.srv,
-            auth: RelayAuth(pairing: pairing)
-        )
         do {
             return try await source.sendCalendarReply(draft) ? (.sent, "") : (.sentAsPlainMail, "")
         } catch {
             return (rsvpRefusedBeforeSending(error) ? .refused : .maybeSent, MailOutcome.from(error).reason)
         }
+    }
+
+    /// Answers an invite through KyCalendar, bound to `account` exactly as
+    /// `sendCalendarReply` is. Nil, with no I/O, when the pairing changed.
+    func answerThroughKyCalendar(
+        _ request: RelayCalendarRsvpRequest,
+        as account: MailAccountBinding
+    ) async -> KyCalendarAnswer? {
+        do {
+            guard let source = try relaySource(boundTo: account) else { return nil }
+            return await source.answerThroughKyCalendar(request)
+        } catch {
+            return .failed(MailOutcome.from(error).reason)
+        }
+    }
+
+    /// The relay for `account`, or nil when the pairing was removed or
+    /// replaced since: the read that authenticates is the one compared.
+    private func relaySource(boundTo account: MailAccountBinding) throws -> RelayMailSource? {
+        guard let pairing = try securePairingStore.loadPairing(), MailAccountBinding(pairing) == account
+        else { return nil }
+        return RelayMailSource(httpClient: httpClient, serverUrl: pairing.srv, auth: RelayAuth(pairing: pairing))
     }
 
     /// The paired server's base URL, for building webmail links. Nil when
@@ -527,6 +544,9 @@ nonisolated func rsvpRefusedBeforeSending(_ error: Error) -> Bool {
          NetworkError.rateLimited, NetworkError.serviceUnavailable,
          NetworkError.certificateMismatch, NetworkError.pinUnreadable, NetworkError.certificateRefused,
          NetworkError.invalidURL:
+        true
+    // NATIVE-RSVP.md: every 4xx is a refusal before anything went out.
+    case NetworkError.server(let status) where (400..<500).contains(status):
         true
     case MailSourceError.notPaired, MailSourceError.credentialUnavailable,
          MailSourceError.invalidServerURL, MailSourceError.notConfigured,

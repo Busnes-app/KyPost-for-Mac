@@ -3,13 +3,15 @@
 //  KyPost
 //
 //  The invite card above a message body: what, when, where, who organises
-//  it, the notices that qualify any of that, Add to Calendar, and RSVP.
+//  it, the notices that qualify any of that, Join meeting, Add to Calendar,
+//  and RSVP.
 //
 
 import SwiftUI
 
 struct InviteCardView: View {
     @Environment(\.theme) private var theme
+    @Environment(\.openURL) private var openURL
 
     let model: InviteCardModel
     let invite: CalendarInvite
@@ -32,6 +34,12 @@ struct InviteCardView: View {
                 .foregroundStyle(theme.inkStrong)
                 .fixedSize(horizontal: false, vertical: true)
 
+            if invite.isCancelled {
+                Text("Cancelled")
+                    .font(AppFont.ui(13, weight: .semibold))
+                    .foregroundStyle(theme.danger)
+            }
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(inviteWhenText(event, zone: .current, locale: .current))
                 if !event.rrule.isEmpty {
@@ -49,7 +57,7 @@ struct InviteCardView: View {
             .foregroundStyle(theme.ink)
             .textSelection(.enabled)
 
-            let notices = inviteNotices(invite, senderEmail: senderEmail, phishing: phishing)
+            let notices = inviteNotices(invite, senderEmail: senderEmail, phishing: phishing, prior: model.prior)
             if !notices.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(notices, id: \.self) { notice in
@@ -62,6 +70,19 @@ struct InviteCardView: View {
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(theme.dangerSoft, in: RoundedRectangle(cornerRadius: Shape.field))
+            }
+
+            // https only (parser); opens in the system browser.
+            if let url = invite.joinURL, let host = url.host() {
+                Button {
+                    openURL(url)
+                } label: {
+                    Text("Join meeting (\(host))")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .frame(maxWidth: 320)
             }
 
             HStack(spacing: 8) {
@@ -96,11 +117,19 @@ struct InviteCardView: View {
                 Spacer(minLength: 0)
             }
 
-            ForEach([model.rsvpProblem, model.rsvpMessage, model.handoffMessage].compactMap { $0 }, id: \.self) { line in
+            ForEach([priorNote, model.rsvpProblem, model.rsvpMessage, model.handoffMessage].compactMap { $0 }, id: \.self) { line in
                 Text(line)
                     .font(AppFont.ui(12))
                     .foregroundStyle(theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if model.needsReload {
+                Button("Reload invitation") {
+                    Task { await model.reload() }
+                }
+                .font(AppFont.ui(12, weight: .medium))
+                .buttonStyle(.bordered)
             }
         }
         .padding(12)
@@ -137,6 +166,12 @@ struct InviteCardView: View {
         .onChange(of: SingletonGraph.shared.appLockManager.isLocked) { _, locked in
             if locked { model.lockEngaged() }
         }
+    }
+
+    /// "You accepted." for a revision already answered.
+    private var priorNote: String? {
+        guard invite.method == "REQUEST", case .same(let answer) = model.prior else { return nil }
+        return String(localized: "You \(answeredText(answer)).")
     }
 
     private func rsvpButtonTitle(_ answer: Rsvp) -> String {

@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Invitations are answered through KyCalendar.** Accept, Maybe and Decline
+  go to your calendar on the server first, with no email. KyPost emails the
+  organizer only when KyCalendar is not in use or has no copy of the event,
+  and asks before it does. An updated invitation you already answered says
+  what changed and asks again; a cancelled one says "Cancelled"; an invitation
+  with a secure meeting link shows "Join meeting".
 - **Releases carry build provenance.** The Mac disk image and the GopenPGP
   framework are published with a `.intoto.jsonl` attestation naming the
   workflow run that built them, checkable with `gh attestation verify`

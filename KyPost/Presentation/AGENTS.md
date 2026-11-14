@@ -376,7 +376,10 @@ Domain.
   never for a client-protected message, and derives its RSVP buttons from
   `RsvpTracker`. The RSVP alert's binding setter must not release the revision
   directly: SwiftUI clears it before the tapped button runs
-  (`InviteCardModel.rsvpPromptDismissed`).
+  (`InviteCardModel.rsvpPromptDismissed`). The alert appears only on the mail
+  fallback; an answer through KyCalendar has no prompt
+  (`docs/KYCALENDAR-RSVP.md`). Join meeting goes through `openURL`, never a
+  web view.
 - **The whole email row is the open target.** `EmailListRow` expands to the
   list width and supplies a rectangular content shape, including whitespace.
   The decrypt action uses visible button chrome rather than link styling.
