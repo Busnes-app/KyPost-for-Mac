@@ -1280,15 +1280,27 @@ an event only when asked and syncs no calendar.
   `sendingAddresses` address the invite lists, else the primary, fetched fresh
   per RSVP; an alias is also sent as `from`. Buttons need the relay's
   `calendarMethod`.
+- **KyCalendar first** (`docs/KYCALENDAR-RSVP.md`, the durable contract):
+  a tap posts `POST /api/calendar/rsvp` with the listed part's index, never
+  ics. Only 409 `kycalendar_off` and 404 `no_event` fall back to the mailed
+  REPLY, after the confirmation; every other answer is shown and never
+  mailed (`KyCalendarAnswer.from`). Buttons need a listed `text/calendar`
+  REQUEST part.
 - **Always unencrypted and unsigned** (`RelaySendRequest(calendarReply:)` has
-  no PGP flag), and every RSVP is confirmed in a prompt that says so.
+  no PGP flag), and every mailed RSVP is confirmed in a prompt that says so
+  and why KyCalendar did not take it.
 - **Only a 200 with `"calendarReply": true` is an RSVP.** Without it the
   organizer got plain mail: say so, never retry. Only a definite refusal
   (`rsvpRefusedBeforeSending`) re-arms the buttons on the open screen;
   anything else is "may have been sent". As on Android, a fresh open of the
   invite is the user's deliberate retry of an unsure send: it re-arms the
   buttons but keeps the warning shown, and the retry is still confirmed.
-- **`RsvpTracker` owns state** per UID + RECURRENCE-ID + SEQUENCE, outliving the
+- **`RsvpTracker` remembers answered revisions as digests, in memory only**
+  (`recordAnswer` / `priorAnswer`), so an update says what changed and asks
+  again. Never persist it, never store readable invite text for it.
+- **Join meeting is `https:` only** (`CalendarEvent.conference`): host, no
+  credentials, printable ASCII, ≤ 2048 bytes; never for a CANCEL.
+- **`RsvpTracker` owns state** per UID + RECURRENCE-ID + SEQUENCE + DTSTAMP, outliving the
   screen. It advances its `session` and drops everything on
   `.kyPostSessionReset`; a send confirmed in an ended session does no I/O, and
   `MailRepository.sendCalendarReply` refuses a replaced pairing from the same
@@ -1416,4 +1428,4 @@ App/launcher assets use the Busnes.app-site Systems stamp family. Regenerate pla
 
 ## README and topic guides
 
-Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/DEVELOPMENT.md`, `docs/FEATURES.md`, `docs/VERIFYING-RELEASES.md` (GopenPGP pin and release checks; every command there was run against a real release or is marked untested), `docs/STRONG-CRYPTO.md` (TLS and OpenPGP key floors and the key inventory; a change to a key, cipher or connection updates it) and `docs/ASSURANCE-CASE.md` (threat model and security argument; a change that moves a trust boundary or a cited path updates it in the same PR). `CHANGELOG.md` records security and user-visible changes under `## Unreleased`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.
+Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/DEVELOPMENT.md`, `docs/FEATURES.md`, `docs/VERIFYING-RELEASES.md` (GopenPGP pin and release checks; every command there was run against a real release or is marked untested), `docs/KYCALENDAR-RSVP.md` (answering invitations through KyCalendar; the repo's copy of the suite contract), `docs/STRONG-CRYPTO.md` (TLS and OpenPGP key floors and the key inventory; a change to a key, cipher or connection updates it) and `docs/ASSURANCE-CASE.md` (threat model and security argument; a change that moves a trust boundary or a cited path updates it in the same PR). `CHANGELOG.md` records security and user-visible changes under `## Unreleased`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.

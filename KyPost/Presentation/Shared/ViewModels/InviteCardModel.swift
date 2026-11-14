@@ -3,8 +3,10 @@
 //  KyPost
 //
 //  The calendar-invite card on the reader: loads and parses the invite,
-//  hands it to the calendar on a tap, and runs the RSVP confirm-and-send.
-//  Port of kypost-android EmailDetailActivity's invite card (#172, #176).
+//  hands it to the calendar on a tap, and answers it: through KyCalendar
+//  first, and by a confirmed iTIP mail only when KyCalendar is off or never
+//  got the invite (KyPost-Server docs/NATIVE-RSVP.md). Port of kypost-android
+//  EmailDetailActivity's invite card (#172, #176).
 //
 //  RSVP state lives in `RsvpTracker`, not here: this object dies with the
 //  screen, and a send started from it must still land somewhere.
@@ -28,6 +30,13 @@ struct PendingRsvp: Identifiable {
     let message: String
 }
 
+/// Where the invite came from, for `/api/calendar/rsvp`.
+struct InviteSource: Equatable {
+    var messageId: String
+    /// The folder; "" is INBOX.
+    var folder: String
+}
+
 /// A calendar handoff, bound to the session the user tapped in. A wipe or
 /// unpair ends that session, and the event is then never written.
 struct PendingHandoff: Identifiable {
@@ -49,6 +58,13 @@ final class InviteCardModel {
     private(set) var handoffMessage: String?
     /// Said when an RSVP could not even be offered for confirmation.
     private(set) var rsvpProblem: String?
+    /// What was answered for an earlier revision, read at load.
+    private(set) var prior: PriorAnswer = .unanswered
+    /// KyCalendar answered `conflict`: offer to reload the invite.
+    private(set) var needsReload = false
+    private var part: EmailAttachment?
+    private var source: InviteSource?
+    private var reloadInvite: (@MainActor () async -> Void)?
 
     private let tracker: RsvpTracker
     /// Confirmations answered by a button, so a dismissal racing the button
@@ -57,6 +73,7 @@ final class InviteCardModel {
     private let accountAddresses: @MainActor () async -> [String]?
     private let currentAccount: @MainActor () -> MailAccountBinding?
     private let send: @MainActor (CalendarReplyDraft, MailAccountBinding) async -> (result: RsvpResult, reason: String)?
+    private let answerOnCalendar: @MainActor (RelayCalendarRsvpRequest, MailAccountBinding) async -> KyCalendarAnswer?
     private let now: () -> Date
     private let calendarStore: @MainActor () -> any CalendarStoring
     private let isLocked: @MainActor () -> Bool
@@ -74,6 +91,9 @@ final class InviteCardModel {
         send: @escaping @MainActor (CalendarReplyDraft, MailAccountBinding) async -> (result: RsvpResult, reason: String)? = {
             await SingletonGraph.shared.mailRepository.sendCalendarReply($0, as: $1)
         },
+        answerOnCalendar: @escaping @MainActor (RelayCalendarRsvpRequest, MailAccountBinding) async -> KyCalendarAnswer? = {
+            await SingletonGraph.shared.mailRepository.answerThroughKyCalendar($0, as: $1)
+        },
         now: @escaping () -> Date = Date.init,
         calendarStore: @escaping @MainActor () -> any CalendarStoring = { EventKitCalendarStore() },
         isLocked: @escaping @MainActor () -> Bool = { SingletonGraph.shared.appLockManager.isLocked }
@@ -82,6 +102,7 @@ final class InviteCardModel {
         self.accountAddresses = accountAddresses
         self.currentAccount = currentAccount
         self.send = send
+        self.answerOnCalendar = answerOnCalendar
         self.now = now
         self.calendarStore = calendarStore
         self.isLocked = isLocked
@@ -111,20 +132,38 @@ final class InviteCardModel {
 
     /// Downloads and parses the listed invite part, if there is one. A
     /// refusal, a failed download or a throw only means no card.
-    func load(listing: [EmailAttachment], fetch: (EmailAttachment) async -> Data?) async {
+    func load(
+        listing: [EmailAttachment],
+        source: InviteSource,
+        fetch: @escaping @MainActor (EmailAttachment) async -> Data?
+    ) async {
+        reloadInvite = { [weak self] in await self?.load(listing: listing, source: source, fetch: fetch) }
         guard let part = inviteAttachment(listing),
               let bytes = await fetch(part),
               let parsed = parseCalendarInvite(bytes, localZone: .current)
         else { return }
         invite = parsed
+        self.part = part
+        self.source = source
         listedMethod = part.calendarMethod
+        prior = tracker.priorAnswer(parsed.primary)
         // Opening the invite is the user's deliberate retry of an unsure send.
         tracker.opened(rsvpKey(parsed.primary), freshOpen: true)
     }
 
+    /// After a `conflict`: read the invite again, then answer the new one.
+    func reload() async {
+        needsReload = false
+        await reloadInvite?()
+    }
+
     var key: String? { invite.map { rsvpKey($0.primary) } }
 
-    var offersRsvp: Bool { invite?.offersRsvp(listedMethod: listedMethod) ?? false }
+    /// The relay reads only a listed `text/calendar` REQUEST part.
+    var offersRsvp: Bool {
+        guard let invite, let part, attachmentMediaType(part) == "text/calendar" else { return false }
+        return invite.offersRsvp(listedMethod: listedMethod)
+    }
 
     var canAnswer: Bool { key.map(tracker.canAnswer) ?? false }
 
@@ -133,19 +172,56 @@ final class InviteCardModel {
 
     // MARK: - RSVP
 
-    /// Claims the revision and prepares the confirmation. The session and the
-    /// account are captured before the addresses are looked up, so a later
-    /// pairing can never receive this account's reply.
+    /// Claims the revision and answers through KyCalendar; only when that
+    /// says to answer by mail is the confirmation prepared. The session and
+    /// the account are captured first, so a later pairing can never receive
+    /// this account's answer.
     func requestRsvp(_ answer: Rsvp, senderEmail: String) async {
-        guard let invite, offersRsvp, !isLocked() else { return }
+        guard let invite, offersRsvp, let part, let source, !isLocked() else { return }
         let event = invite.primary
         let key = rsvpKey(event)
         // Process-wide: two screens on the same invite cannot both answer.
         guard tracker.begin(key) else { return }
         rsvpProblem = nil
+        needsReload = false
 
         let session = tracker.session
-        let account = currentAccount()
+        guard let account = currentAccount() else {
+            tracker.cancel(key)
+            rsvpProblem = String(localized: "Couldn't confirm your account address, so no RSVP was sent. Try again.")
+            return
+        }
+        let request = RelayCalendarRsvpRequest(
+            messageId: source.messageId, mailbox: source.folder, index: part.index, partstat: answer.rawValue
+        )
+        guard let calendar = await answerOnCalendar(request, account) else {
+            // The pairing went away under it: nothing to say.
+            tracker.cancel(key)
+            return
+        }
+        let noEvent: Bool
+        switch calendar {
+        case .answered:
+            if tracker.complete(key, result: .sent, message: String(localized: "Answered through KyCalendar."), session: session) {
+                tracker.recordAnswer(event, answer, session: session)
+            }
+            return
+        case .conflict:
+            if tracker.complete(
+                key, result: .refused,
+                message: String(localized: "The event changed since this invitation. Reload it and answer again."),
+                session: session
+            ) {
+                needsReload = true
+            }
+            return
+        case .failed(let message):
+            tracker.complete(key, result: .refused, message: message, session: session)
+            return
+        case .byMail(let missing):
+            noEvent = missing
+        }
+
         let addresses = await accountAddresses()
         // Locked during the lookup: release quietly, nothing to say behind
         // the cover.
@@ -153,7 +229,7 @@ final class InviteCardModel {
             tracker.cancel(key)
             return
         }
-        guard tracker.isCurrent(session), let account, let addresses,
+        guard tracker.isCurrent(session), let addresses,
               let attendee = rsvpAttendee(event, accountAddresses: addresses)
         else {
             tracker.cancel(key)
@@ -175,6 +251,7 @@ final class InviteCardModel {
             account: account,
             session: session,
             message: rsvpConfirmMessage(
+                noEvent: noEvent,
                 answer: answer,
                 organizer: event.organizer,
                 attendee: attendee,
@@ -229,12 +306,16 @@ final class InviteCardModel {
                 tracker.cancel(pending.key)
                 return
             }
-            tracker.complete(
+            let recorded = tracker.complete(
                 pending.key,
                 result: outcome.result,
                 message: rsvpOutcomeMessage(outcome.result, reason: outcome.reason),
                 session: pending.session
             )
+            // Delivered, as an RSVP or as plain mail: the web client's rule.
+            if recorded, outcome.result == .sent || outcome.result == .sentAsPlainMail {
+                tracker.recordAnswer(pending.event, pending.answer, session: pending.session)
+            }
         }
     }
 
@@ -276,7 +357,12 @@ final class InviteCardModel {
 
 /// The card's notices, most important first. The organizer is the sender's
 /// own claim, so the card says when the From address disagrees.
-nonisolated func inviteNotices(_ invite: CalendarInvite, senderEmail: String, phishing: Bool) -> [String] {
+nonisolated func inviteNotices(
+    _ invite: CalendarInvite,
+    senderEmail: String,
+    phishing: Bool,
+    prior: PriorAnswer = .unanswered
+) -> [String] {
     let event = invite.primary
     var notices: [String] = []
     if phishing {
@@ -288,7 +374,9 @@ nonisolated func inviteNotices(_ invite: CalendarInvite, senderEmail: String, ph
     if invite.isCancelled {
         notices.append(String(localized: "This event was cancelled. Check your calendar."))
     }
-    if invite.isUpdate {
+    if invite.method == "REQUEST", case .newer(let answer, changed: let changed) = prior {
+        notices.append(inviteChangedText(changed) + " " + String(localized: "You had \(answeredText(answer)); answer again."))
+    } else if invite.isUpdate, prior == .unanswered {
         notices.append(String(localized: "This invite was updated. Check your calendar."))
     }
     if let zone = event.unknownZone {
@@ -298,6 +386,22 @@ nonisolated func inviteNotices(_ invite: CalendarInvite, senderEmail: String, ph
         notices.append(String(localized: "This invite gives no time zone, so this time is read as your own zone."))
     }
     return notices
+}
+
+/// "Changed since you answered: time and place."
+nonisolated func inviteChangedText(_ changed: [InviteChange]) -> String {
+    guard !changed.isEmpty else { return String(localized: "This invitation was updated since you answered.") }
+    let names = changed.map(\.rawValue)
+    let list = names.count == 1 ? names[0] : names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+    return String(localized: "Changed since you answered: \(list).")
+}
+
+nonisolated func answeredText(_ answer: Rsvp) -> String {
+    switch answer {
+    case .accepted: String(localized: "accepted")
+    case .tentative: String(localized: "answered maybe")
+    case .declined: String(localized: "declined")
+    }
 }
 
 /// When the invite happens, in `zone`. All-day ends are exclusive, so the
@@ -325,14 +429,19 @@ nonisolated func inviteWhenText(_ event: CalendarEvent, zone: TimeZone, locale: 
     return "\(event.begin.formatted(dateTime)) – \(event.end.formatted(dateTime))"
 }
 
-/// Every RSVP is confirmed, and the confirmation says it goes unencrypted.
+/// Every mailed RSVP is confirmed, saying why KyCalendar did not take it and
+/// that it goes unencrypted (NATIVE-RSVP.md step 2).
 nonisolated func rsvpConfirmMessage(
+    noEvent: Bool,
     answer: Rsvp,
     organizer: String,
     attendee: String,
     organizerIsSender: Bool
 ) -> String {
-    var message = String(localized: "Reply \"\(answer.subjectPrefix)\" to \(organizer) as \(attendee).\n\nRSVPs are always sent unencrypted and unsigned, because the organizer's calendar can't read an encrypted reply. The reply carries your answer, your address and the event's ID.")
+    var message = noEvent
+        ? String(localized: "KyCalendar has no event for this invitation, so your answer goes to \(organizer) as an unencrypted, unsigned email.")
+        : String(localized: "KyCalendar is not in use for this mailbox, so your answer goes to \(organizer) as an unencrypted, unsigned email.")
+    message += "\n\n" + String(localized: "You answer \"\(answer.subjectPrefix)\" as \(attendee). The organizer's calendar can't read an encrypted reply. The reply carries your answer, your address and the event's ID.")
     if !organizerIsSender {
         message += "\n\n" + String(localized: "The organizer is not the sender of this email, so this reply goes to an address the sender chose.")
     }

@@ -15,7 +15,12 @@
 //  unpair). A send confirmed under an ended session does no I/O, and a
 //  completion from one records nothing and says nothing.
 //
+//  It also remembers which revision of each event was answered, so a newer
+//  REQUEST can say what changed (KyPost-Server docs/NATIVE-RSVP.md
+//  "Updates"). Digests only, in memory only, dropped with the session.
+//
 
+import CryptoKit
 import Foundation
 import Observation
 
@@ -35,9 +40,31 @@ nonisolated enum RsvpResult: Equatable, Sendable {
     case maybeSent
 }
 
+nonisolated enum InviteChange: String, Sendable {
+    case time, place, title
+}
+
+/// What the user answered for an earlier revision of this event.
+nonisolated enum PriorAnswer: Equatable, Sendable {
+    case unanswered
+    /// This revision, or a later one, was answered.
+    case same(Rsvp)
+    /// A newer revision than the one answered: higher SEQUENCE, or the same
+    /// SEQUENCE with a later DTSTAMP.
+    case newer(Rsvp, changed: [InviteChange])
+}
+
 @Observable
 @MainActor
 final class RsvpTracker {
+    private struct AnswerRecord {
+        var sequence: Int
+        var stamp: Date?
+        var when: SHA256.Digest
+        var title: SHA256.Digest
+        var place: SHA256.Digest
+        var answer: Rsvp
+    }
     static let shared = RsvpTracker()
 
     private(set) var phases: [String: RsvpPhase] = [:]
@@ -46,6 +73,7 @@ final class RsvpTracker {
     /// The current session. Captured when a send is confirmed.
     private(set) var session = 0
 
+    @ObservationIgnored private var answers: [SHA256.Digest: AnswerRecord] = [:]
     @ObservationIgnored private var resetObservation: NotificationObservation?
 
     init(center: NotificationCenter = .default) {
@@ -103,9 +131,44 @@ final class RsvpTracker {
 
     func canAnswer(_ key: String) -> Bool { phases[key] == nil }
 
+    /// Remembers that this revision was answered, for a session still current.
+    func recordAnswer(_ event: CalendarEvent, _ answer: Rsvp, session: Int) {
+        guard isCurrent(session) else { return }
+        let f = Self.fingerprint(event)
+        answers[f.key] = AnswerRecord(
+            sequence: event.sequence, stamp: event.stamp, when: f.when, title: f.title, place: f.place, answer: answer
+        )
+    }
+
+    func priorAnswer(_ event: CalendarEvent) -> PriorAnswer {
+        let f = Self.fingerprint(event)
+        guard event.canReply, let record = answers[f.key] else { return .unanswered }
+        let newer = event.sequence > record.sequence
+            || (event.sequence == record.sequence
+                && (event.stamp ?? .distantPast) > (record.stamp ?? .distantPast))
+        guard newer else { return .same(record.answer) }
+        var changed: [InviteChange] = []
+        if record.when != f.when { changed.append(.time) }
+        if record.place != f.place { changed.append(.place) }
+        if record.title != f.title { changed.append(.title) }
+        return .newer(record.answer, changed: changed)
+    }
+
+    private static func fingerprint(_ e: CalendarEvent)
+        -> (key: SHA256.Digest, when: SHA256.Digest, title: SHA256.Digest, place: SHA256.Digest) {
+        func digest(_ value: String) -> SHA256.Digest { SHA256.hash(data: Data(value.utf8)) }
+        return (
+            digest("\(e.organizer.lowercased())\u{0}\(e.uid)"),
+            digest("\(e.begin.timeIntervalSince1970)|\(e.end.timeIntervalSince1970)|\(e.allDay)"),
+            digest(e.summary),
+            digest(e.location)
+        )
+    }
+
     func clear() {
         phases = [:]
         messages = [:]
+        answers = [:]
     }
 
     /// The session boundary: advance first, so work racing the reset already

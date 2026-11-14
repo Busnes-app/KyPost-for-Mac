@@ -253,6 +253,77 @@ nonisolated struct RelayCalendarReplyDTO: Encodable, Equatable, Sendable {
     var ics: String
 }
 
+/// `POST /api/calendar/rsvp` (KyPost-Server docs/NATIVE-RSVP.md): the relay
+/// reads the invite from the message itself, so no ics is ever sent, and the
+/// answer is always for the series master, so no `recurrenceId`.
+nonisolated struct RelayCalendarRsvpRequest: Encodable, Equatable, Sendable {
+    var messageId: String
+    /// The folder; "" is INBOX.
+    var mailbox: String
+    var index: Int
+    var partstat: String
+}
+
+struct RelayCalendarRsvpResponse: Decodable, Sendable {
+    var outcome: String?
+}
+
+nonisolated struct RelayCodedRefusalDTO: Decodable, Sendable {
+    var error: String?
+    var code: String?
+}
+
+/// A suite route's `{"error","code"}` refusal. `message` is server text,
+/// stripped of controls and format characters and bounded, for display only.
+nonisolated struct RelayCodedRefusal: Error, Equatable, Sendable {
+    var status: Int
+    var code: String
+    var message: String
+
+    static func parse(status: Int, body: Data) -> RelayCodedRefusal? {
+        guard body.count <= 8 * 1024,
+              let dto = try? JSONDecoder().decode(RelayCodedRefusalDTO.self, from: body),
+              let code = dto.code, (1...64).contains(code.utf8.count),
+              code.unicodeScalars.allSatisfy({ ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "_" })
+        else { return nil }
+        var shown = String.UnicodeScalarView()
+        for scalar in (dto.error ?? "").unicodeScalars.prefix(300) {
+            let category = scalar.properties.generalCategory
+            if category != .control && category != .format { shown.append(scalar) }
+        }
+        return RelayCodedRefusal(
+            status: status, code: code, message: String(shown).trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+}
+
+/// What the card does after `/api/calendar/rsvp` (NATIVE-RSVP.md table 1).
+nonisolated enum KyCalendarAnswer: Equatable, Sendable {
+    /// Answered in KyCalendar; no mail.
+    case answered
+    /// KyCalendar is off (`kycalendar_off`) or never got this invite
+    /// (`no_event`): answer by mail, after the confirmation.
+    case byMail(noEvent: Bool)
+    /// The event changed since this invite: reload and answer again.
+    case conflict
+    /// Nothing happened: show this and re-arm the buttons. Never mailed.
+    case failed(String)
+
+    static var unreachable: String { String(localized: "KyCalendar could not be reached; try again.") }
+    static var notConfirmed: String { String(localized: "KyCalendar did not confirm the answer; try again.") }
+
+    /// Matched on status and code together; anything else is shown, not mailed.
+    static func from(_ error: Error) -> KyCalendarAnswer {
+        guard let refusal = error as? RelayCodedRefusal else { return .failed(unreachable) }
+        switch (refusal.status, refusal.code) {
+        case (409, "kycalendar_off"): return .byMail(noEvent: false)
+        case (404, "no_event"): return .byMail(noEvent: true)
+        case (409, "conflict"): return .conflict
+        default: return .failed(refusal.message.isEmpty ? unreachable : refusal.message)
+        }
+    }
+}
+
 /// Shape of a relay 409 body. Both PGP refusals are told apart from an
 /// ordinary conflict — and from each other — by which of these fields is
 /// present, never by the error prose (see `RelayMailSource.conflictError`).
@@ -689,6 +760,26 @@ final class RelayMailSource: MailSource {
             jsonBody: RelaySendRequest(calendarReply: draft)
         )
         return response.calendarReply == true
+    }
+
+    /// Answers an invite through KyCalendar. Only `{"outcome":"answered"}` is
+    /// an answer; any other 200 is unconfirmed.
+    func answerThroughKyCalendar(_ request: RelayCalendarRsvpRequest) async -> KyCalendarAnswer {
+        do {
+            let response = try await httpClient.post(
+                RelayCalendarRsvpResponse.self,
+                url: try endpoint("api/calendar/rsvp"),
+                headers: auth.headerFields,
+                jsonBody: request,
+                refusal: { RelayCodedRefusal.parse(status: $0, body: $1) }
+            )
+            return response.outcome == "answered" ? .answered : .failed(KyCalendarAnswer.notConfirmed)
+        } catch NetworkError.decoding {
+            // A 200 that is not the JSON answer.
+            return .failed(KyCalendarAnswer.notConfirmed)
+        } catch {
+            return .from(error)
+        }
     }
 
     /// The relay's reply-threading refusals (KyPost-Server #352), all sent

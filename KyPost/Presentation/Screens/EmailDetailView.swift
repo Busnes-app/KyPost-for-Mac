@@ -283,7 +283,10 @@ struct EmailDetailView: View {
             // attachment list. A client-protected message's listing is its
             // PGP/MIME transport, never an invite.
             if pgpState != .clientProtected {
-                await inviteCard.load(listing: attachments) { part in
+                await inviteCard.load(
+                    listing: attachments,
+                    source: InviteSource(messageId: email.serverId, folder: email.folder)
+                ) { part in
                     try? await inboxViewModel.attachmentData(part, of: email)
                 }
             }
