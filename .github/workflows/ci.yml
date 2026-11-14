@@ -120,21 +120,32 @@ jobs:
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO
 
+  no-binaries:
+    # Ubuntu, not macOS: the guard needs only git and file.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/check-no-binaries.sh
+
   test:
     # The one check the main ruleset requires, by this name. It used to be the
-    # whole workflow; now it passes only when both jobs above passed, so the
+    # whole workflow; now it passes only when the jobs above passed, so the
     # ruleset needs no change and a red macOS build still blocks a merge.
     # `always()` so it reports failure, rather than "skipped", when one fails.
     if: always()
-    needs: [ios-tests, macos-build]
+    needs: [ios-tests, macos-build, no-binaries]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
-      - name: Require both jobs
+      - name: Require the jobs above
         env:
           IOS: ${{ needs.ios-tests.result }}
           MACOS: ${{ needs.macos-build.result }}
+          BINARIES: ${{ needs.no-binaries.result }}
         run: |
-          echo "ios-tests: $IOS, macos-build: $MACOS"
-          [ "$IOS" = success ] && [ "$MACOS" = success ]
+          echo "ios-tests: $IOS, macos-build: $MACOS, no-binaries: $BINARIES"
+          [ "$IOS" = success ] && [ "$MACOS" = success ] && [ "$BINARIES" = success ]
