@@ -51,6 +51,7 @@ jobs:
     # Pinned, not `macos-latest`: that label moves between images and this job
     # depends on the toolchain it finds.
     runs-on: macos-15
+    timeout-minutes: 10
     permissions:
       contents: write
       # Build-provenance attestation (keyless, through GitHub's OIDC token).

@@ -99,6 +99,7 @@ permissions:
 jobs:
   release:
     runs-on: macos-26
+    timeout-minutes: 30
     permissions:
       # Write: the job creates the GitHub Release the Mac disk image is attached to.
       contents: write

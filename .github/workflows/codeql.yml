@@ -7,6 +7,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
   schedule:
     - cron: "17 7 * * 2"
@@ -23,6 +24,7 @@ concurrency:
 jobs:
   actions:
     name: Analyze (actions)
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -45,7 +47,7 @@ jobs:
   swift:
     name: Analyze (swift)
     # About 42 macOS minutes, so not per pull request: main, weekly and by hand.
-    if: github.event_name != 'pull_request'
+    if: (github.event_name != 'pull_request') && github.event.pull_request.draft != true
     runs-on: macos-26
     timeout-minutes: 120
     permissions:
