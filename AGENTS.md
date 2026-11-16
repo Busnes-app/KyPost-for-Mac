@@ -79,7 +79,7 @@ Default section order:
 
 - Run: `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`.
 - **Fuzzing is `Fuzz/`, a Linux-only SwiftPM package** run by
-  `.github/workflows/fuzz.yml` for 60 s on every PR (swift.org toolchain in a
+  `.github/workflows/fuzz.yml` for 60 s on every non-draft PR (swift.org toolchain in a
   digest-pinned `swift` image; Xcode ships no libFuzzer for Swift). Its
   target compiles the app's `PgpMimeReader.swift` and `DecryptedBody.swift`
   through symlinks, so both must stay Foundation-only; that is why
