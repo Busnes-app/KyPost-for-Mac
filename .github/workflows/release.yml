@@ -99,6 +99,7 @@ permissions:
 jobs:
   release:
     runs-on: macos-26
+    timeout-minutes: 90 # notarytool --wait has no bound of its own
     permissions:
       # Write: the job creates the GitHub Release the Mac disk image is attached to.
       contents: write
