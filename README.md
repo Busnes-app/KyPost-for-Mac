@@ -59,3 +59,12 @@ MIT, developed by Busnes.app — see [LICENSE.txt](LICENSE.txt).
 - [Verifying releases](docs/VERIFYING-RELEASES.md) — Check the GopenPGP binary against its pin and its build, and what can be checked of the app.
 - [Assurance case](docs/ASSURANCE-CASE.md) — Threat model, trust boundaries, and why the security requirements are met.
 - [Strong cryptography](docs/STRONG-CRYPTO.md) — Key-size floors for TLS and OpenPGP, the key inventory, and what is out of scope.
+
+## User manual
+
+Read the [online manual](https://busnes.app/manuals/kypost-for-mac/) or browse its
+[Markdown sources](docs/src/introduction.md).
+
+Build and check it with `mdbook build docs` and `python3 docs/check-links.py`,
+then open `docs/book/index.html`. The documentation workflow also provides a
+downloadable `documentation-book` artifact.
