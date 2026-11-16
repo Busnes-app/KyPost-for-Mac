@@ -32,6 +32,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -52,6 +53,7 @@ jobs:
     # SDK 26.3. The deployment target is 26.0 now, but it was 26.5 when the
     # first run hit a target newer than the SDK, and the newest Xcode 26 is
     # what release.yml archives with.
+    if: github.event.pull_request.draft != true
     runs-on: macos-26
     timeout-minutes: 40
 
@@ -104,6 +106,7 @@ jobs:
     # platform, and it catches the failure mode that caused this workflow to be
     # written — `main` not building. Signing is disabled because nothing is
     # executed here.
+    if: github.event.pull_request.draft != true
     runs-on: macos-26
     timeout-minutes: 30
 
@@ -122,6 +125,7 @@ jobs:
 
   no-binaries:
     # Ubuntu, not macOS: the guard needs only git and file.
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -135,7 +139,7 @@ jobs:
     # whole workflow; now it passes only when the jobs above passed, so the
     # ruleset needs no change and a red macOS build still blocks a merge.
     # `always()` so it reports failure, rather than "skipped", when one fails.
-    if: always()
+    if: (always()) && github.event.pull_request.draft != true
     needs: [ios-tests, macos-build, no-binaries]
     runs-on: ubuntu-latest
     timeout-minutes: 5
