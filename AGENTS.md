@@ -1145,6 +1145,16 @@ Port of KyPost Android's `signon/`; status mapping and texts mirror it.
   minutes) only in `responses/`. `requests/` is KyAuth's to sweep.
 - `origin` is exactly `RelayOrigin.origin` (`https://host[:port]`, lowercase
   punycode host, 443 dropped). KyAuth refuses anything not already canonical.
+- **Token binding, v1** (`Domain/SignOn/SignOnProof.swift`; suite spec
+  "KyIdentity sign-on token binding"). Each attempt makes a software
+  `P256.Signing.PrivateKey`, held only in the coordinator's `Pending` and gone
+  when the response is taken; never stored. The request carries `cnf` =
+  base64url-no-pad SHA-256 of the SPKI DER. The relay call sends `idToken`,
+  `proofKey` (std base64 SPKI DER) and `proof` (std base64 DER ECDSA over
+  `kypost-signon-pop/1\n<origin>\n<base64url sha256(idToken)>`, `<origin>`
+  the exact handoff `origin`). The relay's 403 texts pass through
+  `refusalText`. Golden vector in `SignOnProofTests`; never compare a fresh
+  signature, verify it.
 - The pending nonce lives in memory only, is accepted only from
   `kypost://kyidentity-signon?nonce=…` or on becoming active, and is abandoned
   after 180 s. The ID token is never logged or stored; it is a local for the

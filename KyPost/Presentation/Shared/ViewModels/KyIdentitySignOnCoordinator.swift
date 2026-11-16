@@ -13,8 +13,9 @@
 //  KyAuth backgrounds KyPost, which engages the app lock and tears the pairing
 //  sheet down. So this outlives every screen (it is App-level `@State`, beside
 //  the router), and never captures the graph: it re-reads
-//  `SingletonGraph.shared` per use. It holds the pending nonce in memory only;
-//  the ID token lives in a local for one call.
+//  `SingletonGraph.shared` per use. It holds the pending nonce and the
+//  attempt's proof key in memory only; the ID token lives in a local for one
+//  call.
 //
 //  Two consequences of outliving the graph:
 //  - It is an entry point that acts without presenting a window, so it guards
@@ -28,6 +29,7 @@
 //
 
 #if os(iOS)
+import CryptoKit
 import Foundation
 import Observation
 import UIKit
@@ -53,6 +55,10 @@ final class KyIdentitySignOnCoordinator {
     private struct Pending {
         let nonce: String
         let serverUrl: String
+        /// Exactly the handoff's `origin`; the proof signs it.
+        let origin: String
+        /// Proof-of-possession key for this attempt only, never stored.
+        let key: P256.Signing.PrivateKey
         let deadline: Date
     }
 
@@ -171,12 +177,14 @@ final class KyIdentitySignOnCoordinator {
         guard let nonce = SignOnHandoff.makeNonce(), let kyAuth = SignOnHandoff.kyAuthURL(nonce: nonce) else {
             return finish("Could not start KyIdentity sign-in.")
         }
+        let key = P256.Signing.PrivateKey()
         let request = SignOnRequestFile(
             v: 1,
             nonce: nonce,
             consumer: SignOnHandoff.consumer,
             clientId: config.clientId,
             origin: origin,
+            cnf: SignOnProof.thumb(key.publicKey),
             issuer: config.issuerUrl,
             createdAtMs: Int64((now().timeIntervalSince1970 * 1000).rounded())
         )
@@ -188,6 +196,8 @@ final class KyIdentitySignOnCoordinator {
         pending = Pending(
             nonce: nonce,
             serverUrl: serverUrl,
+            origin: origin,
+            key: key,
             deadline: now().addingTimeInterval(SignOnHandoff.pendingTimeout)
         )
         phase = .waitingForKyAuth
@@ -241,16 +251,19 @@ final class KyIdentitySignOnCoordinator {
             finish(message.isEmpty ? "KyAuth refused the sign-in." : message)
         case .ok(let idToken)?:
             guard !idToken.isEmpty else { return finish("KyAuth returned no token.") }
+            guard let proof = try? SignOnProof(key: current.key, origin: current.origin, idToken: idToken) else {
+                return finish("Could not sign in with KyIdentity.")
+            }
             phase = .exchanging
             let started = epoch
-            Task { await exchange(serverUrl: current.serverUrl, idToken: idToken, epoch: started) }
+            Task { await exchange(serverUrl: current.serverUrl, idToken: idToken, proof: proof, epoch: started) }
         }
     }
 
-    private func exchange(serverUrl: String, idToken: String, epoch started: Int) async {
+    private func exchange(serverUrl: String, idToken: String, proof: SignOnProof, epoch started: Int) async {
         // Reset between scheduling and running: never send the token.
         guard epoch == started else { return }
-        let result = await makeClient().signOn(serverUrl: serverUrl, idToken: idToken)
+        let result = await makeClient().signOn(serverUrl: serverUrl, idToken: idToken, proof: proof)
         guard epoch == started else { return }
         switch result {
         case .failure(let message):
