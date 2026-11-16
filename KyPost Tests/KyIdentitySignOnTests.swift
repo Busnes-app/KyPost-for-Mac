@@ -7,6 +7,7 @@
 //  iOS handoff file contract (KyAuth-iOS docs/specs/2026-10-11-ios-signon-handoff.md).
 //
 
+import CryptoKit
 import Foundation
 import Testing
 @testable import KyPost
@@ -86,6 +87,7 @@ import Testing
 
 @Suite struct SignOnHandoffTests {
     private let nonce = String(repeating: "A", count: 42) + "_"
+    private let thumb = "Wnp4zKSg9CDZvGK7Zpw8J1njn3I9OuENy-DwgVoH7NQ"
 
     @Test func nonceIs43Base64urlCharacters() throws {
         let made = try #require(SignOnHandoff.makeNonce())
@@ -115,13 +117,14 @@ import Testing
     @Test func requestHasExactlyTheContractFields() throws {
         let request = SignOnRequestFile(
             v: 1, nonce: nonce, consumer: SignOnHandoff.consumer, clientId: "kypost",
-            origin: "https://mail.example.com", issuer: "https://id.example.com",
+            origin: "https://mail.example.com", cnf: thumb, issuer: "https://id.example.com",
             createdAtMs: 1_760_000_000_000
         )
         let json = try #require(
             JSONSerialization.jsonObject(with: SignOnHandoff.encode(request)) as? [String: Any]
         )
-        #expect(Set(json.keys) == ["v", "nonce", "consumer", "clientId", "origin", "issuer", "createdAtMs"])
+        #expect(Set(json.keys) == ["v", "nonce", "consumer", "clientId", "origin", "cnf", "issuer", "createdAtMs"])
+        #expect(json["cnf"] as? String == thumb)
         #expect(json["v"] as? Int == 1)
         #expect(json["consumer"] as? String == "org.kysecurity.mail")
         #expect(json["origin"] as? String == "https://mail.example.com")
@@ -174,7 +177,7 @@ import Testing
         let store = SignOnHandoffStore(root: try scratchDirectory())
         let request = SignOnRequestFile(
             v: 1, nonce: nonce, consumer: SignOnHandoff.consumer, clientId: "kypost",
-            origin: "https://mail.example.com", issuer: "https://id.example.com", createdAtMs: 1
+            origin: "https://mail.example.com", cnf: thumb, issuer: "https://id.example.com", createdAtMs: 1
         )
         try store.writeRequest(request)
         let written = try Data(contentsOf: store.requestFile(nonce))
@@ -218,6 +221,61 @@ import Testing
         #expect(fm.fileExists(atPath: fresh.path))
         // requests/ belongs to KyAuth's sweep.
         #expect(fm.fileExists(atPath: request.path))
+    }
+}
+
+/// Golden vector from the suite's sign-on binding spec, v1 (checked by Go and
+/// `openssl dgst -sha256 -verify`). ECDSA is randomized, so the recorded
+/// signature is verified, never compared with a fresh one.
+@Suite struct SignOnProofTests {
+    private let spki = Data(base64Encoded: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEYP7UuiVanTHJYet0xjVtaMBJuJI7Yfps5mliLmDyn7Z5A/4QCLi8maQa6elWKLxk8vGyDC1+n1F3o8KU1EYimQ==")!
+    private let scalarHex = "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721"
+    private let signatureDer = Data(base64Encoded: "MEUCIAgEZ1PL1ngMWZe1DGinEVwy9mdQ12EGpwIQYjvApRVMAiEAg9zmYUWgIuQcNLh54gXJ+RVtc+vJZ3iy+N8jny2Ud0I=")!
+    private let origin = "https://relay.example.com"
+    private let idToken = "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.c2ln"
+
+    @Test func thumbOfTheGoldenKey() throws {
+        let key = try P256.Signing.PublicKey(derRepresentation: spki)
+        #expect(key.derRepresentation == spki)
+        #expect(SignOnProof.thumb(key) == "Wnp4zKSg9CDZvGK7Zpw8J1njn3I9OuENy-DwgVoH7NQ")
+    }
+
+    @Test func privateScalarGivesTheGoldenKey() throws {
+        var bytes = [UInt8]()
+        var hex = Substring(scalarHex)
+        while !hex.isEmpty {
+            bytes.append(try #require(UInt8(hex.prefix(2), radix: 16)))
+            hex = hex.dropFirst(2)
+        }
+        let key = try P256.Signing.PrivateKey(rawRepresentation: bytes)
+        #expect(key.publicKey.derRepresentation == spki)
+    }
+
+    @Test func messageBytes() {
+        let expected = "kypost-signon-pop/1\nhttps://relay.example.com\njJWmig6MLGIOyfYGNDGuWH3dGkbnpSqvek1tQ8PUgg8"
+        #expect(SignOnProof.message(origin: origin, idToken: idToken) == Data(expected.utf8))
+    }
+
+    @Test func recordedSignatureVerifies() throws {
+        let key = try P256.Signing.PublicKey(derRepresentation: spki)
+        let signature = try P256.Signing.ECDSASignature(derRepresentation: signatureDer)
+        #expect(key.isValidSignature(signature, for: SignOnProof.message(origin: origin, idToken: idToken)))
+        #expect(!key.isValidSignature(signature, for: SignOnProof.message(origin: "https://relay.example.net", idToken: idToken)))
+        #expect(!key.isValidSignature(signature, for: SignOnProof.message(origin: origin, idToken: idToken + "x")))
+    }
+
+    @Test func freshProofVerifiesUnderItsOwnKey() throws {
+        let key = P256.Signing.PrivateKey()
+        let proof = try SignOnProof(key: key, origin: origin, idToken: idToken)
+        let publicKey = try P256.Signing.PublicKey(
+            derRepresentation: try #require(Data(base64Encoded: proof.proofKey))
+        )
+        #expect(SignOnProof.thumb(publicKey) == SignOnProof.thumb(key.publicKey))
+        #expect(SignOnProof.thumb(publicKey).utf8.count == 43)
+        let signature = try P256.Signing.ECDSASignature(
+            derRepresentation: try #require(Data(base64Encoded: proof.proof))
+        )
+        #expect(publicKey.isValidSignature(signature, for: SignOnProof.message(origin: origin, idToken: idToken)))
     }
 }
 
@@ -276,17 +334,23 @@ import Testing
             .config(serverUrl: server) == .unavailable("The server returned an unreadable sign-in configuration"))
     }
 
-    @Test func transportFailureIsOneSentence() async {
+    private func makeProof(_ idToken: String) throws -> SignOnProof {
+        try SignOnProof(key: P256.Signing.PrivateKey(), origin: server, idToken: idToken)
+    }
+
+    @Test func transportFailureIsOneSentence() async throws {
         let failing = KyIdentitySignOnClient { _, _ in throw URLError(.notConnectedToInternet) }
         #expect(await failing.config(serverUrl: server) == .unavailable("Could not reach the server"))
-        #expect(await failing.signOn(serverUrl: server, idToken: "t") == .failure("Could not reach the server"))
+        let proof = try makeProof("t")
+        #expect(await failing.signOn(serverUrl: server, idToken: "t", proof: proof) == .failure("Could not reach the server"))
     }
 
     @Test func signOnParsesDeepLink() async throws {
         let link = "kypost://native-pair?sub=s1&srv=https%3A%2F%2Fmail.example.com&reg=https%3A%2F%2Fmail.example.com%2Fapi%2Fnotifications%2Fnative%2Fregister&pt=tok"
         let recorder = Recorder()
+        let proof = try makeProof("eyJ.a.b")
         let result = await client(200, #"{"configured":true,"deepLink":"\#(link)"}"#, recorder: recorder)
-            .signOn(serverUrl: server, idToken: "eyJ.a.b")
+            .signOn(serverUrl: server, idToken: "eyJ.a.b", proof: proof)
         guard case .success(let params) = result else { Issue.record("\(result)"); return }
         #expect(params.pt == "tok")
         #expect(params.srv == "https://mail.example.com")
@@ -295,7 +359,8 @@ import Testing
         #expect(request.httpMethod == "POST")
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
         let body = try #require(request.httpBody)
-        #expect((try JSONSerialization.jsonObject(with: body)) as? [String: String] == ["idToken": "eyJ.a.b"])
+        #expect((try JSONSerialization.jsonObject(with: body)) as? [String: String]
+            == ["idToken": "eyJ.a.b", "proofKey": proof.proofKey, "proof": proof.proof])
     }
 
     @Test func signOnMapsStatuses() {
@@ -307,6 +372,11 @@ import Testing
         }
         #expect(at(503).contains("mail.example.com"))
         #expect(at(403, "Access denied: this token was already used.").contains("already used"))
+        // Token binding refusals pass through verbatim.
+        #expect(at(403, "Update KyAuth and KyIdentity to sign in from this app.\n")
+            == "Update KyAuth and KyIdentity to sign in from this app.")
+        #expect(at(403, "Access denied: the sign-in proof does not match.")
+            == "Access denied: the sign-in proof does not match.")
         #expect(at(429).contains("Try again"))
         #expect(at(500) == "Could not sign in to mail.example.com (500)")
         #expect(at(200, #"{"configured":false,"configurationError":"set PAIRING_SECRET"}"#).contains("PAIRING_SECRET"))
@@ -416,6 +486,10 @@ import Testing
     private final class TokenLog: @unchecked Sendable {
         var values: [String] = []
         func append(_ value: String) { values.append(value) }
+        var bodies: [[String: String]] {
+            values.compactMap { (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: String] }
+        }
+        var idTokens: [String] { bodies.compactMap { $0["idToken"] } }
     }
 
     private func waitUntil(_ condition: () -> Bool) async {
@@ -444,7 +518,21 @@ import Testing
         #expect(h.coordinator.handleReturn(URL(string: "kypost://kyidentity-signon?nonce=\(nonce)")!))
         await waitUntil { !h.delivered.isEmpty }
         #expect(h.delivered.first?.pt == "tok")
-        #expect(h.tokenLog?.values == [#"{"idToken":"eyJ.a.b"}"#])
+        let body = try #require(h.tokenLog?.bodies.first)
+        #expect(h.tokenLog?.values.count == 1)
+        #expect(body["idToken"] == "eyJ.a.b")
+        // The proof key is the one whose thumbprint went to KyAuth, and it
+        // signed the handoff's origin and this token.
+        let proofKey = try P256.Signing.PublicKey(
+            derRepresentation: try #require(body["proofKey"].flatMap { Data(base64Encoded: $0) })
+        )
+        #expect(SignOnProof.thumb(proofKey) == request["cnf"] as? String)
+        let signature = try P256.Signing.ECDSASignature(
+            derRepresentation: try #require(body["proof"].flatMap { Data(base64Encoded: $0) })
+        )
+        #expect(proofKey.isValidSignature(
+            signature, for: SignOnProof.message(origin: "https://mail.example.com", idToken: "eyJ.a.b")
+        ))
         #expect(!FileManager.default.fileExists(atPath: h.store.responseFile(nonce).path))
         #expect(h.coordinator.phase == .idle)
         #expect(h.coordinator.status == nil)
@@ -550,7 +638,7 @@ import Testing
         h.coordinator.checkForResponse()
         await waitUntil { !h.delivered.isEmpty }
         #expect(h.delivered.count == 1)
-        #expect(h.tokenLog?.values == [#"{"idToken":"eyJ.a.b"}"#])
+        #expect(h.tokenLog?.idTokens == ["eyJ.a.b"])
         #expect(!FileManager.default.fileExists(atPath: h.store.responseFile(nonce).path))
     }
 

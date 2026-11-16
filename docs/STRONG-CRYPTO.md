@@ -69,6 +69,7 @@ it through device enrollment.
 | Relay pin | SHA-256 of the leaf SPKI | Not applicable (hash) | `PinnedSessionDelegate.spkiSHA256` |
 | Device enrollment envelope | HPKE DHKEM(P-256), HKDF-SHA256, AES-256-GCM | Yes, only this suite opens | `Domain/Security/DeviceEnvelope.swift`, `VaultSealer.swift` |
 | Device key (vault seal, enrollment) | Secure Enclave P-256 | Fixed, cannot be configured | `Domain/Security/DeviceAgreementKey.swift`, `EnrollmentVault.swift` |
+| Sign-on proof key (binds the KyIdentity ID token to this attempt) | Software P-256, ECDSA SHA-256, a new key per attempt, memory only | Fixed | `Domain/SignOn/SignOnProof.swift` |
 | Legacy vault records | ECIES X9.63-SHA256 AES-GCM to the P-256 device key, only opened, to migrate | Not created | `EnrollmentVault.swift` |
 | App-lock PIN verifier | PBKDF2-HMAC-SHA256, 150,000 iterations, 128-bit salt, 256-bit output, peppered with HMAC-SHA256 under a key derived from a Secure Enclave P-256 key, or a random 256-bit key where there is no Secure Enclave | Fixed | `Domain/Security/PinHasher.swift`, `PinPepper.swift` |
 | OpenPGP recipient, signer and own keys | Per the table above | Yes | `Domain/Security/PgpKeyFloor.swift`, `GopenPGPCrypto.swift` |

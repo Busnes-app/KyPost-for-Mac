@@ -56,6 +56,11 @@ app.
    pending device; it gets mail access after the user approves it on the web page whose
    six-digit code matches the app's. The pending secret stays in memory and is polled over the
    same pinned connection (`Domain/UseCases/DeviceRegistrationService.swift`).
+   KyIdentity sign-on pairs without that approval, so its ID token is bound to a P-256 key
+   made for the attempt and kept in memory: KyAuth puts the key's thumbprint in the token,
+   and the relay requires a signature by that key over its origin and the token
+   (`Domain/SignOn/SignOnProof.swift`). A token read off KyAuth's connection is useless
+   without the key.
 2. **Relay → device data.** Signature verdicts are decided on this device. The relay supplies
    candidate keys, so a key it offers can reach *signer not confirmed* and, through first-seen
    history, *same key as last time*. Only a key pinned by QR on this device gives *you confirmed

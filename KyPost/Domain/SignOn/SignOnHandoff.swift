@@ -24,6 +24,8 @@ nonisolated struct SignOnRequestFile: Encodable, Equatable, Sendable {
     let consumer: String
     let clientId: String
     let origin: String
+    /// `SignOnProof.thumb` of this attempt's key; KyAuth binds it into the token.
+    let cnf: String
     let issuer: String
     let createdAtMs: Int64
 }

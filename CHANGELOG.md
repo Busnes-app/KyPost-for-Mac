@@ -77,6 +77,15 @@
   2,000 characters; control characters and invisible text-direction
   characters are refused.
 
+### Security
+
+- **KyIdentity sign-in is bound to this device's attempt.** KyPost makes a
+  one-time key for each sign-in, KyAuth names it in the token, and the server
+  accepts the token only with KyPost's signature. A token intercepted on its
+  way to KyAuth can no longer pair another device. Needs updated KyIdentity,
+  KyAuth and KyPost server; until all are updated, sign-in through KyAuth is
+  refused and QR or link pairing keeps working.
+
 ## 0.6.0 — 2026-11-02
 
 ### Fixed

@@ -55,7 +55,7 @@ final class KyIdentitySignOnClient: Sendable {
         return Self.mapConfig(code: code, body: raw)
     }
 
-    func signOn(serverUrl: String, idToken: String) async -> SignOnExchangeResult {
+    func signOn(serverUrl: String, idToken: String, proof: SignOnProof) async -> SignOnExchangeResult {
         guard let endpoint = RelayOrigin.endpoint(serverUrl, path: "/api/auth/native/signon"),
               let host = endpoint.host()?.lowercased()
         else {
@@ -64,7 +64,9 @@ final class KyIdentitySignOnClient: Sendable {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["idToken": idToken])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "idToken": idToken, "proofKey": proof.proofKey, "proof": proof.proof,
+        ])
         guard let (code, raw) = await perform(request) else {
             return .failure(Self.unreachable)
         }
