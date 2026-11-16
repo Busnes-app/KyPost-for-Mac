@@ -44,3 +44,6 @@ Package.resolved
 
 # SwiftPM working directory for the local GopenPGP package wrapper.
 Dependencies/GopenPGP/.build/
+
+# Generated mdBook manual
+/docs/book/

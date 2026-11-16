@@ -1422,6 +1422,8 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Child DOX Index
 
+- `docs/AGENTS.md` — mdBook manual, chapter ownership and documentation checks.
+
 - `KyPost/App/AGENTS.md` — the dependency graph and its rebuild rule
   (`AppEnvironment` / `SingletonGraph.shared` aliasing), lifecycle/lock
   ordering at launch, the pull poll as push-mode heartbeat.
