@@ -214,8 +214,33 @@ struct KyPostApp: App {
         }
     }
 
-    @ViewBuilder
     private var appContent: some View {
+        shell
+            // Over the shell, not instead of it, so a compose sheet in
+            // progress (unsent mail) survives the hold.
+            .overlay {
+                if let message = graph.inboxViewModel.encryptionSetupMessage {
+                    EncryptionSetupRequiredView(
+                        message: message,
+                        setupURL: graph.inboxViewModel.encryptionSetupURL
+                    ) {
+                        await graph.inboxViewModel.recheckEncryptionSetup()
+                    }
+                }
+            }
+#if os(macOS)
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                Task { await graph.inboxViewModel.recheckEncryptionSetup() }
+            }
+#else
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await graph.inboxViewModel.recheckEncryptionSetup() } }
+            }
+#endif
+    }
+
+    @ViewBuilder
+    private var shell: some View {
 #if os(macOS)
         MacRootView()
 #else

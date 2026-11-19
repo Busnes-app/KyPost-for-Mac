@@ -399,6 +399,7 @@ enum MailOutcome: Equatable, Sendable {
         switch error {
         case .invalidURL: "This server's address looks wrong."
         case .unauthorized: "Not authorized — re-pair the device or check credentials."
+        case .encryptionSetupRequired: error.errorDescription ?? ""
         case .badRequest(let body):
             body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "The server rejected this request."

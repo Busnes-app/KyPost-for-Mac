@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **"Finish encryption setup" when the server needs it.** If your KyPost
+  server requires email encryption setup before your mail can be read here,
+  KyPost says so and offers "Open KyPost on the web" to do it. It stops
+  syncing mail until then instead of retrying, keeps you paired, and keeps
+  your key, cached mail and any message you are writing. It checks again when
+  you come back to the app, or when you choose "Check again".
+
 ## 0.6.1 — 2026-11-17
 
 ### Added
