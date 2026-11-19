@@ -11,9 +11,9 @@ import Foundation
 import Testing
 @testable import KyPost
 
-private let setupBody =
+nonisolated private let setupBody =
     #"{"error":"encryption_setup_required","message":"Finish email encryption setup in KyPost on the web before using mail here."}"#
-private let serverMessage = "Finish email encryption setup in KyPost on the web before using mail here."
+nonisolated private let serverMessage = "Finish email encryption setup in KyPost on the web before using mail here."
 
 @Suite struct EncryptionSetupDecodingTests {
     @Test func theSetupRefusalIsItsOwnErrorWithTheServersMessage() {

@@ -540,7 +540,8 @@ nonisolated struct MailAccountBinding: Equatable, Sendable {
 /// decode — may have been sent.
 nonisolated func rsvpRefusedBeforeSending(_ error: Error) -> Bool {
     switch error {
-    case NetworkError.badRequest, NetworkError.unauthorized, NetworkError.conflict,
+    case NetworkError.badRequest, NetworkError.unauthorized, NetworkError.encryptionSetupRequired,
+         NetworkError.conflict,
          NetworkError.rateLimited, NetworkError.serviceUnavailable,
          NetworkError.certificateMismatch, NetworkError.pinUnreadable, NetworkError.certificateRefused,
          NetworkError.invalidURL:

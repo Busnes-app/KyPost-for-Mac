@@ -109,7 +109,7 @@ enum NetworkError: Error, Equatable, LocalizedError {
         case 400: .badRequest(
             body: String(decoding: body.prefix(maxConflictBodyBytes), as: UTF8.self)
         )
-        case 403: encryptionSetupRequired(body: body) ?? .unauthorized
+        case 403: setupRefusal(in: body) ?? .unauthorized
         case 401: .unauthorized
         case 409: .conflict(
             body: String(decoding: body.prefix(maxConflictBodyBytes), as: UTF8.self)
@@ -126,8 +126,8 @@ enum NetworkError: Error, Equatable, LocalizedError {
 
     /// The setup refusal, told apart from a credential 403 by its `error`
     /// code only, never by prose.
-    private static func encryptionSetupRequired(body: Data) -> NetworkError? {
-        struct Refusal: Decodable { var error: String?; var message: String? }
+    private static func setupRefusal(in body: Data) -> NetworkError? {
+        nonisolated struct Refusal: Decodable { var error: String?; var message: String? }
         guard let refusal = try? JSONDecoder().decode(Refusal.self, from: body.prefix(maxConflictBodyBytes)),
               refusal.error == "encryption_setup_required"
         else { return nil }
