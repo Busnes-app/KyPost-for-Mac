@@ -14,6 +14,11 @@ enum NetworkError: Error, Equatable, LocalizedError {
     case invalidURL
     /// 401/403 — pairing credentials rejected; prompt re-scan (spec §3).
     case unauthorized
+    /// 403 `{"error":"encryption_setup_required"}` on a mailbox route: the
+    /// account must finish encryption setup on the web first (KyPost-Server
+    /// docs/E2E_PGP.md "First sign-in setup"). Not a sign-out: the pairing
+    /// stays valid. `message` is the server's sentence, when it sent one.
+    case encryptionSetupRequired(message: String?)
     /// 400 — the request was malformed, or the account has no mail configured
     /// yet. The relay answers plain text, and the body is the only way to tell
     /// those apart, so it is retained here exactly as 409's is. Deciding what
@@ -56,6 +61,8 @@ enum NetworkError: Error, Equatable, LocalizedError {
     /// localizedDescription; the rest keep their default rendering.
     var errorDescription: String? {
         switch self {
+        case .encryptionSetupRequired(let message):
+            message ?? String(localized: "Finish email encryption setup in KyPost on the web, then come back.")
         case .certificateMismatch:
             String(localized: "The server's security certificate changed and no longer matches this pairing. If your server's certificate was renewed, open a new pairing link from your KyPost web page (Settings → Security → Devices) to confirm it; otherwise the connection may be intercepted.")
         case .pinUnreadable:
@@ -102,7 +109,8 @@ enum NetworkError: Error, Equatable, LocalizedError {
         case 400: .badRequest(
             body: String(decoding: body.prefix(maxConflictBodyBytes), as: UTF8.self)
         )
-        case 401, 403: .unauthorized
+        case 403: setupRefusal(in: body) ?? .unauthorized
+        case 401: .unauthorized
         case 409: .conflict(
             body: String(decoding: body.prefix(maxConflictBodyBytes), as: UTF8.self)
         )
@@ -110,6 +118,21 @@ enum NetworkError: Error, Equatable, LocalizedError {
         case 503: .serviceUnavailable
         default: .server(statusCode: statusCode)
         }
+    }
+
+    var isEncryptionSetupRequired: Bool {
+        if case .encryptionSetupRequired = self { true } else { false }
+    }
+
+    /// The setup refusal, told apart from a credential 403 by its `error`
+    /// code only, never by prose.
+    private static func setupRefusal(in body: Data) -> NetworkError? {
+        nonisolated struct Refusal: Decodable { var error: String?; var message: String? }
+        guard let refusal = try? JSONDecoder().decode(Refusal.self, from: body.prefix(maxConflictBodyBytes)),
+              refusal.error == "encryption_setup_required"
+        else { return nil }
+        let message = refusal.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .encryptionSetupRequired(message: message?.isEmpty == false ? message : nil)
     }
 
     /// `Retry-After` as whole seconds. RFC 9110 also allows an HTTP-date form;

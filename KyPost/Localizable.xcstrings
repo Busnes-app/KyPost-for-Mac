@@ -1,6 +1,15 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Finish encryption setup" : {
+
+    },
+    "Finish email encryption setup in KyPost on the web, then come back." : {
+
+    },
+    "Open KyPost on the web" : {
+
+    },
     "Answered through KyCalendar." : {
 
     },

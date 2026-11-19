@@ -48,6 +48,11 @@ final class InboxViewModel {
     /// Whether the tab strip leads with All.
     private(set) var showsAllTab = true
     private(set) var errorMessage: String?
+    /// Set while the relay refuses mail with `encryption_setup_required`:
+    /// the shell shows `EncryptionSetupRequiredView` with this sentence and
+    /// no refresh reaches the relay until `recheckEncryptionSetup` succeeds.
+    /// The pairing, keys and cached mail are untouched.
+    private(set) var encryptionSetupMessage: String?
     private(set) var connectionNotice: String?
     /// A transient sentence for the toast: a rejected action, a missing
     /// Sent folder, the selection limit. Expires on its own.
@@ -490,6 +495,8 @@ final class InboxViewModel {
         topLevelFolders = []
         windowRows = [:]
         hasLoaded = false
+        // The next account answers for itself.
+        encryptionSetupMessage = nil
         resetForFolder(Config.defaultFolder, tab: nil)
         endSearch(dismissingField: true)
     }
@@ -639,7 +646,8 @@ final class InboxViewModel {
     @discardableResult
     func refresh(forceFullResync: Bool = false, delaysTransientError: Bool = false) async -> Bool {
         let requested = folder
-        guard !refreshingFolders.contains(requested) else { return false }
+        // Held for setup: only `recheckEncryptionSetup` asks again.
+        guard encryptionSetupMessage == nil, !refreshingFolders.contains(requested) else { return false }
         delayedRefreshErrorTask?.cancel()
         delayedRefreshErrorTask = nil
         initialRefreshRetryTask?.cancel()
@@ -665,6 +673,9 @@ final class InboxViewModel {
             loadedFolder = nil
             connectionNotice = nil
             errorMessage = PairingInstructions.inbox
+        } catch let error as NetworkError where error.isEncryptionSetupRequired {
+            guard generation == accountGeneration else { return false }
+            holdForEncryptionSetup(error)
         } catch {
             guard generation == accountGeneration else { return false }
             guard requested == folder else { return true }
@@ -723,8 +734,52 @@ final class InboxViewModel {
             delayedRefreshErrorTask = nil
             connectionNotice = nil
             errorMessage = PairingInstructions.inbox
+        } catch let error as NetworkError where error.isEncryptionSetupRequired {
+            guard generation == accountGeneration else { return }
+            holdForEncryptionSetup(error)
         } catch {
             // The delayed task reports the persistent failure at 90 seconds.
+        }
+    }
+
+    /// Where "Open KyPost on the web" goes; nil without a usable pairing URL.
+    var encryptionSetupURL: URL? {
+        mailRepository.pairedServerUrl.flatMap(webmailEncryptionSetupURL(serverUrl:))
+    }
+
+    /// Enters the setup hold: no banner, no retry. Nothing is signed out.
+    private func holdForEncryptionSetup(_ error: NetworkError) {
+        encryptionSetupMessage = error.errorDescription
+        delayedRefreshErrorTask?.cancel()
+        delayedRefreshErrorTask = nil
+        initialRefreshRetryTask?.cancel()
+        initialRefreshRetryTask = nil
+        connectionNotice = nil
+        loadedFolder = nil
+    }
+
+    /// One request to the relay while held for setup ("Check again", or the
+    /// app returning to the foreground). Success lifts the hold and resumes
+    /// the normal refresh; any failure keeps it.
+    func recheckEncryptionSetup() async {
+        guard encryptionSetupMessage != nil else { return }
+        let requested = folder
+        let generation = accountGeneration
+        guard !refreshingFolders.contains(requested) else { return }
+        refreshingFolders.insert(requested)
+        defer { if generation == accountGeneration { refreshingFolders.remove(requested) } }
+        do {
+            let rows = try await mailRepository.refreshFolder(requested)
+            guard generation == accountGeneration else { return }
+            encryptionSetupMessage = nil
+            if requested == folder { markRefreshed(rows) }
+            // Refused along with the inbox while held.
+            await loadSubfolders()
+        } catch let error as NetworkError where error.isEncryptionSetupRequired {
+            guard generation == accountGeneration else { return }
+            encryptionSetupMessage = error.errorDescription
+        } catch {
+            // Unreachable or locked: the last answer still stands.
         }
     }
 

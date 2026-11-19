@@ -82,6 +82,19 @@ Domain.
   confirmation step; otherwise it goes through `router.handle`, which defers it
   until unlock. A link the screen never took (it was dismissed first) goes to
   the router when the last pairing screen disappears, so it is never stranded.
+- **Encryption setup required is a hold, not a sign-out or an error**
+  (`NetworkError.encryptionSetupRequired`, decoded only in
+  `NetworkError.from` from a 403 whose JSON `error` is
+  `encryption_setup_required`; any other 403 stays `.unauthorized`).
+  `InboxViewModel.encryptionSetupMessage` holds the server's `message` (or
+  the app's sentence); while set, `refresh` sends nothing and no retry or
+  connection banner runs. `KyPostApp.appContent` overlays
+  `EncryptionSetupRequiredView` on the shell — an overlay, so an open
+  compose sheet survives — with "Open KyPost on the web"
+  (`webmailEncryptionSetupURL`, `<srv>/setup/encryption`) and "Check again".
+  `recheckEncryptionSetup` (Check again, iOS `scenePhase` active, macOS
+  `didBecomeActive`) makes one inbox request; only success lifts the hold.
+  Never touch the pairing, keys or cache for it; `forgetAccount` clears it.
 - **An unpaired Mac says exactly how to pair** (`PairingInstructions`): on the
   web, Settings → Security → Devices → Pair a new device → Pair this device,
   which opens a `kypost://native-pair` link. The wording follows KyPost-Server

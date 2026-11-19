@@ -141,20 +141,31 @@ private nonisolated func webmailReadComponents(
     serverUrl: String,
     mailbox: String
 ) -> URLComponents? {
-    let trimmed = serverUrl.trimmingCharacters(in: .whitespaces)
-    let base = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
-    guard var components = URLComponents(string: base),
-          components.scheme != nil,
-          components.host != nil
-    else { return nil }
-
-    components.path += "/read"
+    guard var components = webmailComponents(serverUrl: serverUrl, path: "/read") else { return nil }
 
     let mailbox = mailbox.trimmingCharacters(in: .whitespaces)
     if !mailbox.isEmpty, mailbox.caseInsensitiveCompare(StandardFolder.inbox) != .orderedSame {
         components.queryItems = [URLQueryItem(name: "mailbox", value: mailbox)]
     }
     return components.url == nil ? nil : components
+}
+
+/// `path` under the paired server's base URL, or nil when it is not one.
+private nonisolated func webmailComponents(serverUrl: String, path: String) -> URLComponents? {
+    let trimmed = serverUrl.trimmingCharacters(in: .whitespaces)
+    let base = trimmed.hasSuffix("/") ? String(trimmed.dropLast()) : trimmed
+    guard var components = URLComponents(string: base),
+          components.scheme != nil,
+          components.host != nil
+    else { return nil }
+    components.path += path
+    return components
+}
+
+/// The web's first sign-in encryption setup page (KyPost-Server
+/// `/setup/encryption`), for an account the relay holds for setup.
+nonisolated func webmailEncryptionSetupURL(serverUrl: String) -> URL? {
+    webmailComponents(serverUrl: serverUrl, path: "/setup/encryption")?.url
 }
 
 /// Builds the webmail URL that opens one mailbox — the compose handoff opens
