@@ -545,8 +545,7 @@ Domain.
   before upload, and the button is disabled under Send's conditions plus the
   lock. While it runs, `isSavingDraft` puts the spinner on Save Draft, not Send.
 - **The keyless-recipient confirmation copy is contract.** It lives in
-  `ComposeViewModel.pickupConfirmationMessage`, verbatim from
-  `Client_Encrypted_Send.md`, and must name every address, say the plaintext
+  `ComposeViewModel.pickupConfirmationMessage`, and must name every address, say the plaintext
   sits on the server for up to 7 days, and default to Cancel. Every pickup
   link this app can cause is the server-readable kind; softening the wording
   defeats the opt-in.

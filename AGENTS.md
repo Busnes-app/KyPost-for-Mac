@@ -1320,8 +1320,7 @@ an event only when asked and syncs no calendar.
 
 - `GET /api/groups` is **pull-only and cursorless**. Every pull is the whole
   truth, so a group absent from the response is deleted locally. This device
-  never creates a backend group (Client_Contact_Update.md Part 2 point 3), so
-  there is no outbox and nothing to reconcile.
+  never creates a backend group, so there is no outbox and nothing to reconcile.
 - `CNGroup` materialization is **one direction: backend → device**. A group the
   user made in Contacts is never turned into a backend group — there is no
   endpoint for it.

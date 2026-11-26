@@ -3,8 +3,8 @@
 ## Product reference
 
 The [repository README](https://github.com/Busnes-app/KyPost-for-Mac/blob/main/README.md) links the current installation commands,
-environment reference and supported deployment/distribution paths. Read the version matching your installation.
-The links below open repository documents and need network access.
+environment reference and supported deployment and distribution paths. Read the version matching your installation.
+The links below open repository documents and require network access.
 
 - [Feature and security settings reference](https://github.com/Busnes-app/KyPost-for-Mac/blob/main/docs/FEATURES.md)
 - [Development and tests](https://github.com/Busnes-app/KyPost-for-Mac/blob/main/docs/DEVELOPMENT.md)
@@ -13,6 +13,7 @@ The links below open repository documents and need network access.
 
 ## Detailed product guides
 
+- [Calendar RSVP](https://github.com/Busnes-app/KyPost-for-Mac/blob/main/docs/KYCALENDAR-RSVP.md)
 - [Strong cryptography](https://github.com/Busnes-app/KyPost-for-Mac/blob/main/docs/STRONG-CRYPTO.md)
 
 ## Privacy and vulnerability reports
@@ -23,5 +24,5 @@ Do not publish credentials or private data in a public issue.
 
 ## Versions
 
-Use the [release record](https://github.com/Busnes-app/KyPost-for-Mac/releases) and, where present, the repository changelog.
+Use the [release record](https://github.com/Busnes-app/KyPost-for-Mac/releases) and the [changelog](https://github.com/Busnes-app/KyPost-for-Mac/blob/main/CHANGELOG.md).
 A successful build is not proof of a published or qualified release.

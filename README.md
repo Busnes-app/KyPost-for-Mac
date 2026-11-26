@@ -1,4 +1,4 @@
-# KyPost
+# KyPost for macOS and iOS
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15930/badge)](https://www.bestpractices.dev/projects/15930)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/KyPost-for-Mac/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/KyPost-for-Mac)
@@ -6,6 +6,13 @@
 A native SwiftUI mail client for macOS and iOS. It connects to a KyPost mail relay.
 
 The app talks only to the relay backend. There is no direct IMAP or SMTP. You pair a device one time with a QR code or a deep link. The relay then handles mail access, server-side keyword tabs, push notifications, and contact sync.
+
+## What it can do
+
+- Read mail with folders, keyword tabs and an HTML reader.
+- Compose, manage contacts and pair per-device credentials through KyPost.
+- Use native macOS windows and shortcuts or the iOS interface.
+- Review security controls, platform differences and known gaps in the [feature guide](docs/FEATURES.md).
 
 ## Requirements
 
@@ -39,32 +46,21 @@ signing identity and Keychain access groups to preserve access to existing pairi
 
 Until you pair, the inbox says how: on a Mac it gives the web steps above, and on iOS it points to Settings → Connection.
 
+## Documentation
+
+- [User manual](https://busnes.app/manuals/kypost-for-mac/) ([Markdown sources](docs/src/introduction.md)) — build and check locally with `mdbook build docs` and `python3 docs/check-links.py`, then open `docs/book/index.html`. The documentation workflow also uploads a `documentation-book` artifact.
+- [Development](docs/DEVELOPMENT.md) — Identifiers, Architecture, Testing. <a id="architecture"></a><a id="wire-contracts"></a><a id="testing"></a>
+- [Features](docs/FEATURES.md) — Features, Known gaps. <a id="features"></a><a id="security-settings--security"></a><a id="known-gaps"></a>
+- [Calendar RSVP](docs/KYCALENDAR-RSVP.md) — Wire contract for answering invitations through KyCalendar and the mail fallback.
+- [Verifying releases](docs/VERIFYING-RELEASES.md) — Check the GopenPGP binary against its pin and its build, and what can be checked of the app.
+- [Assurance case](docs/ASSURANCE-CASE.md) — Threat model, trust boundaries, and why the security requirements are met.
+- [Strong cryptography](docs/STRONG-CRYPTO.md) — Key-size floors for TLS and OpenPGP, the key inventory, and what is out of scope.
+- [Contributing](CONTRIBUTING.md) — Contribution guidelines, review process, and tests.
+- [Security policy](SECURITY.md) — Threat model and how to report a vulnerability privately.
+- [Release notes](CHANGELOG.md) — Changes by version and upgrade notes.
+
 ## License
 
 MIT, developed by Busnes.app — see [LICENSE.txt](LICENSE.txt).
 
 [![OctoCounts](https://api.octocounts.com/badge/Busnes-app/KyPost-for-Mac/branch/main)](https://octocounts.com/github/Busnes-app/KyPost-for-Mac/tree/main)
-
-## What it can do
-
-- Read mail with folders, keyword tabs and an HTML reader.
-- Compose, manage contacts and pair per-device credentials through KyPost.
-- Use native macOS windows and shortcuts or the iOS interface.
-- Review security controls, platform differences and known gaps in the feature guide.
-
-## Documentation
-
-- [Development](docs/DEVELOPMENT.md) — Identifiers, Architecture, Testing. <a id="architecture"></a><a id="wire-contracts"></a><a id="testing"></a>
-- [Features](docs/FEATURES.md) — Features, Known gaps. <a id="features"></a><a id="security-settings--security"></a><a id="known-gaps"></a>
-- [Verifying releases](docs/VERIFYING-RELEASES.md) — Check the GopenPGP binary against its pin and its build, and what can be checked of the app.
-- [Assurance case](docs/ASSURANCE-CASE.md) — Threat model, trust boundaries, and why the security requirements are met.
-- [Strong cryptography](docs/STRONG-CRYPTO.md) — Key-size floors for TLS and OpenPGP, the key inventory, and what is out of scope.
-
-## User manual
-
-Read the [online manual](https://busnes.app/manuals/kypost-for-mac/) or browse its
-[Markdown sources](docs/src/introduction.md).
-
-Build and check it with `mdbook build docs` and `python3 docs/check-links.py`,
-then open `docs/book/index.html`. The documentation workflow also provides a
-downloadable `documentation-book` artifact.
