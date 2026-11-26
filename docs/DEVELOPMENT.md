@@ -4,7 +4,7 @@
 
 Commands and unlinked file paths below are relative to the repository root.
 
-> **Naming:** the app uses the name **KyPost** everywhere. This covers the Dock and Home Screen label, the About screen, the permission prompts, the Xcode project, scheme and folders, and the deep-link scheme (`kypost://`). The bundle ID and the Keychain access group are `org.kysecurity.mail`, matching the Android client. They were `com.urlxl.mail` until the identifier rename, which had to land before the first App Store submission because a bundle ID cannot be changed afterwards. See `Brand_Refresh_KyPost.md`.
+> **Naming:** the app uses the name **KyPost** everywhere. This covers the Dock and Home Screen label, the About screen, the permission prompts, the Xcode project, scheme and folders, and the deep-link scheme (`kypost://`). The bundle ID and the Keychain access group are `org.kysecurity.mail`, matching the Android client. They were `com.urlxl.mail` until the identifier rename, which had to land before the first App Store submission because a bundle ID cannot be changed afterwards.
 
 ## Architecture
 

@@ -6,6 +6,6 @@ Read the product reference's current distribution status before looking for an a
 
 ## Pair with the server
 
-Prepare an everyday mailbox account on an HTTPS KyPost server. Build/run the KyPost scheme, generate a native-device pairing QR code or link in the server's security settings, and open/paste it in the intended client. Confirm the server identity and verify Inbox loading.
+Prepare an everyday mailbox account on an HTTPS KyPost server. Build and run the **KyPost** scheme, generate a native-device pairing QR code or link in the server's security settings, and open or paste it in the intended client. Confirm the server identity and verify inbox loading.
 
-Test a controlled send and reply. APNs delivery requires matching server/client push configuration. Pairing the relay does not itself enrol a client-held OpenPGP private key; use the separate enrollment flow if that account requires one.
+Test a controlled send and reply. APNs delivery requires matching server and client push configuration. Pairing the relay does not itself enroll a client-held OpenPGP private key; use the separate enrollment flow if that account requires one.
