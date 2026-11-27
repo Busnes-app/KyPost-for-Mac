@@ -8,7 +8,9 @@ Own the Go bridge and the XCFramework consumed by the Swift app.
 
 - `KyPostCrypto/` owns the gomobile-compatible `pqc` boundary and shared public fixtures.
 - `GopenPGP/Package.swift` points to the generated local framework.
-- `.github/scripts/build-gopenpgp.sh` builds it; `run-xcodebuild.sh` invokes the build.
+- `.github/scripts/build-gopenpgp.sh` builds it. `run-xcodebuild.sh` invokes the build.
+- Xcode Cloud runs `ci_scripts/ci_post_clone.sh` to provision Go and build the
+  framework before SwiftPM resolves the local binary target.
 
 ## Local Contracts
 
