@@ -16,7 +16,7 @@ import Foundation
 
 nonisolated let pgpKeyringFormat = "kypost-pgp-keyring-v1"
 /// Plaintext bound, applied before UTF-8 decoding or JSON work.
-nonisolated let maxPgpKeyringBytes = 128 * 1024
+nonisolated let maxPgpKeyringBytes = 512 * 1024
 nonisolated let maxPgpKeyringPrimaries = 16
 nonisolated let maxPgpKeyringFingerprints = 256
 /// The largest integer every peer, JavaScript included, represents exactly.
@@ -25,6 +25,7 @@ nonisolated let maxPgpKeyringGeneration: UInt64 = (1 << 53) - 1
 private let ringKeys: Set<String> = [
     "format", "materialGeneration", "activeFingerprint", "keyFingerprints", "keys",
 ]
+private let ringV2Keys = ringKeys.subtracting(["activeFingerprint"]).union(["active"])
 private let memberKeys: Set<String> = ["fingerprint", "privateKey"]
 private let memberKeysWithRevocation: Set<String> = memberKeys.union(["revocationCertificate"])
 
@@ -54,7 +55,9 @@ nonisolated struct PgpKeyring: Equatable, Sendable, CustomStringConvertible,
 
     var original: Data
     var materialGeneration: UInt64
+    /// v4 stays the signing/self-send key until capability-split P4 sends land.
     var activeFingerprint: String
+    var activeV6Fingerprint: String? = nil
     /// Every primary and subkey fingerprint, uppercase.
     var keyFingerprints: Set<String>
     var members: [Member]
@@ -112,14 +115,31 @@ private nonisolated func parseRing(
           String(data: plaintext, encoding: .utf8) != nil,
           !jsonHasDuplicateKeys(plaintext),
           let root = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
-          Set(root.keys) == ringKeys,
-          root["format"] as? String == pgpKeyringFormat,
           let generationNumber = root["materialGeneration"] as? NSNumber,
           let generation = jsonUnsignedInteger(generationNumber),
-          (1...maxPgpKeyringGeneration).contains(generation),
-          let activeFingerprint = keyringFingerprint(root["activeFingerprint"])
+          (1...maxPgpKeyringGeneration).contains(generation)
     else { return nil }
-    if let expected, activeFingerprint != expected { return nil }
+    let activeFingerprint: String
+    var activeV6Fingerprint: String?
+    switch root["format"] as? String {
+    case pgpKeyringFormat:
+        guard Set(root.keys) == ringKeys,
+              let active = keyringFingerprint(root["activeFingerprint"]) else { return nil }
+        activeFingerprint = active
+    case "kypost-pgp-keyring-v2":
+        guard Set(root.keys) == ringV2Keys,
+              let active = root["active"] as? [String: Any],
+              Set(active.keys) == Set(["v4", "v6"]),
+              let v4 = keyringFingerprint(active["v4"]), v4.count == 40,
+              let v6 = keyringFingerprint(active["v6"]), v6.count == 64
+        else { return nil }
+        activeFingerprint = v4
+        activeV6Fingerprint = v6
+    default: return nil
+    }
+    // The delivery context may name either active certificate, never a
+    // historical member. Preserve v4 signing until P4 splits recipients.
+    if let expected, expected != activeFingerprint && expected != activeV6Fingerprint { return nil }
 
     guard let inventory = root["keyFingerprints"] as? [Any],
           !inventory.isEmpty, inventory.count <= maxPgpKeyringFingerprints
@@ -147,13 +167,15 @@ private nonisolated func parseRing(
         members.append(member)
     }
     guard derived == declared,
-          members.filter({ $0.fingerprint == activeFingerprint }).count == 1
+          members.filter({ $0.fingerprint == activeFingerprint }).count == 1,
+          activeV6Fingerprint == nil || members.filter({ $0.fingerprint == activeV6Fingerprint }).count == 1
     else { return nil }
 
     return PgpKeyring(
         original: plaintext,
         materialGeneration: generation,
         activeFingerprint: activeFingerprint,
+        activeV6Fingerprint: activeV6Fingerprint,
         keyFingerprints: derived,
         members: members
     )

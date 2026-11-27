@@ -176,36 +176,13 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
     }
 
     func userIDAddresses(ofArmoredPublicKey key: String) -> [String] {
-        // Not the library's identity list as read: go-crypto keeps every User
-        // ID that a signature merely *claims* to certify (`readUser` checks the
-        // issuer, not the signature), so a relay could append an address the
-        // key's owner never certified. Each User ID is judged alone instead.
-        // A copy of the key holding only that one can verify only if the
-        // library finds a valid, unrevoked self-certification for it
-        // (`PrimarySelfSignature` → `PrimaryIdentity` → `Identity.Verify`).
-        //
-        // v4 only: a v6 key's validity comes from its direct-key signature, so
-        // there the check proves nothing and no address is used.
-        guard let sections = OpenPgpKeySections(armored: key),
-              let userIDs = sections.userIDs,
-              Self.key(sections)?.getVersion() == 4
+        guard let sections = OpenPgpKeySections(armored: key), sections.userIDs != nil else { return [] }
+        var error: NSError?
+        let data = PqcUserIDAddressesJSON(key, Int64(Date().timeIntervalSince1970), &error)
+        guard error == nil, let data,
+              let addresses = try? JSONDecoder().decode([String].self, from: data)
         else { return [] }
-        let now = Int64(Date().timeIntervalSince1970)
-        var seen = Set<String>()
-        return userIDs.indices.compactMap { index in
-            guard let alone = sections.isolating(userID: index).flatMap(Self.key),
-                  alone.canVerify(now),
-                  let ring = CryptoKeyRing(alone),
-                  let json = ring.getIdentitiesJson(),
-                  let identities = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]],
-                  identities.count == 1
-            else { return nil }
-            // Go's default JSON field name is `Email`; accept either case.
-            // Owner-chosen text: anything not one plain address is dropped.
-            let raw = (identities[0]["Email"] ?? identities[0]["email"]) as? String ?? ""
-            guard let email = plainAddress(raw), seen.insert(email).inserted else { return nil }
-            return email
-        }
+        return Array(Set(addresses.compactMap(plainAddress))).sorted()
     }
 
     // MARK: - Writing
@@ -249,6 +226,11 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         let armored = key.getArmoredPublicKey(&error)
         guard error == nil, !armored.isEmpty else { throw PgpCryptoError.unusableKey }
         return armored
+    }
+
+    private struct BridgeInventory: Decodable {
+        var primaryFingerprint: String
+        var keyFingerprints: [String]
     }
 
     // MARK: - Inspecting
@@ -312,6 +294,13 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         guard Set(fingerprints).count == fingerprints.count, let primary = fingerprints.first else {
             return nil
         }
+        var inspectionError: NSError?
+        let data = PqcInspectPrivateKeyJSON(armored, &inspectionError)
+        guard inspectionError == nil, let data,
+              let inspected = try? JSONDecoder().decode(BridgeInventory.self, from: data),
+              inspected.primaryFingerprint == primary,
+              inspected.keyFingerprints == fingerprints
+        else { return nil }
         return PrivateKeyInventory(primaryFingerprint: primary, keyFingerprints: fingerprints)
     }
 
@@ -668,5 +657,40 @@ nonisolated struct GopenPGPCrypto: PgpDecrypting, PgpEncrypting, PgpKeyInspectin
         return text.contains("decompressed")
             || text.contains("too large")
             || text.contains("size limit")
+    }
+}
+
+/// Byte-only seam; no gomobile types escape into enrollment or storage.
+nonisolated enum XWingCrypto {
+    static func generateSeed() throws -> Data {
+        var error: NSError?
+        guard let value = PqcGenerateSeed(&error), error == nil else {
+            throw EnrollmentVaultError.unavailable
+        }
+        return value
+    }
+
+    static func publicKey(seed: Data) throws -> Data {
+        var error: NSError?
+        guard let value = PqcPublicKey(seed, &error), error == nil else {
+            throw EnrollmentVaultError.unavailable
+        }
+        return value
+    }
+
+    static func isValidPublicKey(_ key: Data) -> Bool { PqcValidatePublicKey(key) }
+
+    static func seal(publicKey: Data, info: Data, plaintext: Data) throws -> Data {
+        var error: NSError?
+        guard let value = PqcSeal(publicKey, info, plaintext, &error), error == nil else {
+            throw EnrollmentVaultError.unavailable
+        }
+        return value
+    }
+
+    static func open(seed: Data, info: Data, sealed: Data) -> Data? {
+        var error: NSError?
+        let value = PqcOpen(seed, info, sealed, &error)
+        return error == nil ? value : nil
     }
 }

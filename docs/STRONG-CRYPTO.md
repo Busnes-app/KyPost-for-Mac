@@ -67,8 +67,8 @@ it through device enrollment.
 | --- | --- | --- | --- |
 | Relay API, pairing, push registration, MFA, contacts, sign-on token exchange, QR key URLs (all HTTPS) | System trust, then RSA ≥ 2048 or EC ≥ P-256 on the whole chain, TLS ≥ 1.2 | Yes, the handshake is cancelled | `Data/Networking/PinnedSessionDelegate.swift` |
 | Relay pin | SHA-256 of the leaf SPKI | Not applicable (hash) | `PinnedSessionDelegate.spkiSHA256` |
-| Device enrollment envelope | HPKE DHKEM(P-256), HKDF-SHA256, AES-256-GCM | Yes, only this suite opens | `Domain/Security/DeviceEnvelope.swift`, `VaultSealer.swift` |
-| Device key (vault seal, enrollment) | Secure Enclave P-256 | Fixed, cannot be configured | `Domain/Security/DeviceAgreementKey.swift`, `EnrollmentVault.swift` |
+| Device enrollment envelope | v6 X-Wing HPKE (0x647A); legacy v4/v5 DHKEM(P-256), HKDF-SHA256, AES-256-GCM | Yes, only this suite opens | `Domain/Security/DeviceEnvelope.swift`, `VaultSealer.swift` |
+| Device key (vault seal, enrollment) | X-Wing software seed in passcode-set, ThisDeviceOnly, user-presence Keychain; retained Secure Enclave P-256 for legacy formats | Fixed; no background-readable seed fallback | `Domain/Security/DeviceAgreementKey.swift`, `EnrollmentVault.swift` |
 | Sign-on proof key (binds the KyIdentity ID token to this attempt) | Software P-256, ECDSA SHA-256, a new key per attempt, memory only | Fixed | `Domain/SignOn/SignOnProof.swift` |
 | Legacy vault records | ECIES X9.63-SHA256 AES-GCM to the P-256 device key, only opened, to migrate | Not created | `EnrollmentVault.swift` |
 | App-lock PIN verifier | PBKDF2-HMAC-SHA256, 150,000 iterations, 128-bit salt, 256-bit output, peppered with HMAC-SHA256 under a key derived from a Secure Enclave P-256 key, or a random 256-bit key where there is no Secure Enclave | Fixed | `Domain/Security/PinHasher.swift`, `PinPepper.swift` |
@@ -115,3 +115,18 @@ These are not code this project produces:
 
 **Not proven:** the floor on a physical device, or against a live relay on another OS build.
 The simulator run is the evidence.
+
+## Spec A P2/P3 read support
+
+The source-bound Go bridge uses ky-primitives v0.11.0 for X-Wing HPKE. It does
+not implement a KEM or hybrid combiner. The app reads v6 PKESK/SEIPDv2 and RFC
+9980 ID 35, and verifies ML-DSA-65+Ed25519 (ID 30) through GopenPGP 3.5.2.
+User ID certification and subkey binding checks stay in go-crypto; a v6 direct-key
+signature does not authenticate an appended identity. V1 and dual-active v2 rings
+retain history, with 512 KiB ring/envelope caps and the existing member counts.
+QR fingerprints accept exactly 40 or 64 uppercase hex digits.
+
+X-Wing seeds are software material protected by Keychain user presence, not
+non-exportable enclave keys. Physical-device protection and prompt behavior
+remain a separate acceptance gate. Existing v4 sending is unchanged; P3 does
+not enable an account's server-side v6 encryption switch.

@@ -6,82 +6,37 @@ KyPost for iOS and macOS has three things a user or reviewer might want to check
 
 | What | Where it comes from | State on 2026-10-23 |
 |---|---|---|
-| The **GopenPGP XCFramework**, the one binary dependency and the app's OpenPGP code | GitHub release `gopenpgp-v3.5.2`, pinned by SHA-256 in `Dependencies/GopenPGP/Package.swift` | Published. **Every command below was run against it.** |
+| The **GopenPGP XCFramework** and KyPost bridge | Local source build using pinned Go modules | Native compilation runs in macOS CI; Linux tests the Go bridge. |
 | The **iOS app** | App Store | **Untested.** Not found in Apple's public App Store lookup on 2026-10-23. |
 | The **Mac app** (`KyPost-<version>.dmg`, Developer ID) | GitHub release for a `v*` tag, made by `release.yml` | **Untested.** None has been published. The `v0.5.0` release run failed at "Export Mac app (Developer ID)". |
 
 ## The GopenPGP binary
 
-`.github/workflows/gopenpgp-xcframework.yml` builds the framework on a GitHub runner, from
-the ProtonMail/gopenpgp tag in `Dependencies/gopenpgp.env`, with upstream's own `build.sh`
-and one added linker flag. SwiftPM refuses the download if its SHA-256 differs from the
-`checksum` in `Package.swift` when it fetches the binary; these commands repeat the check
-by hand, from a clone of this repository.
+The app now builds its local framework from the Go module sources pinned in
+`Dependencies/KyPostCrypto/go.mod` and `go.sum`; `gopenpgp.env` must agree.
+The old `gopenpgp-v3.5.2` release is historical and omits the X-Wing bridge.
+It is no longer consumed by SwiftPM.
 
-**1. The asset is the pinned one.**
+On a Mac with Go 1.27.x and Xcode 26:
 
-```bash
-url=$(sed -n 's/.*url: "\(.*\)",/\1/p' Dependencies/GopenPGP/Package.swift)
-pin=$(sed -n 's/.*checksum: "\([0-9a-f]*\)".*/\1/p' Dependencies/GopenPGP/Package.swift)
-curl -sSfL -o gopenpgp.xcframework.zip "$url"
-echo "$pin  gopenpgp.xcframework.zip" | sha256sum -c -        # macOS: shasum -a 256 -c -
+```sh
+.github/scripts/build-gopenpgp.sh
+cd Dependencies/KyPostCrypto
+go mod verify
+go test -race ./...
 ```
 
-For v3.5.2 this prints `gopenpgp.xcframework.zip: OK`, and the pin is
-`ed2ad1463b4dc54149c45dc13a9800c15f9eb1ea0c83609b543476c03663c852`. GitHub's own record
-of the upload must agree (it prints the same hash with a `sha256:` prefix):
+The build calls upstream `build.sh apple`, adds KyPost's bridge to the same
+runtime, pins gomobile, and checks the baked `asyncpreemptoff=1` in every slice.
+`Package.swift` consumes the generated local path. Native CI repeats this build;
+`gopenpgp-xcframework.yml` retains a workflow artifact for inspection and does
+not publish dependency releases. Module checksums authenticate source downloads;
+they do not prove the compiler or local build host is trustworthy. The output
+is not bit-reproducible and no dependency binary attestation is claimed.
 
-```bash
-gh release view gopenpgp-v3.5.2 -R Busnes-app/KyPost-for-Mac --json assets --jq '.assets[].digest'
-```
-
-Check the pin against the asset or this `digest`, never against the release notes alone:
-the first release's notes once quoted a hash the asset did not have.
-
-**2. Which source it was built from.** The release notes name the workflow run
-(`38497139997` for v3.5.2). Its log records the upstream commit it checked out, the Go
-version and the hash it published:
-
-```bash
-gh run view 38497139997 -R Busnes-app/KyPost-for-Mac --log \
-  | grep -E 'HEAD is now at|go version go|SHA256: '
-git ls-remote https://github.com/ProtonMail/gopenpgp.git refs/tags/v3.5.2
-```
-
-For v3.5.2 the log shows `HEAD is now at dcc4859 chore: Bump version to v3.5.2 (#374)`,
-`go version go1.27.2 darwin/arm64` and `SHA256: ed2ad146…c852`. `ls-remote` gives
-`dcc4859aba4cd912c7562a534912fc8fc688e04b` for the upstream tag, so the two match. The run
-built commit `3f429f9` of this repository, from branch `chore/gopenpgp-v3.5.2`; that commit
-is on `main`.
-
-**What this does not give you:**
-
-- **The log will expire.** This repository keeps Actions logs for 90 days, so the v3.5.2
-  log goes around 2027-01-12. After that only the release notes link the binary to its
-  build. v3.5.2 has no build-provenance attestation that would outlive the log
-  (`gh attestation verify gopenpgp.xcframework.zip --repo Busnes-app/KyPost-for-Mac`
-  answers 404).
-
-**3. Build provenance (untested: no release has been built with it yet).** GopenPGP
-releases built after v3.5.2 also carry `KyPost-gopenpgp-<version>.intoto.jsonl`, a SLSA
-provenance attestation of the zip signed keylessly (Sigstore) with the workflow run's
-identity. It names the repository, workflow, commit and run that built the zip:
-
-```bash
-v=<version>
-gh release download gopenpgp-$v -R Busnes-app/KyPost-for-Mac
-gh attestation verify gopenpgp.xcframework.zip --repo Busnes-app/KyPost-for-Mac \
-  --bundle KyPost-gopenpgp-$v.intoto.jsonl
-```
-
-It says which run built the bytes, not that the bytes match the source: the build is
-still not reproducible.
-- **The log needs a GitHub sign-in.** Anonymous log downloads are refused (HTTP 403).
-  The commands were run only as the repository's admin.
-- **You cannot rebuild it to the same bytes.** Two builds of the same tag produced
-  different hashes: gomobile embeds build IDs and paths, and the job does not pin Xcode
-  or Go (`go-version: stable`). The checksum identifies one build; it does not prove that
-  build matches the source.
+**Not checked on Linux:** Apple framework compilation and runtime behavior.
+The platform CI checks cover compilation and Simulator tests; physical-device
+Keychain, enclave migration and presence-policy testing remain separate.
 
 ## The iOS app (untested)
 

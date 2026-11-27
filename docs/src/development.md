@@ -7,6 +7,14 @@ It owns the contribution process, build prerequisites and required product check
 Read the repository's AGENTS.md chain when working with an agent. Native builds and tests
 require their documented operating systems, SDKs and devices.
 
+## Build the crypto dependency
+
+Install Go 1.27.x on the build Mac, then run
+`.github/scripts/build-gopenpgp.sh` from the repository root before opening
+`KyPost.xcodeproj`. The shared xcodebuild wrapper runs it automatically.
+The generated framework stays local; Go module checksums verify its source inputs.
+On Linux, test the Go bridge with `cd Dependencies/KyPostCrypto && go test -race ./...`.
+
 ## Build this manual
 
 Install mdBook 0.5.4 and Python 3. From the repository root:

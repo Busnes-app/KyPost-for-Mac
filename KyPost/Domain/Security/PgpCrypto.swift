@@ -82,7 +82,7 @@ protocol PgpDecrypting: Sendable {
     /// The email addresses of the key's own User IDs that carry a valid,
     /// unrevoked self-certification — each checked on its own, not taken from
     /// the library's identity list — lowercased. Empty for a key that does not
-    /// parse, and for any key but v4.
+    /// parse, including v6 direct-key certificates.
     ///
     /// What the key says about itself, for display and to flag a mismatch —
     /// **never a binding**: anyone can self-sign any User ID.

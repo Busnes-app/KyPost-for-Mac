@@ -47,3 +47,7 @@ Dependencies/GopenPGP/.build/
 
 # Generated mdBook manual
 /docs/book/
+
+# Source-built crypto framework and upstream staging (never committed).
+Dependencies/.build/
+Dependencies/GopenPGP/gopenpgp.xcframework/

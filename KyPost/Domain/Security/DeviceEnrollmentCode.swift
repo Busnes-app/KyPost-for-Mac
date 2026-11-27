@@ -65,6 +65,12 @@ nonisolated func deviceEnrollmentCode(
 ) -> String {
     let id = Data(deviceId.utf8)
     var preimage = Data()
+    // Length selects SAS v2 unambiguously; parsing the KEM key belongs to
+    // publication, not this byte-hash derivation (including test mutations).
+    if rawPublicKey.count == 1216 {
+        preimage.append(Data("kypost-device-sas/v2".utf8))
+        preimage.append(bigEndianUInt16(rawPublicKey.count))
+    }
     preimage.append(rawPublicKey)
     preimage.append(bigEndianUInt16(id.count))
     preimage.append(id)

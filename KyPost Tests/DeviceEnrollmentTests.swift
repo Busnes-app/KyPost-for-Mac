@@ -22,7 +22,7 @@ import Testing
     }
 
     @Test func onlyHPKEVersionsAreSupported() {
-        #expect(supportedEnvelopeVersions == [4, 5])
+        #expect(supportedEnvelopeVersions == [4, 5, 6])
     }
 
     /// v2 is retired: neither spelling of its tag parses.

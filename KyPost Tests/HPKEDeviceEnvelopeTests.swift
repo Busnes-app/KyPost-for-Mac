@@ -202,7 +202,7 @@ private let ring = VaultRecord(
         #expect(throws: DeviceEnvelopeError.malformedFingerprint) {
             try deviceEnvelopeAAD(version: 5, deviceId: "d", pgpFingerprint: "ABCD")
         }
-        for retired in [2, 3, 6] {
+        for retired in [2, 3, 7] {
             #expect(throws: DeviceEnvelopeError.unsupportedVersion) {
                 try deviceEnvelopeAAD(version: retired, deviceId: "d", pgpFingerprint: V3Fixtures.active)
             }

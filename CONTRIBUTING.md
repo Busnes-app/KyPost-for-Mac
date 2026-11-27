@@ -52,7 +52,8 @@ re-litigation in a PR:
 
 ## Getting Set Up
 
-Use a Mac with Xcode 26+ and the platform SDKs. Open `KyPost.xcodeproj` and the shared
+Use a Mac with Xcode 26+, the platform SDKs and Go 1.27.x. Run
+`.github/scripts/build-gopenpgp.sh` before opening the project. Open `KyPost.xcodeproj` and the shared
 **KyPost** scheme. See [README requirements](README.md#requirements) for deployment
 versions and the separate KyPost HTTPS server requirement.
 

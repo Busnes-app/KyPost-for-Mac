@@ -71,9 +71,10 @@ app.
    (`Presentation/Screens/EmailDetailView.swift`, `makeConfiguration`), and a rule list that
    blocks every load except `data:` and `about:` (`Presentation/Components/RemoteContentBlocker.swift`).
 4. **App → its storage.** Keychain items are this-device-only. The private key is sealed to a
-   Secure Enclave key before it reaches the Keychain (`Domain/Security/EnrollmentVault.swift`).
-5. **Build → app.** The only third-party code, GopenPGP, is a binary pinned by SHA-256
-   (`Dependencies/GopenPGP/Package.swift`) and imported by one app file,
+   X-Wing public key before it reaches the Keychain; its seed requires passcode-set,
+   ThisDeviceOnly Keychain user presence (`Domain/Security/EnrollmentVault.swift`).
+5. **Build → app.** GopenPGP and the ky-primitives X-Wing bridge are source-bound
+   through pinned, checksum-verified Go modules and imported by one app file,
    `Domain/Security/GopenPGPCrypto.swift` (and by its tests).
 
 ## Secure design principles applied
@@ -107,13 +108,13 @@ app.
 | Response caching and cookies | Ephemeral relay sessions, no URL cache, no cookie store | `PinnedSessionDelegate.relaySessionConfiguration` |
 | Tracking pixels and remote loads | Block-all WebKit rule list until the user loads remote content | `Presentation/Components/RemoteContentBlocker.swift` |
 | Script in mail (XSS) | `allowsContentJavaScript = false`; non-persistent website data | `Presentation/Screens/EmailDetailView.swift` (`makeConfiguration`) |
-| Private key at rest | Sealed with `eciesEncryptionCofactorVariableIVX963SHA256AESGCM` to a Secure Enclave P-256 key made with `.privateKeyUsage`, `.userPresence` and `WhenUnlockedThisDeviceOnly`; the sealed record is an `AfterFirstUnlockThisDeviceOnly` Keychain item | `Domain/Security/EnrollmentVault.swift`, `Data/Storage/KeychainStorage.swift` |
-| Envelope tampering or downgrade | Only RFC 9180 HPKE envelopes (v4/v5: mode_base, KEM 0x0010, KDF 0x0001, AEAD 0x0002) to the Secure Enclave key; the `info` binds version, device id and fingerprint. Opened only as the version the server's delivery record names; retired v2/v3 and responses with no delivery record are refused | `Domain/Security/VaultSealer.swift`, `Domain/Security/DeviceEnvelope.swift` |
+| Private key at rest | New records sealed with X-Wing; seed is in passcode-set, ThisDeviceOnly user-presence Keychain. P-256 and ECIES records remain readable for atomic migration | `Domain/Security/EnrollmentVault.swift`, `Data/Storage/KeychainStorage.swift` |
+| Envelope tampering or downgrade | Only RFC 9180 HPKE envelopes (v6 X-Wing 0x647A; legacy v4/v5 P-256 0x0010, KDF 0x0001, AEAD 0x0002); the `info` binds version, device id and fingerprint. Opened only as the version the server's delivery record names; retired v2/v3 and responses with no delivery record are refused | `Domain/Security/VaultSealer.swift`, `Domain/Security/DeviceEnvelope.swift` |
 | PIN brute force | 8 to 12 digits, common PINs refused, a peppered verifier, delays of 30 s, 60 s, 5, 15 and 30 min from the third failure, wipe after 10 by default | `Domain/Security/PinPolicy.swift`, `LockoutPolicy.swift`, `PinPepper.swift` |
 | Forged signature trust | *Confirmed* only from a QR pin on this device; relay-offered keys reach at most *same key as last time*; the relay's `verified` flag is ignored and its `conflict` flag only lowers a verdict | `Domain/Models/PgpSignatureState.swift` |
 | Screen capture | `NSWindow.sharingType = .none` on macOS, a capture cover on iOS | `Presentation/Components/CaptureProtection.swift` |
 | Secrets in logs | `os.Logger` (`Utilities/Log.swift`), which redacts interpolated strings unless they are marked public (numbers are public by default); the 8 values marked public, at 6 call sites, are wipe step and marker names, layout values and an error type name | `Log` call sites |
-| Tampered dependency binary | SHA-256 pin enforced by SwiftPM; built in public CI from a pinned upstream tag | `Dependencies/GopenPGP/Package.swift`, `.github/workflows/gopenpgp-xcframework.yml` |
+| Tampered dependency binary | Source-built framework from Go modules verified by checksums; one embedded runtime | `Dependencies/GopenPGP/Package.swift`, `.github/workflows/gopenpgp-xcframework.yml` |
 | Vulnerable or unpinned actions | Every action pinned by commit; Dependabot for GitHub Actions; OpenSSF Scorecard | `.github/workflows/`, `.github/dependabot.yml` |
 
 SHA-1 appears once, to compute version 4 OpenPGP key fingerprints
@@ -122,9 +123,9 @@ used for signatures or integrity.
 
 ## Residual risk
 
-- **The GopenPGP binary is trusted, not reproduced.** It cannot be rebuilt to the same
-  bytes, and its only provenance record is a workflow log kept for 90 days. No attestation
-  exists ([VERIFYING-RELEASES.md](VERIFYING-RELEASES.md#the-gopenpgp-binary)).
+- **The crypto build host and compiler are trusted.** Source checksums do not prove
+  the generated binary corresponds to those sources; builds are not bit-reproducible
+  and no dependency binary attestation is claimed ([VERIFYING-RELEASES.md](VERIFYING-RELEASES.md#the-gopenpgp-binary)).
 - **Pairing without `pin=` is trust on first use.** It cannot detect an attacker already in
   position at pairing.
 - **Hostile Location Protection removes files; it does not overwrite them.**
@@ -145,8 +146,9 @@ Each item is in [SECURITY.md](../SECURITY.md) with what to do about it.
   `DeviceEnrollmentTests`, `HPKEDeviceEnvelopeTests`), the reader's remote-content blocking (`RemoteContentBlockingTests`)
   and OpenPGP (`GopenPGPCryptoTests`, `PgpMimeReaderTests`). CI runs the unit target on the
   iOS Simulator and compiles for macOS on every pull request.
-- **Supply chain:** the GopenPGP pin was checked against the published asset
-  ([VERIFYING-RELEASES.md](VERIFYING-RELEASES.md)). OpenSSF Scorecard runs on `main`.
+- **Supply chain:** Go modules pin and checksum crypto source inputs; native CI
+  builds the combined framework ([VERIFYING-RELEASES.md](VERIFYING-RELEASES.md)).
+  OpenSSF Scorecard runs on `main`.
 - **Review:** every pull request needs green CI and an adversarial review
   ([CONTRIBUTING.md](../CONTRIBUTING.md#every-pr-must-pass-hostile-ai-code-review)).
 

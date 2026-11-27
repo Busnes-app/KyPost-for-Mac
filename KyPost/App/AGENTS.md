@@ -406,6 +406,13 @@ Rules:
   `.example` — a screenshot is published, and a real address in one is a
   real person's inbox.
 
+## Crypto capability refresh
+
+`SingletonGraph.enrollmentVault` injects the gated `XWingKeyStore` outside demo
+mode. Demo builds never create or read production X-Wing items. Lifecycle
+reporters refresh the OpenPGP capability on existing enrolled records as well as
+retrying pending acknowledgements; an absent record never invents enrollment.
+
 ## Verification
 
 - `xcodebuild test -scheme "KyPost" -destination 'platform=macOS'`

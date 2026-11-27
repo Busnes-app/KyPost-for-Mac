@@ -232,20 +232,26 @@ is minted by the server at registration and returned exactly once.
 - The sealed envelope that makes on-device decryption possible is accepted **only while
   Hostile Location Protection is off**, and is destroyed when it is turned on. It is a
   deliberate, user-chosen posture change, not a default.
-- The envelope is unwrapped under a Secure Enclave P-256 key created with
-  `.privateKeyUsage` and `.userPresence` (device credential or biometry),
-  `WhenUnlockedThisDeviceOnly`. A device with no passcode cannot enrol at all — the
-  envelope's protection *is* the lock screen — and a device without a Secure Enclave is
-  refused rather than given a software key.
-- The envelope must be RFC 9180 HPKE (v4/v5: P-256, HKDF-SHA256, AES-256-GCM), opened
-  only as the version the server says it delivered. The older v2/v3 formats are refused,
-  so a server too old to offer v4/v5 cannot enrol this device: update the server.
-- **The private key is never stored in the clear.** Before it reaches the Keychain it is
-  sealed to that same Secure Enclave key (ECIES: ephemeral P-256 agreement, X9.63
-  SHA-256 KDF, AES-GCM), header included, so the Keychain item holds ciphertext. Opening
-  it is a Secure Enclave operation under the key's presence check; nothing else can.
-  Fingerprint, generation and kind stay readable without a prompt, because the
-  enrollment report needs them.
+- New enrollment uses X-Wing (ML-KEM-768 + X25519, HPKE KEM 0x647A).
+  Its software private seed is kept in a dedicated **passcode-set,
+  ThisDeviceOnly, user-presence Keychain item**, separate from ordinary
+  background-readable credentials. The seed can enter process memory only
+  after device authentication. This is not a non-exportable Secure Enclave
+  X-Wing key: Apple's standalone ML-KEM key does not expose X-Wing HPKE,
+  and KyPost does not implement its own hybrid combiner. A device without a
+  passcode cannot enroll. Go and Swift wipe owned byte buffers; runtime key
+  objects and temporary copies cannot be reliably erased.
+- The envelope must be RFC 9180 HPKE: v6 X-Wing, or legacy v4/v5 P-256,
+  HKDF-SHA256 and AES-256-GCM. The version, device ID and checked fingerprint
+  bind the opening. V6 uses SAS v2 over all 1216 public-key bytes; v4/v5 keep
+  SAS v1. The browser checks the displayed code before sealing. This does not
+  defend against a server actively replacing the browser JavaScript.
+- **The account private key is never stored in the clear.** New local records
+  are sealed with X-Wing before reaching the ordinary Keychain. Old P-256
+  records are opened under their Secure Enclave presence policy and migrated
+  atomically on first successful open; a failed migration preserves them.
+  The authenticated inner header must match the readable outer header.
+  Fingerprint, generation and kind stay readable for enrollment reporting.
 - **The presence prompt appears at most once per app unlock.** A successful Face ID /
   Touch ID / passcode unlock of the app hands its authenticated context to the vault, so
   opening encrypted mail does not ask again. With the app lock off, or after a PIN
@@ -259,7 +265,7 @@ is minted by the server at registration and returned exactly once.
 - The unsealed key is held in memory only, is zeroed on every session boundary — app
   lock, backgrounding, memory pressure, wipe, unpair — and a security wipe, Hostile
   Location Protection and the stranded-lock reset destroy both the sealed record and the
-  Secure Enclave key. If the wipe cannot, it reports itself incomplete and the app fails
+  X-Wing seed and legacy Secure Enclave keys. If the wipe cannot, it reports itself incomplete and the app fails
   closed; see **App lock** above.
 
 ### Keychain items from before the identifier rename
