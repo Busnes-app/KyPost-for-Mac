@@ -1058,7 +1058,8 @@ private final class FakeReportStore: EnrollmentReportStore, @unchecked Sendable 
         #expect(body(captured.value.last)["envelopeVersion"] as? Int == 5, "the delivered version, never a constant")
 
         _ = await client.report(.legacy)
-        #expect(Set(body(captured.value.last).keys) == ["encryptionEnrolled"])
+        #expect(Set(body(captured.value.last).keys) == ["encryptionEnrolled", "openpgp"])
+        #expect(body(captured.value.last)["openpgp"] as? [String] == ["v4", "v6", "rfc9980"])
         _ = await client.report(.notEnrolled)
         #expect(body(captured.value.last)["encryptionEnrolled"] as? Bool == false)
         #expect(captured.value.last?.url?.path == "/api/pgp/device/enrollment-state")
