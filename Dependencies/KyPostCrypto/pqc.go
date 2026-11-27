@@ -90,7 +90,7 @@ func UserIDAddressesJSON(armor string, unixTime int64) ([]byte, error) {
 func InspectPrivateKeyJSON(armor []byte) ([]byte, error) {
 	armor = bytes.Clone(armor)
 	defer clear(armor)
-	key, err := crypto.NewKey(armor)
+	key, err := crypto.NewKeyFromArmored(string(armor))
 	if err != nil {
 		return nil, err
 	}
