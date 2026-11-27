@@ -57,13 +57,19 @@ struct VaultSealer: EnrollmentSealer {
         guard let delivery, envelopeIsHPKE(delivery.version) else {
             throw EnrollmentSealerError.unsupportedEnvelopeVersion
         }
+        if delivery.version == 6 {
+            guard delivery.materialGeneration != nil,
+                  normalisedFingerprint(delivery.fingerprint) == normalisedFingerprint(identityFingerprint) else {
+                throw EnrollmentSealerError.envelopeMalformed
+            }
+        }
         guard let fields = parseDeviceEnvelope(envelopeJSON), fields.version == delivery.version else {
             throw EnrollmentSealerError.envelopeMalformed
         }
         // A v5 ring is validated against the delivery the server recorded.
         // Without the full record there is nothing to validate it against,
         // so it is not opened at all.
-        if envelopeCarriesKeyring(fields.version),
+        if (fields.version == 5 || (fields.version == 6 && (delivery.materialGeneration ?? 0) > 0)),
            !keyringDeliveryIsUsable(delivery, version: fields.version, identityFingerprint: identityFingerprint) {
             throw EnrollmentSealerError.envelopeMalformed
         }
@@ -84,10 +90,9 @@ struct VaultSealer: EnrollmentSealer {
         // covers reading the previous record in `importOpened`, and the
         // reader's next open until the app locks.
         let lease = vault.presence.lease(reason: EnrollmentVault.presenceReason)
-        let privateKey = try vault.deviceKey(context: lease.context)
         let opened: Data?
         do {
-            opened = try openDeviceEnvelope(with: privateKey, fields: fields, info: info)
+            opened = try vault.openEnvelope(fields, info: info, context: lease.context)
         } catch {
             if lease.wasHeld { vault.presence.discard(lease) }
             if deviceKeyError(error) == .cancelled {

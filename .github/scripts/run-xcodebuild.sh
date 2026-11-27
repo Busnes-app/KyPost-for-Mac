@@ -10,6 +10,8 @@
 
 set -uo pipefail
 
+"$(dirname "$0")/build-gopenpgp.sh" || exit $?
+
 LOG=${RUNNER_TEMP:-/tmp}/xcodebuild.log
 
 # GitHub treats a literal newline as the end of a workflow command, so

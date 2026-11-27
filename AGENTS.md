@@ -146,7 +146,7 @@ Default section order:
   reports it as "Application 'org.kysecurity.mail' does not have a process
   ID".
 
-  **Where it is set, and why there.** `gopenpgp-xcframework.yml` adds
+  **Where it is set, and why there.** `build-gopenpgp.sh` adds
   `-X=runtime.godebugDefault=asyncpreemptoff=1` to upstream's `build.sh`
   ldflags. The runtime reads that string in `schedinit`
   (`parsedebugvars`) before any Go code runs. The alternatives do not work:
@@ -154,7 +154,7 @@ Default section order:
   an image constructor before `main`, and cmd/go rejects `asyncpreemptoff` in
   a `godebug` directive or `//go:debug` line (it accepts only the keys in
   `internal/godebugs`). A `GODEBUG` environment variable still overrides the
-  default. The workflow checks every slice carries the value.
+  default. The build script checks every slice carries the value.
 
   **Measured 2026-10-13** (macOS 26.5.2, Xcode 27.1, GopenPGP v3.5.2 built
   with Go 1.26.5 locally and 1.27.2 in CI, `KyPost.xctestplan` with no
@@ -174,34 +174,10 @@ Default section order:
 
 ### The OpenPGP library (`Dependencies/GopenPGP`, `Domain/Security/PgpCrypto.swift`)
 
-GopenPGP is consumed as a **binary XCFramework pinned by SHA-256** in
-`Dependencies/GopenPGP/Package.swift`. SwiftPM refuses the download if the
-bytes stop matching, which is the only property that makes an opaque binary in
-a crypto path acceptable.
+GopenPGP and KyPost's `pqc` package are built into one local XCFramework from
+checksum-verified Go module sources. Read `Dependencies/AGENTS.md` before changing
+the bridge, dependency pins, SwiftPM wrapper or framework build workflow.
 
-- The binary is built by `.github/workflows/gopenpgp-xcframework.yml` from
-  ProtonMail/gopenpgp at the tag in `Dependencies/gopenpgp.env`, using
-  **upstream's own `build.sh`** rather than a reimplemented `gomobile bind`.
-  Reimplementing it got three things wrong that the script encodes; call the
-  script. The workflow's one patch to it adds
-  `-X=runtime.godebugDefault=asyncpreemptoff=1` to its `-ldflags`, fails if
-  that line stops matching, and checks every slice carries the value after
-  the build (see the GODEBUG note under Testing). Keep it on any rebuild.
-  The release also carries `KyPost-gopenpgp-<version>.intoto.jsonl`, a
-  keyless build-provenance attestation of the zip, checked with
-  `gh attestation verify` before it is published.
-- Track plain `vX.Y.Z` tags. `vX.Y.Z-proton` builds against Proton's
-  go-crypto fork and swaps in Proton's own default profile.
-- **The build is not bit-reproducible.** Two runs of the same pinned tag
-  produced different hashes. gomobile embeds build IDs and paths and the job
-  does not pin Xcode, so the checksum identifies one specific build. Do not
-  write a verification procedure that assumes rebuilding reproduces the hash.
-- **Verify a checksum against the asset, never against the release notes.**
-  The first release's notes quoted a hash the asset did not have, because two
-  workflow runs raced and one clobbered the other's upload. The workflow now
-  serialises and refuses to overwrite an existing release, but the habit is
-  what protects you: `shasum -a 256` the download, or read GitHub's own
-  `digest` field.
 - **`PgpKeyFloor` closes GopenPGP's 2047-bit RSA minimum.** Every key packet
   must be RSA ≥ 2048 actual modulus bits or an allow-listed algorithm.
   `GopenPGPCrypto` refuses a short or unreadable recipient key (the whole
@@ -333,8 +309,8 @@ is the server's pin, not this device's.
 
 Same protocol as KyPost for Android and Linux; change it in all three.
 
-- **The code is the pickup URL plus `#fp=<FPR>`**: the primary key's v4
-  fingerprint, 40 uppercase hex, no spaces. `FPR` is computed from the key
+- **The code is the pickup URL plus `#fp=<FPR>`**: the primary key's v4/v6
+  fingerprint, 40 or 64 uppercase hex, no spaces. `FPR` is computed from the key
   this device signs with (`ownPublicKey` → `PgpFingerprint`), never from the
   server and never from `VaultRecord.identityFingerprint` (a legacy record's
   came from the server). `qrPayload` drops any fragment the server's URL had.
@@ -600,7 +576,9 @@ is not testing which keys are trusted.
 
 Device envelopes (KyPost-Server #199/#201/#210):
 
-- **HPKE only: publish `envelopeVersions: [4, 5]`** (`supportedEnvelopeVersions`).
+- **HPKE only.** New X-Wing publications advertise `[6]`; retained P-256
+  publications advertise `[4, 5]`. One publication owns one key. The app opens
+  all three codecs; a codec claim never authorizes delivering to the wrong KEM.
   v2/v3 (ECDH + HKDF salted with the device key + AES-GCM, not a published
   construction) are retired for enrollment: not advertised, not parsed, no
   decrypt code. Omitting the list resets the server's claim to `[2]`.
@@ -608,12 +586,22 @@ Device envelopes (KyPost-Server #199/#201/#210):
   HKDF-SHA256), KDF 0x0001 HKDF-SHA256, AEAD 0x0002 AES-256-GCM (CryptoKit
   `.P256_SHA256_AES_GCM_256`). v4 carries one armored key, v5 the complete
   ring. Framing `{v, alg, enc, ct}`: numeric `v`, exactly four fields,
-  canonical padded base64, on-curve `enc`, v5 at most 128 KiB. The `info`
+  canonical padded base64, on-curve `enc`, at most 512 KiB. The `info`
   (`deviceEnvelopeAAD`) is `kypost-device-envelope/vN` || u16-len device id ||
   u16-len fingerprint (uppercase, no whitespace, 40/64 hex), from this
   device's id and the checked fingerprint; the HPKE AAD is empty. Vectors:
   `ServerPgpFixtures` (`device-envelope-hpke.json`, the CFRG entry),
   `HPKEDeviceEnvelopeTests`.
+- **v6 uses X-Wing** (KEM 0x647A, HKDF-SHA256, AES-256-GCM) through
+  ky-primitives v0.11.0; exactly 1120 encapsulation bytes. SAS v2 binds the
+  domain and all 1216 public-key bytes; legacy SAS v1 is unchanged.
+- **v2 rings** use `active: {v4, v6}`. Both must be present primary members;
+  sending stays on v4 until P4's split-delivery path. All members decrypt.
+  A delivery may bind either active certificate; its acknowledgement preserves
+  that fingerprint. Rings and device envelopes are capped at 512 KiB.
+- **Capabilities** `openpgp: ["v4", "v6", "rfc9980"]` accompany key publication
+  and enrollment-state requests. Lifecycle restatement also refreshes older
+  enrolled devices. A server that ignores the field has not admitted capability.
 - **Opened only with delivery metadata, as the version it names.**
   `VaultSealer` refuses a v2/v3 delivery, or a response with no `version`,
   before parsing (`unsupportedEnvelopeVersion`: "update your server"). A
@@ -631,8 +619,8 @@ Device envelopes (KyPost-Server #199/#201/#210):
 - **Every member's fingerprints come from its own packets** via
   `PgpKeyInspecting`: one unprotected secret key per member (S2K usage octet
   zero after the library's own public body), no public-only or dummy packets,
-  no subkey the library dropped. Subkey **binding signatures are not verified**
-  — gomobile exposes no API for it (Android checks them; a known gap).
+  no subkey the library dropped. The Go bridge verifies subkey binding
+  signatures without excluding expired/revoked history from import.
 - **History is never overwritten** (`KeyringImport.swift`). A v4 re-enrollment
   merges with the sealed legacy collection, current key first. A keyring
   replaces a previous record only if it is the identical bytes (replay, nothing
@@ -643,20 +631,22 @@ Device envelopes (KyPost-Server #199/#201/#210):
   fingerprint, material), so replacement is atomic and a failed write leaves
   the old record. A record that will not decode throws; it is never sealed
   over.
-- **The material is never stored in the clear** (format 2). `store` seals the
+- **The material is never stored in the clear.** `store` seals the
   whole plaintext record (format 1) to the device key's public half
   (`HPKEKeySealing`, format 3: HPKE to its own device key) — no prompt — and
   keeps only the header in the clear for `storedHeader()` (reporter,
   acknowledgement, `isEnrolled`). `openRecord()` is the only way to the
-  material: a Secure Enclave decrypt under `.userPresence`, then the sealed
-  header must equal the clear one. The SE/LAContext boundary is
+  material: a presence-gated seed read (X-Wing), or legacy Secure Enclave
+  decrypt, then the sealed header must equal the clear one. The SE/LAContext boundary is
   `VaultKeySealing`; tests use `FakeKeySealing` (`testVault`).
-- **One device key** (`DeviceAgreementKey.swift`): a CryptoKit Secure Enclave
-  P-256 key under `.privateKeyUsage, .userPresence`, kept as its
-  `dataRepresentation` in the `enrollment.deviceKey` item. It is the
-  published enrollment key, opens v4/v5 (HPKE), and seals the vault.
-  `DeviceKeyMinting` is the test seam (`SoftwareKeyMinting`: tests and the
-  Simulator only).
+- **New enrollment and vault seals use X-Wing.** The software seed is kept in
+  a dedicated passcode-set, ThisDeviceOnly, `.userPresence` Keychain item,
+  never in background-readable `KeychainStorage`. Its public half is separate.
+  Do not claim non-exportable Secure Enclave X-Wing: Apple's standalone
+  ML-KEM API is not an X-Wing HPKE private key. No custom hybrid combiner.
+  `XWingKeyStoring` is the test seam. The old P-256 key stays for v4/v5 and
+  vault migration. First presence-checked open compare-and-sets old P-256
+  records to X-Wing; failure preserves the old record. Wipe deletes both.
 - **Migration off the Security-framework key** (`LegacyVaultKey`, format 2):
   `openRecord` opens with the old key, re-seals to the new one, proves the
   seal opens, compare-and-sets it over the old item, re-reads it, and only
@@ -680,8 +670,9 @@ Device envelopes (KyPost-Server #199/#201/#210):
   with the epoch read before the open (every `clear()` advances it).
   Enrollment's HPKE open uses the same context, so reading the previous record
   does not prompt twice.
-- **Secure Enclave required** outside the Simulator: key generation refuses a
-  device without one (all supported hardware has one).
+- **Legacy P-256 operations require Secure Enclave** outside the Simulator.
+  X-Wing requires a passcode and the gated Keychain item; failure never
+  falls back to an ordinary Keychain seed.
 - **Order: validate → store durably → hold → acknowledge.** No session install
   and no acknowledgement for material not on disk.
 - **Acknowledge with metadata.** A keyring is confirmed as
@@ -1421,6 +1412,7 @@ When the user requests a durable behavior change, record it here or in the relev
 
 ## Child DOX Index
 
+- `Dependencies/AGENTS.md` — source-bound crypto bridge, module pins and XCFramework build.
 - `docs/AGENTS.md` — mdBook manual, chapter ownership and documentation checks.
 
 - `KyPost/App/AGENTS.md` — the dependency graph and its rebuild rule
@@ -1439,4 +1431,4 @@ App/launcher assets use the Busnes.app-site Systems stamp family. Regenerate pla
 
 ## README and topic guides
 
-Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/DEVELOPMENT.md`, `docs/FEATURES.md`, `docs/VERIFYING-RELEASES.md` (GopenPGP pin and release checks; every command there was run against a real release or is marked untested), `docs/KYCALENDAR-RSVP.md` (answering invitations through KyCalendar; the repo's copy of the suite contract), `docs/STRONG-CRYPTO.md` (TLS and OpenPGP key floors and the key inventory; a change to a key, cipher or connection updates it) and `docs/ASSURANCE-CASE.md` (threat model and security argument; a change that moves a trust boundary or a cited path updates it in the same PR). `CHANGELOG.md` records security and user-visible changes under `## Unreleased`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.
+Keep `README.md` as the concise product overview and navigation. Detailed procedures live in `docs/DEVELOPMENT.md`, `docs/FEATURES.md`, `docs/VERIFYING-RELEASES.md` (crypto source-build and release checks; unexecuted platform checks are marked), `docs/KYCALENDAR-RSVP.md` (answering invitations through KyCalendar; the repo's copy of the suite contract), `docs/STRONG-CRYPTO.md` (TLS and OpenPGP key floors and the key inventory; a change to a key, cipher or connection updates it) and `docs/ASSURANCE-CASE.md` (threat model and security argument; a change that moves a trust boundary or a cited path updates it in the same PR). `CHANGELOG.md` records security and user-visible changes under `## Unreleased`. Update the owning topic guide and preserve README links when a procedure changes. Commands in these guides run from the repository root.

@@ -115,14 +115,17 @@ nonisolated extension EnrollmentVault: EnrollmentReportStore {
 }
 
 nonisolated struct EnrollmentStateReporter: Sendable {
+    private let refreshCapabilities: Bool
     private let store: any EnrollmentReportStore
     private let send: @Sendable (EnrollmentReport) async -> EnrollmentReportResult
 
     init(
         store: any EnrollmentReportStore,
+        refreshCapabilities: Bool = false,
         send: @escaping @Sendable (EnrollmentReport) async -> EnrollmentReportResult
     ) {
         self.store = store
+        self.refreshCapabilities = refreshCapabilities
         self.send = send
     }
 
@@ -131,7 +134,7 @@ nonisolated struct EnrollmentStateReporter: Sendable {
     func runIfNeeded() async -> EnrollmentReport? {
         let tornDown = store.teardownReportPending
         let pending = store.pendingReport
-        guard tornDown || pending != nil else { return nil }
+        guard tornDown || pending != nil || refreshCapabilities else { return nil }
 
         let summary: EnrollmentRecordSummary?
         do {

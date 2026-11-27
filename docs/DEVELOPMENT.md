@@ -41,9 +41,21 @@ The platforms split at the root view. iOS uses a tab layout (`MainTabView`). mac
 
 Before changing a wire shape, read the server contract and both native implementations. Registration exchanges the one-time pairing token for `deviceId` and `deviceSecret`; subsequent calls use `X-Kypost-Device-Id` and `X-Kypost-Device-Secret`.
 
+## Crypto source build
+
+Install Go 1.27.x alongside Xcode 26, then run
+`.github/scripts/build-gopenpgp.sh` before opening the project or invoking
+xcodebuild directly. `.github/scripts/run-xcodebuild.sh` runs it automatically.
+The generated local XCFramework is ignored. GopenPGP and the X-Wing bridge
+share one Go runtime; source dependencies are pinned in `Dependencies/`.
+
+On Linux, run `cd Dependencies/KyPostCrypto && go test -race ./...`.
+The shared RFC 9980 and enrollment vectors are public test secrets; their source
+commit and hashes are in `Dependencies/KyPostCrypto/testdata/SOURCE.md`.
+
 ## Testing
 
-The unit tests use Swift Testing (`@Test` and `#expect`) and live in `KyPost Tests/`. The UI test stubs are in `KyPost UITests/`. Run the tests in Xcode with ⌘U, or with this command:
+The unit tests use XCTest (Spec A PQC paths) and Swift Testing (`@Test` and `#expect`) and live in `KyPost Tests/`. The UI test stubs are in `KyPost UITests/`. Run the tests in Xcode with ⌘U, or with this command:
 
 ```sh
 xcodebuild test -project "KyPost.xcodeproj" -scheme "KyPost" -destination 'platform=macOS'

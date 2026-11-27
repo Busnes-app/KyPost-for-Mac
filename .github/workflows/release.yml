@@ -144,13 +144,18 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: Dependencies/KyPostCrypto/go.sum
+
       - name: Select Xcode
         # Same globbing as ci.yml, and for the same reason: the images carry
         # several 26.x and rename them as they update, so an exact path breaks
         # on an image refresh rather than on a code change.
         run: |
           set -euo pipefail
-          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          XCODE=$(find /Applications -maxdepth 1 -name 'Xcode_26*.app' -type d | sort -V | tail -1)
           if [ -z "$XCODE" ]; then
             echo "::error::No Xcode 26.x on this runner image; this project cannot build without one."
             exit 1

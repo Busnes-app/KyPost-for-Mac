@@ -73,12 +73,21 @@ jobs:
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        if: steps.check.outputs.changed == 'true'
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: Dependencies/KyPostCrypto/go.sum
+
       - name: Bump the pin
         if: steps.check.outputs.changed == 'true'
         run: |
           set -euo pipefail
           sed -i "s|^GOPENPGP_VERSION=.*|GOPENPGP_VERSION=${{ steps.check.outputs.latest }}|" \
             Dependencies/gopenpgp.env
+          cd Dependencies/KyPostCrypto
+          go get github.com/ProtonMail/gopenpgp/v3@${{ steps.check.outputs.latest }}
+          go mod tidy
 
       - name: Open a pull request
         if: steps.check.outputs.changed == 'true'
@@ -91,10 +100,11 @@ jobs:
             ProtonMail/gopenpgp published `${{ steps.check.outputs.latest }}`;
             this app pins `${{ steps.check.outputs.pinned }}`.
 
-            Merging rebuilds the XCFramework and publishes a new release asset,
-            because `Dependencies/gopenpgp.env` is the build workflow's trigger.
-            **The app's pinned checksum then has to be updated to match** — the
-            build's summary prints it.
+            **What changed:** update the Go module and upstream source pins together.
+            **Review this:** upstream changelog and `Dependencies/KyPostCrypto/go.mod`.
+            **Checked:** CI builds the combined framework and runs the Go race tests.
+            **Not checked:** results are pending until the current-head checks finish.
+            **You need to:** review and merge once checks and review clear.
 
             Read the upstream changelog before merging. This PR exists so that
             a new gopenpgp tag cannot reach this app without someone deciding

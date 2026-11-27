@@ -316,6 +316,7 @@ nonisolated func vaultError(domain: String, code: Int) -> EnrollmentVaultError {
 nonisolated final class EnrollmentVault: @unchecked Sendable {
     private let keychain: any SecureItemStoring
     private let deviceKeys: DeviceKeyStore
+    private let xwingKeys: (any XWingKeyStoring)?
     private let sealing: any VaultKeySealing
     private let legacyKey: any LegacyVaultKey
     /// The authenticated context reused across opens until the app locks.
@@ -336,12 +337,17 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
         sealing: (any VaultKeySealing)? = nil,
         legacyKey: (any LegacyVaultKey)? = nil,
         keyMinting: any DeviceKeyMinting = defaultDeviceKeyMinting(),
+        xwingKeys: (any XWingKeyStoring)? = nil,
         presence: PresenceContext = .shared
     ) {
         self.keychain = keychain
         let deviceKeys = DeviceKeyStore(keychain: keychain, minting: keyMinting)
         self.deviceKeys = deviceKeys
-        self.sealing = sealing ?? HPKEKeySealing(keys: deviceKeys)
+        self.xwingKeys = xwingKeys
+        let legacySealing = HPKEKeySealing(keys: deviceKeys)
+        if let sealing { self.sealing = sealing }
+        else if let xwingKeys { self.sealing = XWingKeySealing(keys: xwingKeys, legacy: legacySealing) }
+        else { self.sealing = legacySealing }
         self.legacyKey = legacyKey ?? LegacySecKeySealing(keyTag: Data(keyTag.utf8))
         self.presence = presence
     }
@@ -375,6 +381,11 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
     /// existing one is adopted as is; the Security-framework key of earlier
     /// builds is never adopted, only migrated off (`openRecord`).
     func ensureDeviceKey() throws {
+        if let xwingKeys {
+            guard hasDeviceCredential else { throw EnrollmentVaultError.noDeviceCredential }
+            _ = try xwingKeys.publicKey()
+            return
+        }
         if try deviceKeys.load(context: nil) != nil { return }
         guard hasDeviceCredential else { throw EnrollmentVaultError.noDeviceCredential }
         _ = try deviceKeys.loadOrCreate()
@@ -390,7 +401,18 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
 
     /// The raw 65-byte SEC1 point: the published enrollment key and the code.
     func rawPublicKey() throws -> Data {
-        try deviceKey().publicKey.x963Representation
+        if let xwingKeys { return try xwingKeys.publicKey() }
+        return try deviceKey().publicKey.x963Representation
+    }
+
+    func openEnvelope(_ fields: DeviceEnvelopeFields, info: Data, context: LAContext) throws -> Data? {
+        if fields.version == envelopeVersionXWing {
+            guard let xwingKeys else { return nil }
+            return try xwingKeys.withSeed(context: context) { seed in
+                XWingCrypto.open(seed: seed, info: info, sealed: Data([1]) + fields.epk + fields.ct)
+            }
+        }
+        return try openDeviceEnvelope(with: deviceKey(context: context), fields: fields, info: info)
     }
 
     // MARK: - Record
@@ -503,8 +525,15 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
             retireLegacyKey()
             return nil
 
-        case .sealed(let header, let blob, _):
+        case .sealed(let header, let blob, let raw):
             let record = try openSealed(header, blob, with: sealing.open)
+            if xwingKeys != nil, !blob.starts(with: XWingKeySealing.marker) {
+                // Keep the old record readable if migration fails; a future
+                // presence-checked open retries the atomic replacement.
+                do { _ = try reseal(record, replacing: raw) }
+                catch EnrollmentVaultError.cancelled { throw EnrollmentVaultError.cancelled }
+                catch { Log.app.error("Vault X-Wing migration deferred") }
+            }
             retireTwoItemLayout()
             retireLegacyKey()
             return record
@@ -740,6 +769,7 @@ nonisolated final class EnrollmentVault: @unchecked Sendable {
         try? keychain.remove(Key.reportPending)
         // Both keys: the device key and the legacy one a migration left.
         do { try deviceKeys.delete() } catch { failures.append("deleteDeviceKey") }
+        do { try xwingKeys?.delete() } catch { failures.append("deleteXWingKey") }
         do { try legacyKey.delete() } catch { failures.append("deleteLegacyDeviceKey") }
         if ((try? keychain.data(forKey: Key.envelope)) ?? nil) != nil
             || ((try? keychain.data(forKey: Key.record)) ?? nil) != nil {

@@ -28,22 +28,29 @@ nonisolated let envelopeVersionLegacyHPKE = 4
 nonisolated let envelopeVersionKeyringHPKE = 5
 /// What this build opens, and what it publishes as `envelopeVersions`: RFC
 /// 9180 HPKE only. v2/v3 (custom ECDH+HKDF+GCM) are retired for enrollment.
-nonisolated let supportedEnvelopeVersions = [envelopeVersionLegacyHPKE, envelopeVersionKeyringHPKE]
+nonisolated let envelopeVersionXWing = 6
+nonisolated let supportedEnvelopeVersions = [4, 5, 6]
+
+/// A publication owns ONE key. An X-Wing publication cannot accept P-256
+/// deliveries even though the app still opens older formats locally.
+nonisolated func enrollmentVersions(for publicKey: Data) -> [Int] {
+    publicKey.count == 1216 ? [6] : [4, 5]
+}
 
 /// True for the versions whose plaintext is a `kypost-pgp-keyring-v1` ring.
 nonisolated func envelopeCarriesKeyring(_ version: Int) -> Bool {
-    version == envelopeVersionKeyring || version == envelopeVersionKeyringHPKE
+    version == envelopeVersionKeyring || version == envelopeVersionKeyringHPKE || version == envelopeVersionXWing
 }
 
 nonisolated func envelopeIsHPKE(_ version: Int) -> Bool {
-    version == envelopeVersionLegacyHPKE || version == envelopeVersionKeyringHPKE
+    supportedEnvelopeVersions.contains(version)
 }
 
 /// RFC 9180 mode_base, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM.
 nonisolated let deviceEnvelopeHPKESuite = HPKE.Ciphersuite.P256_SHA256_AES_GCM_256
 
 /// Serialized v5 envelope bound.
-nonisolated let maxDeviceEnvelopeV3Bytes = 128 * 1024
+nonisolated let maxDeviceEnvelopeV3Bytes = 512 * 1024
 
 private let gcmTagBytes = 16
 private let hpkeEnvelopeAlgorithm = "HPKE-Base-P256-SHA256-A256GCM"
@@ -69,30 +76,34 @@ nonisolated struct DeviceEnvelopeFields: Equatable, Sendable {
 /// fits in 128 KiB.
 nonisolated func parseDeviceEnvelope(_ json: String) -> DeviceEnvelopeFields? {
     guard let data = json.data(using: .utf8),
+          data.count <= maxDeviceEnvelopeV3Bytes,
+          !jsonHasDuplicateKeys(data),
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let number = object["v"] as? NSNumber,
           let version = supportedEnvelopeVersions.first(where: { isJSONInteger(number, equalTo: $0) })
     else { return nil }
-    return parseHPKEEnvelope(object, version: version, byteCount: data.count)
+    return parseHPKEEnvelope(object, version: version)
 }
 
 /// v4/v5 framing. `enc` must be an on-curve uncompressed point.
 private nonisolated func parseHPKEEnvelope(
     _ object: [String: Any],
-    version: Int,
-    byteCount: Int
+    version: Int
 ) -> DeviceEnvelopeFields? {
     guard Set(object.keys) == hpkeEnvelopeKeys,
-          object["alg"] as? String == hpkeEnvelopeAlgorithm,
-          version != envelopeVersionKeyringHPKE || byteCount <= maxDeviceEnvelopeV3Bytes,
+          object["alg"] as? String == (version == 6 ? "HPKE-Base-XWing-SHA256-A256GCM" : hpkeEnvelopeAlgorithm),
           let encText = object["enc"] as? String,
           let ctText = object["ct"] as? String,
           let enc = strictBase64(encText),
           let ct = strictBase64(ctText),
-          enc.count == 65, enc.first == 0x04,
-          (try? P256.KeyAgreement.PublicKey(x963Representation: enc)) != nil,
-          ct.count > gcmTagBytes
+          ct.count >= gcmTagBytes
     else { return nil }
+    if version == 6 {
+        guard enc.count == 1120 else { return nil }
+    } else {
+        guard enc.count == 65, enc.first == 0x04, ct.count > gcmTagBytes,
+              (try? P256.KeyAgreement.PublicKey(x963Representation: enc)) != nil else { return nil }
+    }
     return DeviceEnvelopeFields(version: version, epk: enc, ct: ct)
 }
 
@@ -202,7 +213,7 @@ nonisolated func openDeviceEnvelope(
     fields: DeviceEnvelopeFields,
     info: Data
 ) throws -> Data? {
-    guard envelopeIsHPKE(fields.version) else { return nil }
+    guard fields.version == 4 || fields.version == 5 else { return nil }
     var recipient = try HPKE.Recipient(
         privateKey: key,
         ciphersuite: deviceEnvelopeHPKESuite,

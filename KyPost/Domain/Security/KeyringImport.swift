@@ -94,8 +94,18 @@ nonisolated func decideVaultImport(
     inspector: any PgpKeyInspecting
 ) -> VaultImportDecision {
     let fingerprint = normalisedFingerprint(identityFingerprint)
+    if version == 6 {
+        guard let delivery, delivery.version == version,
+              normalisedFingerprint(delivery.fingerprint) == fingerprint,
+              let generation = delivery.materialGeneration else { return .invalidRing }
+        if generation == 0 {
+            guard let inventory = inspector.inspectPrivateKey(armored: plaintext),
+                  inventory.primaryFingerprint == fingerprint else { return .invalidRing }
+        }
+    }
 
-    guard envelopeCarriesKeyring(version) else {
+    guard envelopeCarriesKeyring(version),
+          version != 6 || (delivery?.materialGeneration ?? 0) > 0 else {
         return decideLegacy(
             plaintext: plaintext,
             fingerprint: fingerprint,
@@ -118,13 +128,13 @@ nonisolated func decideVaultImport(
 
     let report = EnrollmentReport.keyring(
         materialGeneration: ring.materialGeneration,
-        fingerprint: ring.activeFingerprint,
+        fingerprint: fingerprint,
         envelopeVersion: version
     )
     let record = VaultRecord(
         kind: .keyring,
         material: ring.original,
-        identityFingerprint: ring.activeFingerprint,
+        identityFingerprint: fingerprint,
         materialGeneration: ring.materialGeneration,
         envelopeVersion: version
     )

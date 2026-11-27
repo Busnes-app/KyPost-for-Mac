@@ -1,0 +1,2 @@
+# Shared cryptographic fixtures are copied byte-for-byte, including CRLF MIME.
+*.eml -text whitespace=cr-at-eol

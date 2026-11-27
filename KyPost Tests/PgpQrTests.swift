@@ -208,8 +208,6 @@ private struct LockingOpener: VaultOpening {
         "#fp=6853864FF482DCF29CD0CB0E56CD3B5CB862568",
         "#fp=6853864FF482DCF29CD0CB0E56CD3B5CB86256800",
         "#fp=6853%20864F%20F482%20DCF2%209CD0%20CB0E%2056CD%203B5C%20B862%205680",
-        // A v6 fingerprint is not what `fp` carries.
-        "#fp=6853864FF482DCF29CD0CB0E56CD3B5CB86256806853864FF482DCF29CD0CB0E",
         "#fp=",
         "#FP=6853864FF482DCF29CD0CB0E56CD3B5CB8625680",
         "#x=6853864FF482DCF29CD0CB0E56CD3B5CB8625680",
@@ -248,7 +246,7 @@ private struct LockingOpener: VaultOpening {
 
     @Test func onlyAV4FingerprintGoesInTheCode() {
         let v6 = String(repeating: "AB", count: 32)
-        #expect(PgpQrClient.qrPayload(pickupURL: plainCode, fingerprint: v6) == plainCode)
+        #expect(PgpQrClient.qrPayload(pickupURL: plainCode, fingerprint: v6) == plainCode + "#fp=" + v6)
     }
 
     @Test func whatOneDeviceBuildsTheOtherParses() throws {

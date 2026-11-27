@@ -14,12 +14,14 @@ private struct PublishEnrollmentKeyRequest: Encodable {
     /// Omitting the list resets the server's claim to `[2]`, and the browser
     /// then refuses to seal anything newer.
     var envelopeVersions: [Int]
+    var openpgp = ["v4", "v6", "rfc9980"]
 }
 
 /// The three metadata fields go together: absent for the legacy boolean, all
 /// present for a keyring acknowledgement. The server answers 400 to any other
 /// combination. Optionals encode as absent, never as null.
-private struct EnrollmentStateRequest: Encodable {
+struct EnrollmentStateRequest: Encodable {
+    var openpgp = ["v4", "v6", "rfc9980"]
     var encryptionEnrolled: Bool
     var envelopeVersion: Int?
     var materialGeneration: UInt64?
@@ -122,6 +124,9 @@ struct EnrollmentClient: EnrollmentTransport {
     }
 
     func publish(publicKey: Data) async -> EnrollmentPublishResult {
+        if publicKey.count == 1216, !XWingCrypto.isValidPublicKey(publicKey) {
+            return .rejected("This device's X-Wing key is invalid.")
+        }
         do {
             _ = try await httpClient.post(
                 RelayActionResponse.self,
@@ -129,7 +134,7 @@ struct EnrollmentClient: EnrollmentTransport {
                 headers: auth.headerFields,
                 jsonBody: PublishEnrollmentKeyRequest(
                     publicKey: publicKey.base64EncodedString(),
-                    envelopeVersions: supportedEnvelopeVersions
+                    envelopeVersions: enrollmentVersions(for: publicKey)
                 )
             )
             return .ok

@@ -23,7 +23,7 @@ The app talks only to the relay backend. There is no direct IMAP or SMTP. You pa
 
 The app uses SwiftData for persistence, URLSession for networking, and WebKit for rendering.
 
-Its one external dependency is **GopenPGP** — the same OpenPGP implementation Proton uses — consumed as a binary XCFramework through the local package in `Dependencies/GopenPGP`. That binary is built from source by `.github/workflows/gopenpgp-xcframework.yml`, from the upstream tag pinned in `Dependencies/gopenpgp.env`, using upstream's own `build.sh` plus one linker flag (`GODEBUG` default `asyncpreemptoff=1`) that keeps the embedded Go runtime's preemption signal from crashing the app; `Package.swift` pins its SHA-256, so the bytes cannot change without that line changing. Nothing outside `KyPost/Domain/Security/PgpCrypto.swift` and its conforming types may reference the library.
+The crypto dependency is built from source: GopenPGP 3.5.2 plus the KyPost Go bridge, using ky-primitives 0.11.0 for X-Wing. Install **Go 1.27.x**, then run `.github/scripts/build-gopenpgp.sh` before opening `KyPost.xcodeproj`. The shared xcodebuild wrapper runs this step automatically. One XCFramework contains upstream's six packages and the bridge in one Go runtime; Go module checksums verify downloaded sources. The build preserves `asyncpreemptoff=1` to avoid the embedded runtime's preemption-signal crash. No binary is committed or fetched from the old dependency release. Only `GopenPGPCrypto.swift` imports the library.
 
 ## Install and pair
 

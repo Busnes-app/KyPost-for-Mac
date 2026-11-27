@@ -78,7 +78,10 @@ final class SingletonGraph {
 
     // MARK: - Repositories & Use Cases
 
-    lazy var enrollmentVault = EnrollmentVault(keychain: keychain, keyTag: enrollmentKeyTag)
+    lazy var enrollmentVault = EnrollmentVault(
+        keychain: keychain, keyTag: enrollmentKeyTag,
+        xwingKeys: isDemo ? nil : XWingKeyStore(service: enrollmentKeyTag)
+    )
 
     /// The OpenPGP implementation. One instance, because it is stateless and
     /// every call site must reach the library through this seam.
@@ -179,7 +182,7 @@ final class SingletonGraph {
             serverUrl: pairing.srv,
             auth: RelayAuth(pairing: pairing)
         )
-        return EnrollmentStateReporter(store: enrollmentVault) { report in
+        return EnrollmentStateReporter(store: enrollmentVault, refreshCapabilities: true) { report in
             await client.report(report)
         }
     }

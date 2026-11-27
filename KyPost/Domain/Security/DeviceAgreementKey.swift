@@ -178,3 +178,124 @@ nonisolated func deviceKeyError(_ error: any Error) -> EnrollmentVaultError {
     }
     return vaultError(domain: nsError.domain, code: nsError.code)
 }
+
+/// X-Wing is a software KEM on this bridge. Its seed is readable only through
+/// a ThisDeviceOnly, passcode-set, user-presence Keychain item. It is NEVER
+/// stored in the ordinary background-readable KeychainStorage. The public half
+/// is a separate item so displaying SAS or sealing does not raise a prompt.
+nonisolated protocol XWingKeyStoring: Sendable {
+    func publicKey() throws -> Data
+    func withSeed<T>(context: LAContext, _ body: (Data) throws -> T) throws -> T
+    func delete() throws
+}
+
+nonisolated final class XWingKeyStore: XWingKeyStoring, @unchecked Sendable {
+    private let service: String
+    private let lock = NSLock()
+
+    init(service: String) { self.service = service + ".xwing.v1" }
+
+    private func query(_ account: String) -> [CFString: Any] {
+        [kSecClass: kSecClassGenericPassword, kSecAttrService: service,
+         kSecAttrAccount: account, kSecUseDataProtectionKeychain: true]
+    }
+
+    func publicKey() throws -> Data {
+        lock.lock(); defer { lock.unlock() }
+        var q = query("public")
+        q[kSecReturnData] = true
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &item)
+        if status == errSecSuccess {
+            guard let data = item as? Data, XWingCrypto.isValidPublicKey(data) else {
+                throw EnrollmentVaultError.unavailable
+            }
+            // A surviving public half is never authority to replace a lost seed.
+            var seedQuery = query("seed")
+            seedQuery[kSecUseAuthenticationUI] = kSecUseAuthenticationUIFail
+            let seedStatus = SecItemCopyMatching(seedQuery as CFDictionary, nil)
+            guard seedStatus == errSecSuccess || seedStatus == errSecInteractionNotAllowed else {
+                throw EnrollmentVaultError.keychain(seedStatus)
+            }
+            return data
+        }
+        guard status == errSecItemNotFound else { throw EnrollmentVaultError.keychain(status) }
+        var seed = try XWingCrypto.generateSeed()
+        defer { seed.resetBytes(in: 0..<seed.count) }
+        let pub = try XWingCrypto.publicKey(seed: seed)
+        var accessError: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(
+            nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, .userPresence, &accessError
+        ) else { throw vaultError(from: accessError?.takeRetainedValue()) }
+        var seedQuery = query("seed")
+        seedQuery[kSecAttrAccessControl] = access
+        seedQuery[kSecValueData] = seed
+        let added = SecItemAdd(seedQuery as CFDictionary, nil)
+        // A crash between writes leaves the seed intact. Recover it under
+        // presence instead of replacing it and making a sealed vault unreadable.
+        if added == errSecDuplicateItem {
+            return try withSeed(context: LAContext()) { oldSeed in
+                let oldPublic = try XWingCrypto.publicKey(seed: oldSeed)
+                try storePublic(oldPublic)
+                return oldPublic
+            }
+        }
+        guard added == errSecSuccess else { throw EnrollmentVaultError.keychain(added) }
+        try storePublic(pub)
+        return pub
+    }
+
+    private func storePublic(_ data: Data) throws {
+        var q = query("public")
+        q[kSecValueData] = data
+        q[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(q as CFDictionary, nil)
+        guard status == errSecSuccess else { throw EnrollmentVaultError.keychain(status) }
+    }
+
+    func withSeed<T>(context: LAContext, _ body: (Data) throws -> T) throws -> T {
+        var q = query("seed")
+        q[kSecReturnData] = true
+        q[kSecUseAuthenticationContext] = context
+        q[kSecUseOperationPrompt] = EnrollmentVault.presenceReason
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &item)
+        if status == errSecUserCanceled { throw EnrollmentVaultError.cancelled }
+        guard status == errSecSuccess else { throw EnrollmentVaultError.keychain(status) }
+        guard var seed = item as? Data, seed.count == 32 else { throw EnrollmentVaultError.unavailable }
+        defer { seed.resetBytes(in: 0..<seed.count) }
+        return try body(seed)
+    }
+
+    func delete() throws {
+        lock.lock(); defer { lock.unlock() }
+        for account in ["seed", "public"] {
+            let status = SecItemDelete(query(account) as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw EnrollmentVaultError.keychain(status)
+            }
+        }
+    }
+}
+
+/// New records use X-Wing; old P-256 records are opened for migration.
+nonisolated struct XWingKeySealing: VaultKeySealing {
+    let keys: any XWingKeyStoring
+    let legacy: HPKEKeySealing
+    static let marker = Data("KPXW1".utf8)
+    static let info = Data("kypost-vault-record/v2".utf8)
+
+    func seal(_ plaintext: Data) throws -> Data {
+        try Self.marker + XWingCrypto.seal(publicKey: keys.publicKey(), info: Self.info, plaintext: plaintext)
+    }
+
+    func open(_ sealed: Data, context: LAContext) throws -> Data {
+        guard sealed.starts(with: Self.marker) else { return try legacy.open(sealed, context: context) }
+        return try keys.withSeed(context: context) { seed in
+            guard let value = XWingCrypto.open(seed: seed, info: Self.info, sealed: Data(sealed.dropFirst(Self.marker.count))) else {
+                throw EnrollmentVaultError.unreadableRecord
+            }
+            return value
+        }
+    }
+}

@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Post-quantum enrollment and mail reads.** New enrollments use X-Wing HPKE
+  v6 and SAS v2, with a user-presence Keychain seed; existing P-256 enrollments
+  and old mail remain readable. This client reads OpenPGP v6/RFC 9980 messages,
+  dual-active v2 keyrings and 64-hex key-exchange fingerprints, and reports its
+  read capability. Sending remains v4 pending the separate P4 rollout.
+- The crypto framework is built locally from checksum-verified Go source modules;
+  source builds now require Go 1.27.x and the crypto build script before Xcode.
+
 - **"Finish encryption setup" when the server needs it.** If your KyPost
   server requires email encryption setup before your mail can be read here,
   KyPost says so and offers "Open KyPost on the web" to do it. It stops
