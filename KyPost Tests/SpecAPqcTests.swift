@@ -174,7 +174,39 @@ final class SpecAPqcTests: XCTestCase {
         XCTAssertEqual(object["materialGeneration"] as? Int, 7)
         XCTAssertEqual(object["envelopeVersion"] as? Int, 6)
         XCTAssertEqual(maxPgpKeyringBytes, 512 * 1024)
-        XCTAssertEqual(maxDeviceEnvelopeV3Bytes, 512 * 1024)
+        XCTAssertEqual(maxDeviceEnvelopeV3Bytes, 768 * 1024)
+    }
+
+    func testNearLimitKeyringV6EnvelopeRoundTrip() throws {
+        let (baseRing, _, v6) = try ringV2()
+        XCTAssertLessThan(baseRing.count, maxPgpKeyringBytes)
+        let maxRing = baseRing + Data(repeating: 0x20, count: maxPgpKeyringBytes - baseRing.count)
+        XCTAssertEqual(maxRing.count, maxPgpKeyringBytes)
+
+        let seed = try XWingCrypto.generateSeed()
+        let publicKey = try XWingCrypto.publicKey(seed: seed)
+        let info = try deviceEnvelopeAAD(version: 6, deviceId: "test-device", pgpFingerprint: v6)
+        let sealed = try XWingCrypto.seal(publicKey: publicKey, info: info, plaintext: maxRing)
+        XCTAssertEqual(sealed.first, 1)
+        XCTAssertGreaterThan(sealed.count, 1 + 1120)
+
+        let enc = sealed.subdata(in: 1 ..< 1121)
+        let ct = sealed.subdata(in: 1121 ..< sealed.count)
+        let envelope = try serialized([
+            "v": 6,
+            "alg": "HPKE-Base-XWing-SHA256-A256GCM",
+            "enc": enc.base64EncodedString(),
+            "ct": ct.base64EncodedString(),
+        ])
+        XCTAssertGreaterThan(envelope.utf8.count, maxPgpKeyringBytes)
+        XCTAssertLessThanOrEqual(envelope.utf8.count, maxDeviceEnvelopeV3Bytes)
+
+        let fields = try XCTUnwrap(parseDeviceEnvelope(envelope))
+        XCTAssertEqual(fields.version, 6)
+        let opened = try XCTUnwrap(XWingCrypto.open(seed: seed, info: info, sealed: Data([1]) + fields.epk + fields.ct))
+        XCTAssertEqual(opened, maxRing)
+        let reopened = try XCTUnwrap(reopenPgpKeyring(opened, inspector: GopenPGPCrypto()))
+        XCTAssertEqual(reopened.activeV6Fingerprint, v6)
     }
 }
 

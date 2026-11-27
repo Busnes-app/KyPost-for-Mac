@@ -49,8 +49,11 @@ nonisolated func envelopeIsHPKE(_ version: Int) -> Bool {
 /// RFC 9180 mode_base, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM.
 nonisolated let deviceEnvelopeHPKESuite = HPKE.Ciphersuite.P256_SHA256_AES_GCM_256
 
-/// Serialized v5 envelope bound.
-nonisolated let maxDeviceEnvelopeV3Bytes = 512 * 1024
+/// Serialized enrollment envelope bound (v4/v5/v6).
+/// A maximum-size `maxPgpKeyringBytes` (512 KiB) plaintext plus the 16-byte
+/// AES-GCM tag expands under base64 to ~683 KiB, plus the base64-encoded
+/// 1120-byte X-Wing encapsulation and JSON framing (~701 KiB total).
+nonisolated let maxDeviceEnvelopeV3Bytes = 768 * 1024
 
 private let gcmTagBytes = 16
 private let hpkeEnvelopeAlgorithm = "HPKE-Base-P256-SHA256-A256GCM"
@@ -66,14 +69,14 @@ nonisolated struct DeviceEnvelopeFields: Equatable, Sendable {
     var ct: Data
 }
 
-/// Parses a v4/v5 envelope, returning nil for anything malformed,
+/// Parses a v4/v5/v6 envelope, returning nil for anything malformed,
 /// unsupported or wrong-sized — including every v2/v3 envelope. **Nil means
 /// re-run the ceremony, never retry.**
 ///
 /// Strict, matching the server's framing check: the tag is the JSON
-/// **number** 4 or 5, the object holds exactly `v`, `alg`, `enc`, `ct`, base64
-/// is canonical and padded, `enc` is an on-curve uncompressed point, and v5
-/// fits in 128 KiB.
+/// **number** 4, 5, or 6, the object holds exactly `v`, `alg`, `enc`, `ct`,
+/// base64 is canonical and padded, `enc` matches the version's KEM size, and
+/// the serialized JSON fits within `maxDeviceEnvelopeV3Bytes`.
 nonisolated func parseDeviceEnvelope(_ json: String) -> DeviceEnvelopeFields? {
     guard let data = json.data(using: .utf8),
           data.count <= maxDeviceEnvelopeV3Bytes,
