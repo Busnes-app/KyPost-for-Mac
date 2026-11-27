@@ -65,6 +65,9 @@ jobs:
 
       - name: Select Xcode
         run: .github/scripts/select-xcode.sh
+      # Build and validate the Go dependency before Swift tracing starts.
+      - name: Build GopenPGP XCFramework
+        run: .github/scripts/build-gopenpgp.sh
       - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           languages: swift
